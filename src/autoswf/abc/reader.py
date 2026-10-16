@@ -128,3 +128,21 @@ class ABC:
         if m[0] == "T":
             return "%s<%s>" % (self.mname(m[1]), ",".join(self.mname(x) for x in m[2]))
         return "[%s]" % m[0]
+
+    NS_KINDS = {0x05: "Private", 0x08: "Namespace", 0x16: "Package", 0x17: "PackageInternal", 0x18: "Protected",
+                0x19: "Explicit", 0x1A: "StaticProtected"}
+
+    def ns_raw(self, i):
+        k, s = self.ns[i]
+        return "%s:%r" % (self.NS_KINDS.get(k, hex(k)), self.strings[s] if s < len(self.strings) else "?")
+
+    def mname_raw(self, i):
+        """Multiname with its kind and namespaces spelled out, e.g. QName(Package:'',stage)."""
+        if not i or i >= len(self.mn) or self.mn[i] is None:
+            return "*"
+        m = self.mn[i]
+        if m[0] == "Q":
+            return "QName(%s,%s)" % (self.ns_raw(m[1]), self.strings[m[2]])
+        if m[0] == "M":
+            return "Multiname(%s,[%s])" % (self.strings[m[1]], ",".join(self.ns_raw(n) for n in self.nssets[m[2]]))
+        return self.mname(i)

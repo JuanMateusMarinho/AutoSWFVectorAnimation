@@ -4,10 +4,14 @@ from dataclasses import dataclass
 
 from autoswf.abc.code import u30
 
+PRIVATE = 0x05
+NAMESPACE = 0x08
 PACKAGE = 0x16
 PACKAGE_INTERNAL = 0x17
 PROTECTED = 0x18
+STATIC_PROTECTED = 0x1A
 QNAME = 0x07
+MULTINAME = 0x09
 CLASS_PROTECTED_NS = 0x08
 
 
@@ -21,7 +25,8 @@ class AbcBuilder:
     def __init__(self):
         self._strings: dict[str, int] = {}
         self._namespaces: dict[tuple[int, int], int] = {}
-        self._multinames: dict[tuple[int, int], int] = {}
+        self._ns_sets: dict[tuple[int, ...], int] = {}
+        self._multinames: dict[tuple, int] = {}
         self._methods: list[tuple[int, int, int, int, bytes]] = []
         self._classes: list[tuple] = []
         self._scripts: list[tuple[int, int, int]] = []
@@ -40,7 +45,13 @@ class AbcBuilder:
 
     def qname(self, ns_kind: int, ns_name: str, name: str) -> int:
         ns = self.namespace(ns_kind, ns_name)
-        return self._intern(self._multinames, (ns, self.string(name)))
+        return self._intern(self._multinames, (QNAME, ns, self.string(name)))
+
+    def multiname(self, name: str, namespaces: list[tuple[int, str]]) -> int:
+        """Runtime-resolved name over a set of (kind, name) namespaces, as Flash emits for untyped calls."""
+        ns_set = tuple(dict.fromkeys(self.namespace(k, n) for k, n in namespaces))
+        set_index = self._intern(self._ns_sets, ns_set)
+        return self._intern(self._multinames, (MULTINAME, self.string(name), set_index))
 
     def method(self, max_stack: int, local_count: int, init_scope_depth: int, max_scope_depth: int,
                code: bytes) -> int:
@@ -65,10 +76,12 @@ class AbcBuilder:
         out += u30(len(self._namespaces) + 1)
         for kind, name in self._namespaces:
             out += bytes([kind]) + u30(name)
-        out += u30(0)                                          # ns_set pool
+        out += u30(len(self._ns_sets) + 1)
+        for ns_set in self._ns_sets:
+            out += u30(len(ns_set)) + b"".join(u30(n) for n in ns_set)
         out += u30(len(self._multinames) + 1)
-        for ns, name in self._multinames:
-            out += bytes([QNAME]) + u30(ns) + u30(name)
+        for kind, a, b in self._multinames:
+            out += bytes([kind]) + u30(a) + u30(b)      # QName: ns, name / Multiname: name, ns_set
         out += u30(len(self._methods))
         for _ in self._methods:
             out += u30(0) + u30(0) + u30(0) + bytes([0])       # no params, return *, no name, no flags

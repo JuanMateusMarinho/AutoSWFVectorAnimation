@@ -71,7 +71,8 @@ def rd_s24(code, p):
     return v, p + 3
 
 
-def disassemble(abc, code: bytes) -> list[Instr]:
+def disassemble(abc, code: bytes, raw: bool = False) -> list[Instr]:
+    """raw=True spells out multiname kinds and namespaces (detects encoding drift)."""
     out = []; p = 0
     while p < len(code):
         start = p; op = code[p]; p += 1
@@ -92,7 +93,7 @@ def disassemble(abc, code: bytes) -> list[Instr]:
             else:
                 v, p = rd_u30(code, p)
                 if a == MN:
-                    args.append(abc.mname(v))
+                    args.append(abc.mname_raw(v) if raw else abc.mname(v))
                 elif a == STR:
                     args.append(repr(abc.strings[v]) if v < len(abc.strings) else "?")
                 elif a == INT:

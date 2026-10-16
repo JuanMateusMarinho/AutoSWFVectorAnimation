@@ -7,12 +7,24 @@ frame methods in the package-internal namespace, fixed method-body headers.
 from dataclasses import dataclass
 
 from autoswf.abc.code import Code
-from autoswf.abc.writer import PACKAGE, PACKAGE_INTERNAL, PROTECTED, AbcBuilder, MethodTrait
+from autoswf.abc.writer import (NAMESPACE, PACKAGE, PACKAGE_INTERNAL, PRIVATE, PROTECTED, STATIC_PROTECTED,
+                                AbcBuilder, MethodTrait)
 from autoswf.model.document import FrameScript, GotoAndPlayScript, SetColorScript, StopScript
 
 ANCESTORS = [("", "Object"), ("flash.events", "EventDispatcher"), ("flash.display", "DisplayObject"),
              ("flash.display", "InteractiveObject"), ("flash.display", "DisplayObjectContainer"),
              ("flash.display", "Sprite"), ("flash.display", "MovieClip")]
+AS3_BUILTIN = "http://adobe.com/AS3/2006/builtin"
+
+
+def open_namespaces(class_name: str) -> list[tuple[int, str]]:
+    """Namespaces Flash leaves open inside a frame script; `mcSetColor` is resolved through them."""
+    package, _, name = class_name.rpartition(".")
+    qualified = "%s:%s" % (package, name) if package else name
+    spaces = [(PRIVATE, ""), (PACKAGE, "flash.display"), (PACKAGE, ""), (PACKAGE, package),
+              (PACKAGE_INTERNAL, package), (NAMESPACE, AS3_BUILTIN), (PROTECTED, qualified), (STATIC_PROTECTED, qualified)]
+    spaces += [(STATIC_PROTECTED, "%s:%s" % (ns, cls)) for ns, cls in reversed(ANCESTORS[1:])]
+    return list(dict.fromkeys(spaces))
 
 
 @dataclass(frozen=True)
@@ -21,26 +33,37 @@ class ClassSpec:
     frame_scripts: tuple[tuple[int, FrameScript], ...] = ()     # (0-based frame index, script)
 
 
-def expected_setcolor_ops(package: str, location: str, shade: str) -> list[tuple[str, tuple[str, ...]]]:
-    """Reference instructions of `MovieClip(stage.getChildAt(0)).mcSetColor(this, location, shade)`."""
-    return [("getlocal0", ()), ("pushscope", ()), ("findpropstrict", ("flash.display.MovieClip",)), ("getlocal0", ()),
-            ("getproperty", ("stage",)), ("pushbyte", ("0",)), ("callproperty", ("getChildAt", "1")),
-            ("callproperty", ("flash.display.MovieClip", "1")), ("getlocal0", ()), ("pushstring", (repr(location),)),
-            ("pushstring", (repr(shade),)), ("callpropvoid", ("mcSetColor", "3")), ("returnvoid", ())]
+def expected_setcolor_ops(class_name: str, location: str, shade: str,
+                          raw: bool = False) -> list[tuple[str, tuple[str, ...]]]:
+    """Reference instructions of `MovieClip(stage.getChildAt(0)).mcSetColor(this, location, shade)`.
+
+    With raw=True multinames are spelled out with their kind and namespaces, as `disassemble(raw=True)` prints them.
+    """
+    if raw:
+        mc, stage, child = "QName(Package:'flash.display',MovieClip)", "QName(Package:'',stage)", "QName(Package:'',getChildAt)"
+        kinds = {0x05: "Private", 0x08: "Namespace", 0x16: "Package", 0x17: "PackageInternal", 0x18: "Protected",
+                 0x1A: "StaticProtected"}
+        setcolor = "Multiname(mcSetColor,[%s])" % ",".join("%s:%r" % (kinds[k], n) for k, n in open_namespaces(class_name))
+    else:
+        mc, stage, child, setcolor = "flash.display.MovieClip", "stage", "getChildAt", "mcSetColor"
+    return [("getlocal0", ()), ("pushscope", ()), ("findpropstrict", (mc,)), ("getlocal0", ()),
+            ("getproperty", (stage,)), ("pushbyte", ("0",)), ("callproperty", (child, "1")),
+            ("callproperty", (mc, "1")), ("getlocal0", ()), ("pushstring", (repr(location),)),
+            ("pushstring", (repr(shade),)), ("callpropvoid", (setcolor, "3")), ("returnvoid", ())]
 
 
 def _public(b: AbcBuilder, name: str) -> int:
     return b.qname(PACKAGE, "", name)
 
 
-def _frame_method(b: AbcBuilder, script: FrameScript) -> int:
+def _frame_method(b: AbcBuilder, script: FrameScript, class_name: str) -> int:
     c = Code().getlocal0().pushscope()
     if isinstance(script, SetColorScript):
         movieclip = b.qname(PACKAGE, "flash.display", "MovieClip")
         c.findpropstrict(movieclip).getlocal0().getproperty(_public(b, "stage")).pushbyte(0)
         c.callproperty(_public(b, "getChildAt"), 1).callproperty(movieclip, 1).getlocal0()
         c.pushstring(b.string(script.location)).pushstring(b.string(script.shade))
-        c.callpropvoid(_public(b, "mcSetColor"), 3).returnvoid()
+        c.callpropvoid(b.multiname("mcSetColor", open_namespaces(class_name)), 3).returnvoid()
         return b.method(4, 1, 10, 11, c.bytes())
     if isinstance(script, StopScript):
         stop = _public(b, "stop")
@@ -61,7 +84,7 @@ def _add_class(b: AbcBuilder, spec: ClassSpec) -> None:
     traits, refs = [], []
     for index, script in sorted(spec.frame_scripts, key=lambda s: s[0]):
         trait_mn = b.qname(PACKAGE_INTERNAL, package, "frame%d" % (index + 1))
-        traits.append(MethodTrait(trait_mn, _frame_method(b, script)))
+        traits.append(MethodTrait(trait_mn, _frame_method(b, script, spec.qualified_name)))
         refs.append((index, trait_mn))
 
     ctor = Code().getlocal0().pushscope().getlocal0().constructsuper(0)

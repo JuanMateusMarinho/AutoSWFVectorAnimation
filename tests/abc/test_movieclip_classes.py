@@ -22,7 +22,7 @@ SCRIPT_INIT_PREFIX = [("getlocal0", ()), ("pushscope", ()), ("getscopeobject", (
 def test_setcolor_class_matches_official_pattern():
     a = ABC(build_abc([ClassSpec("Demo_fla.Skin_1", ((0, SetColorScript("Skin", "None")),))]))
     m = by_owner(a)
-    assert ops(a, m["Demo_fla.Skin_1.Demo_fla.frame1"]) == expected_setcolor_ops("Demo_fla", "Skin", "None") == [
+    assert ops(a, m["Demo_fla.Skin_1.Demo_fla.frame1"]) == expected_setcolor_ops("Demo_fla.Skin_1", "Skin", "None") == [
         ("getlocal0", ()), ("pushscope", ()), ("findpropstrict", ("flash.display.MovieClip",)), ("getlocal0", ()),
         ("getproperty", ("stage",)), ("pushbyte", ("0",)), ("callproperty", ("getChildAt", "1")),
         ("callproperty", ("flash.display.MovieClip", "1")), ("getlocal0", ()), ("pushstring", ("'Skin'",)),
@@ -60,3 +60,21 @@ def test_plain_class_has_no_frame_scripts():
     a = ABC(build_abc([ClassSpec("Helm")]))
     assert ops(a, by_owner(a)["Helm.<init>"]) == [("getlocal0", ()), ("pushscope", ()), ("getlocal0", ()),
                                                    ("constructsuper", ("0",)), ("returnvoid", ())]
+
+
+SETCOLOR_MULTINAME = ("Multiname(mcSetColor,[Private:'',Package:'flash.display',Package:'',Package:'Demo_fla',"
+    "PackageInternal:'Demo_fla',Namespace:'http://adobe.com/AS3/2006/builtin',Protected:'Demo_fla:Skin_1',"
+    "StaticProtected:'Demo_fla:Skin_1',StaticProtected:'flash.display:MovieClip',StaticProtected:'flash.display:Sprite',"
+    "StaticProtected:'flash.display:DisplayObjectContainer',StaticProtected:'flash.display:InteractiveObject',"
+    "StaticProtected:'flash.display:DisplayObject',StaticProtected:'flash.events:EventDispatcher'])")
+
+
+def test_setcolor_call_is_a_flash_style_multiname():
+    # Official items (Normal.swf, CrystallisOnsenMMorph4.swf) call mcSetColor through a Multiname
+    # over the open namespaces, not through a public QName.
+    a = ABC(build_abc([ClassSpec("Demo_fla.Skin_1", ((0, SetColorScript("Skin", "None")),))]))
+    frame1 = by_owner(a)["Demo_fla.Skin_1.Demo_fla.frame1"]
+    raw = [(i.op, i.args) for i in disassemble(a, a.bodies[frame1], raw=True)]
+    assert raw[-2] == ("callpropvoid", (SETCOLOR_MULTINAME, "3"))
+    assert raw == expected_setcolor_ops("Demo_fla.Skin_1", "Skin", "None", raw=True)
+    assert raw[4] == ("getproperty", ("QName(Package:'',stage)",))

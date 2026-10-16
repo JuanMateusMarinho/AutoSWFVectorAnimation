@@ -11,9 +11,9 @@ def _setcolor_problem(a: ABC, class_name: str, method: int) -> str | None:
     if ("callpropvoid", ("mcSetColor", "3")) not in ops:
         return None
     pushed = [args[0][1:-1] for op, args in ops if op == "pushstring"]
-    package = class_name.rpartition(".")[0]
+    raw = [(i.op, i.args) for i in disassemble(a, a.bodies[method], raw=True)]
     if (len(pushed) == 2 and pushed[0] in LOCATIONS and pushed[1] in SHADES
-            and ops == expected_setcolor_ops(package, pushed[0], pushed[1])):
+            and raw == expected_setcolor_ops(class_name, pushed[0], pushed[1], raw=True)):
         return None
     return "Color-custom script in '%s' is not in the format AQW expects." % class_name
 

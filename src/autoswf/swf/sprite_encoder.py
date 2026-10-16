@@ -30,6 +30,17 @@ def _place(depth, char_id=None, matrix=None, color=None, name=None, move=False) 
     return tag(PLACE_OBJECT2, w.getvalue())
 
 
+def _move(depth, old, p) -> bytes:
+    """Same item at the same depth: write only what changed (a cleared color becomes the identity)."""
+    matrix = p.matrix if p.matrix != old.matrix else None
+    color = None
+    if p.color != old.color:
+        color = p.color if p.color is not None else ColorTransform()
+    if matrix is None and color is None:
+        return b""
+    return _place(depth, matrix=matrix, color=color, move=True)
+
+
 def encode_define_sprite(symbol: Symbol, char_ids: dict[int, int]) -> bytes:
     frames = symbol.frames or [Frame()]
     out = bytearray(struct.pack("<HH", char_ids[id(symbol)], len(frames)))
@@ -42,15 +53,19 @@ def encode_define_sprite(symbol: Symbol, char_ids: dict[int, int]) -> bytes:
             p, old = cur[depth], prev.get(depth)
             if old is None:
                 out += _place(depth, char_ids[id(p.item)], p.matrix, p.color, p.name)
+            elif isinstance(old.item, Symbol) or isinstance(p.item, Symbol):
+                if old.item is not p.item:
+                    # Players only swap the innards of shapes in place; clips must be removed and placed fresh
+                    # so the new clip's class and frame scripts run.
+                    out += tag(REMOVE_OBJECT2, struct.pack("<H", depth))
+                    out += _place(depth, char_ids[id(p.item)], p.matrix, p.color, p.name)
+                else:
+                    out += _move(depth, old, p)
             elif old.item is not p.item:
-                out += _place(depth, char_ids[id(p.item)], p.matrix, p.color, move=True)
+                color = p.color if p.color is not None else (ColorTransform() if old.color is not None else None)
+                out += _place(depth, char_ids[id(p.item)], p.matrix, color, move=True)
             else:
-                matrix = p.matrix if p.matrix != old.matrix else None
-                color = None
-                if p.color != old.color:
-                    color = p.color if p.color is not None else ColorTransform()
-                if matrix is not None or color is not None:
-                    out += _place(depth, matrix=matrix, color=color, move=True)
+                out += _move(depth, old, p)
         if frame.label:
             w = BitWriter(); write_string(w, frame.label)
             out += tag(FRAME_LABEL, w.getvalue())
