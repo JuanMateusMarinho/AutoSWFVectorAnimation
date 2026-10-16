@@ -7,6 +7,7 @@ name = "autoswf"
 version = "0.1.0"
 description = "Turn layered cel-shaded art into AQW-ready vector SWF items"
 requires-python = ">=3.12"
+dependencies = ["PySide6>=6.8"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]

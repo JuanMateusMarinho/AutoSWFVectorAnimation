@@ -66,6 +66,35 @@ def _cmd_demo_helm(args) -> int:
     return 0
 
 
+def _qt_app():
+    from PySide6.QtGui import QGuiApplication
+    return QGuiApplication.instance() or QGuiApplication([])
+
+
+def _cmd_render(args) -> int:
+    from autoswf.render.colors import PlayerColors
+    from autoswf.render.display import ScriptContext, instantiate, run_pending_actions, tick
+    from autoswf.render.painter import render_fitted
+    from autoswf.swf.decode import MovieData
+    movie = MovieData(args.file)
+    char_id = movie.classes.get(args.class_name)
+    if char_id is None:
+        print("Class '%s' was not found in %s. Classes: %s" % (args.class_name, args.file, ", ".join(sorted(movie.classes))))
+        return 1
+    _qt_app()
+    colors = None if args.drawn_colors else PlayerColors()
+    ctx = ScriptContext(colors)
+    obj = instantiate(movie, char_id)
+    run_pending_actions(obj, ctx)
+    for _ in range(args.frame):
+        tick(obj, ctx)
+    image = render_fitted(obj, args.scale, colors)
+    Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+    image.save(str(args.out))
+    print("Wrote %s (%d x %d)" % (args.out, image.width(), image.height()))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     reconfigure = getattr(sys.stdout, "reconfigure", None)
     if reconfigure:
@@ -84,5 +113,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("out")
     p.add_argument("--link", default="AutoSwfDemoMorph", help="class name AQW uses to load the helm")
     p.set_defaults(run=_cmd_demo_helm)
+    p = sub.add_parser("render", help="render one class of a SWF to a PNG image")
+    p.add_argument("file")
+    p.add_argument("--class", dest="class_name", required=True, help="exported class to render")
+    p.add_argument("--out", required=True, help="PNG file to write")
+    p.add_argument("--scale", type=float, default=4.0)
+    p.add_argument("--frame", type=int, default=0, help="frames to play (24 fps) before rendering")
+    p.add_argument("--drawn-colors", action="store_true", help="keep the drawn colors instead of player colors")
+    p.set_defaults(run=_cmd_render)
     args = parser.parse_args(argv)
     return args.run(args)
