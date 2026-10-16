@@ -1,5 +1,6 @@
 """What the preview shows: the helm on the AQW male and female bodies, the game's labels, player colors and the
 morph check (base-head pixels the helm leaves uncovered). Independent of any window, so it renders headless."""
+import math
 from pathlib import Path
 
 import numpy as np
@@ -10,7 +11,7 @@ from autoswf.aqw.rig import AvatarRig
 from autoswf.model.geometry import Matrix
 from autoswf.render.colors import PlayerColors
 from autoswf.render.effects import array_to_qimage, qimage_to_array
-from autoswf.render.painter import Renderer
+from autoswf.render.painter import Renderer, object_bounds
 from autoswf.swf.decode import MovieData
 
 RGBA = tuple[int, int, int, int]
@@ -99,11 +100,12 @@ class PreviewScene:
             view = self.view_matrix(g, width, height, zoom, mirror)
             self.renderer.draw(painter, self.rigs[g].skel, view, self.colors, filter_scale=zoom)
             if morph_check:
-                mask = self._uncovered(g, view @ self.rigs[g].skel.matrix, width, height)
-                tint = np.zeros(mask.shape + (4,), np.float32)
-                a = UNCOVERED_TINT[3] / 255
-                tint[mask] = (UNCOVERED_TINT[0] / 255 * a, UNCOVERED_TINT[1] / 255 * a, UNCOVERED_TINT[2] / 255 * a, a)
-                painter.drawImage(0, 0, array_to_qimage(tint))
+                mask, x0, y0 = self._uncovered(g, view @ self.rigs[g].skel.matrix, width, height)
+                if mask.any():
+                    tint = np.zeros(mask.shape + (4,), np.float32)
+                    a = UNCOVERED_TINT[3] / 255
+                    tint[mask] = (UNCOVERED_TINT[0] / 255 * a, UNCOVERED_TINT[1] / 255 * a, UNCOVERED_TINT[2] / 255 * a, a)
+                    painter.drawImage(x0, y0, array_to_qimage(tint))
 
     def snapshot(self, width: int, height: int, **paint_options) -> QImage:
         image = QImage(width, height, QImage.Format.Format_ARGB32_Premultiplied)
@@ -116,19 +118,23 @@ class PreviewScene:
 
     # ------------------------------------------------------------ morph check
 
-    def _uncovered(self, gender: str, parent: Matrix, width: int, height: int) -> np.ndarray:
-        """Pixels where the base head is drawn and the helm is not. `parent` maps the skeleton's space."""
+    def _uncovered(self, gender: str, parent: Matrix, width: int, height: int) -> tuple[np.ndarray, int, int]:
+        """Pixels where the base head is drawn and the helm is not, inside the base head's box: (mask, x, y).
+        `parent` maps the skeleton's space to the image."""
         head = self.rigs[gender].head()
         matrix = parent @ head.matrix
-        renderer = Renderer()
-        alphas = []
-        for name in ("face", "helm"):
-            part = head.child_by_name(name)
-            if part is None:
-                alphas.append(np.zeros((height, width), np.float32))
-            else:
-                alphas.append(qimage_to_array(renderer.render_image(part, width, height, matrix, None))[..., 3])
-        return (alphas[0] >= 0.5) & (alphas[1] < 0.5)
+        face, helm = head.child_by_name("face"), head.child_by_name("helm")
+        bounds = object_bounds(face, matrix) if face is not None else None
+        if bounds is None:
+            return np.zeros((0, 0), bool), 0, 0
+        x0, y0 = max(0, math.floor(bounds[0]) - 1), max(0, math.floor(bounds[2]) - 1)
+        x1, y1 = min(width, math.ceil(bounds[1]) + 1), min(height, math.ceil(bounds[3]) + 1)
+        if x1 <= x0 or y1 <= y0:
+            return np.zeros((0, 0), bool), 0, 0
+        shifted = Matrix.translate(-x0, -y0) @ matrix
+        alphas = [qimage_to_array(self.renderer.render_image(part, x1 - x0, y1 - y0, shifted, None))[..., 3]
+                  if part is not None else np.zeros((y1 - y0, x1 - x0), np.float32) for part in (face, helm)]
+        return (alphas[0] >= 0.5) & (alphas[1] < 0.5), x0, y0
 
     def uncovered_head_pixels(self, gender: str) -> int:
         size, head = MORPH_CHECK_SIZE, self.rigs[gender].head()
@@ -137,4 +143,4 @@ class PreviewScene:
         det = a * d - b * c or 1.0
         undo = Matrix(d / det, -b / det, -c / det, a / det, (c * ty - d * tx) / det, (b * tx - a * ty) / det)
         view = Matrix.translate(size / 2, size / 2) @ Matrix.scale(MORPH_CHECK_SCALE, MORPH_CHECK_SCALE) @ undo
-        return int(self._uncovered(gender, view, size, size).sum())
+        return int(self._uncovered(gender, view, size, size)[0].sum())

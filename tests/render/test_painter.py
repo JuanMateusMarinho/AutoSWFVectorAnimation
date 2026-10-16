@@ -78,3 +78,15 @@ def test_render_command_paints_player_skin(tmp_path, qapp):
     target = ((skin >> 16) & 255, (skin >> 8) & 255, skin & 255, 255)
     assert sum(rgba(img, x, y) == target for y in range(img.height()) for x in range(img.width())) > 100
     assert main(["render", str(demo), "--class", "Nope", "--out", str(png)]) == 1
+
+
+def test_raster_cache_reuses_shapes_and_matches_direct_drawing(qapp):
+    tags = [shape_tag(1, 3, fills=[("solid", RED)], lines=[(0.05, (0, 0, 0, 255))], paths=[dict(sq(0, 0, 10, 10), line=1)]),
+            sprite_tag(2, [[place2(1, cid=1, matrix=Matrix(1.5, 0.3, -0.3, 1.5, 4, 3)), place2(2, cid=1, matrix=Matrix.translate(20, 20))]])]
+    obj = instantiate(MovieData(swf(tags)), 2)
+    cached, direct = Renderer(), Renderer(cache_bytes=0)
+    cached.render_image(obj, 40, 40, Matrix(), None)
+    again = cached.render_image(obj, 40, 40, Matrix(), None)
+    plain = direct.render_image(obj, 40, 40, Matrix(), None)
+    assert cached.cache_hits >= 2 and direct.cache_hits == 0
+    assert all(abs(a - b) <= 2 for y in range(40) for x in range(40) for a, b in zip(rgba(again, x, y), rgba(plain, x, y)))

@@ -118,6 +118,9 @@ def _cmd_preview(args) -> int:
     except ValueError:
         print("Size must look like 800x600")
         return 1
+    if not args.snapshot:
+        from autoswf.preview.window import run_preview
+        return run_preview(helm_path, link=args.link, label=args.label, armor=args.armor)
     _qt_app()
     try:
         scene = PreviewScene.from_cache(AqwCache(default_cache_dir()), helm_path, link=args.link, armor=args.armor)

@@ -41,3 +41,12 @@ def test_unsupported_effects_are_noted(qapp):
     renderer = Renderer()
     render(scene(WHITE, 10, 30, filters=[b"\x03" + bytes(27)], blend=9), renderer)
     assert {"Bevel filter is not rendered", "Blend mode 'subtract' is approximated"} <= renderer.notes
+
+
+def test_filtered_layers_are_reused(qapp):
+    md = scene(WHITE, 10, 30, filters=[BlurFilter(8.0, 8.0, 1)])
+    obj, renderer = instantiate(md, 2), Renderer()
+    first = renderer.render_image(obj, 40, 40, Matrix(), None)
+    hits = renderer.cache_hits
+    second = renderer.render_image(obj, 40, 40, Matrix(), None)
+    assert renderer.cache_hits > hits and first == second

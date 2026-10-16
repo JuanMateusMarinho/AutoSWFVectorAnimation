@@ -4,6 +4,7 @@
 matrices it is given (Flash convention, px).
 """
 import math
+from collections import OrderedDict
 
 from PySide6.QtCore import QPointF, QRect, QRectF, Qt
 from PySide6.QtGui import (QBrush, QColor, QGradient, QImage, QLinearGradient, QPainter, QPainterPath, QPen,
@@ -24,6 +25,9 @@ SPREADS = {0: QGradient.Spread.PadSpread, 1: QGradient.Spread.ReflectSpread, 2: 
 CAPS = {0: Qt.PenCapStyle.RoundCap, 1: Qt.PenCapStyle.FlatCap, 2: Qt.PenCapStyle.SquareCap}
 JOINS = {0: Qt.PenJoinStyle.RoundJoin, 1: Qt.PenJoinStyle.BevelJoin, 2: Qt.PenJoinStyle.MiterJoin}
 ARGB = QImage.Format.Format_ARGB32_Premultiplied
+DEFAULT_CACHE_BYTES = 256 * 2 ** 20
+MAX_CACHED_PIXELS = 1024 * 1024     # bigger rasters are drawn directly every time
+SUBPIXEL = 8                        # cached rasters are placed to 1/8 px
 
 
 def qt_transform(m: Matrix) -> QTransform:
@@ -103,6 +107,18 @@ def _device_rect(bounds, painter: QPainter, pad: float = 1.0) -> QRect:
     return rect.intersected(QRect(0, 0, device.width(), device.height()))
 
 
+def _q(v: float, step: float = 1e-4) -> float:
+    return round(v / step) * step
+
+
+def _signature(obj: DisplayObject) -> tuple:
+    """Everything that changes how a subtree looks (the objects themselves are part of it, by identity)."""
+    own = (obj, obj.visible, obj.matrix, obj.color, obj.color_custom, obj.ratio, obj.clip_depth, obj.blend, obj.filters)
+    if isinstance(obj, ClipInstance):
+        return own + (obj.frame, tuple(_signature(c) for c in obj.children))
+    return own
+
+
 def _new_layer(rect: QRect) -> tuple[QImage, QPainter]:
     image = QImage(rect.size(), ARGB)
     image.fill(0)
@@ -112,10 +128,36 @@ def _new_layer(rect: QRect) -> tuple[QImage, QPainter]:
 
 
 class Renderer:
-    def __init__(self):
+    """Draws display trees. Rasterized shapes and filtered layers are cached (LRU, `cache_bytes` in total) per
+    device transform, color transform and subtree state, so looping animations repaint quickly; 0 disables it."""
+
+    def __init__(self, cache_bytes: int = DEFAULT_CACHE_BYTES):
         self.notes: set[str] = set()
+        self.cache_bytes = cache_bytes
+        self.cache_hits = self.cache_misses = 0
+        self._cache: OrderedDict = OrderedDict()
+        self._cache_size = 0
         self._colors: PlayerColors | None = None
         self._filter_scale = 1.0
+
+    def _cache_get(self, key):
+        item = self._cache.get(key)
+        if item is None:
+            self.cache_misses += 1
+            return None
+        self._cache.move_to_end(key)
+        self.cache_hits += 1
+        return item[0]
+
+    def _cache_put(self, key, value, image: QImage) -> None:
+        size = image.sizeInBytes()
+        if size > self.cache_bytes // 8:
+            return
+        self._cache[key] = (value, size)
+        self._cache_size += size
+        while self._cache_size > self.cache_bytes:
+            _, (_, old) = self._cache.popitem(last=False)
+            self._cache_size -= old
 
     def draw(self, painter: QPainter, obj: DisplayObject, matrix: Matrix, colors: PlayerColors | None, *,
              filter_scale: float = 1.0) -> None:
@@ -160,13 +202,21 @@ class Renderer:
         rect = _device_rect(bounds, painter, filter_padding(obj.filters, self._filter_scale))
         if rect.isEmpty():
             return
-        layer, p = _new_layer(rect)
-        self._draw_content(p, obj, Matrix.translate(-rect.x(), -rect.y()) @ m, ct)
-        p.end()
-        if obj.filters:
-            arr, notes = apply_filters(qimage_to_array(layer), obj.filters, self._filter_scale)
-            self.notes.update(notes)
-            layer = array_to_qimage(arr)
+        key = None
+        if self.cache_bytes > 0:
+            key = ("layer", rect.x(), rect.y(), rect.width(), rect.height(), _q(m.a), _q(m.b), _q(m.c), _q(m.d),
+                   _q(m.tx, 1 / SUBPIXEL), _q(m.ty, 1 / SUBPIXEL), ct, self._colors, self._filter_scale, _signature(obj))
+        layer = self._cache_get(key) if key is not None else None
+        if layer is None:
+            layer, p = _new_layer(rect)
+            self._draw_content(p, obj, Matrix.translate(-rect.x(), -rect.y()) @ m, ct)
+            p.end()
+            if obj.filters:
+                arr, notes = apply_filters(qimage_to_array(layer), obj.filters, self._filter_scale)
+                self.notes.update(notes)
+                layer = array_to_qimage(arr)
+            if key is not None:
+                self._cache_put(key, layer, layer)
         note = blend_note(obj.blend)
         if note:
             self.notes.add(note)
@@ -262,6 +312,38 @@ class Renderer:
         return pen
 
     def _draw_shape(self, painter: QPainter, obj: ShapeInstance, m: Matrix, ct: ColorTransform) -> None:
+        """Through the raster cache: the shape is rendered once per (linear transform, sub-pixel offset, colors)."""
+        if self.cache_bytes <= 0:
+            self._paint_shape(painter, obj, m, ct)
+            return
+        ix, iy = math.floor(m.tx), math.floor(m.ty)
+        fx, fy = _q(m.tx - ix, 1 / SUBPIXEL), _q(m.ty - iy, 1 / SUBPIXEL)
+        key = ("shape", obj.movie, obj.char_id, obj.ratio if isinstance(obj.shape, MorphShapeDef) else 0,
+               _q(m.a), _q(m.b), _q(m.c), _q(m.d), fx, fy, ct)
+        hit = self._cache_get(key)
+        if hit is None:
+            local = Matrix(m.a, m.b, m.c, m.d, fx, fy)
+            xmin, xmax, ymin, ymax = _shape_bounds(obj)
+            pts = [local.apply(Point(x, y)) for x in (xmin, xmax) for y in (ymin, ymax)]
+            x0, y0 = math.floor(min(p.x for p in pts)) - 2, math.floor(min(p.y for p in pts)) - 2
+            width = math.ceil(max(p.x for p in pts)) + 2 - x0
+            height = math.ceil(max(p.y for p in pts)) + 2 - y0
+            if width <= 0 or height <= 0 or width * height > MAX_CACHED_PIXELS:
+                self._paint_shape(painter, obj, m, ct)
+                return
+            image = QImage(width, height, ARGB)
+            image.fill(0)
+            p = QPainter(image)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            self._paint_shape(p, obj, Matrix.translate(-x0, -y0) @ local, ct)
+            p.end()
+            hit = (image, x0, y0)
+            self._cache_put(key, hit, image)
+        image, x0, y0 = hit
+        painter.resetTransform()
+        painter.drawImage(ix + x0, iy + y0, image)
+
+    def _paint_shape(self, painter: QPainter, obj: ShapeInstance, m: Matrix, ct: ColorTransform) -> None:
         shape, layers = _geometry(obj)
         scale = math.sqrt(abs(m.a * m.d - m.b * m.c)) or 1e-9
         painter.setTransform(qt_transform(m))
