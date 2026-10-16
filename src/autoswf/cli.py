@@ -109,6 +109,33 @@ def _cmd_download(args) -> int:
     return 0
 
 
+def _cmd_preview(args) -> int:
+    from autoswf.aqw.assets import AqwCache, default_cache_dir
+    from autoswf.preview.scene import MissingReferenceFiles, PreviewScene
+    helm_path = Path(args.helm) if args.helm else None
+    try:
+        width, height = (int(v) for v in args.size.lower().split("x"))
+    except ValueError:
+        print("Size must look like 800x600")
+        return 1
+    _qt_app()
+    try:
+        scene = PreviewScene.from_cache(AqwCache(default_cache_dir()), helm_path, link=args.link, armor=args.armor)
+        scene.set_label(args.label)
+    except (MissingReferenceFiles, ValueError) as e:
+        print(e)
+        return 1
+    except OSError as e:
+        print("Could not open %s: %s" % (helm_path, e.strerror or e))
+        return 1
+    for _ in range(args.frames):
+        scene.tick()
+    Path(args.snapshot).parent.mkdir(parents=True, exist_ok=True)
+    scene.snapshot(width, height).save(str(args.snapshot))
+    print("Wrote %s" % args.snapshot)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     reconfigure = getattr(sys.stdout, "reconfigure", None)
     if reconfigure:
@@ -142,5 +169,14 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--refresh", action="store_true", help="download again even if the files are already cached")
     p.add_argument("--base-url", default=GAME_BASE_URL, help=argparse.SUPPRESS)
     p.set_defaults(run=_cmd_download)
+    p = sub.add_parser("preview", help="show a helm on the AQW male and female bodies")
+    p.add_argument("helm", nargs="?", help="helm SWF to show")
+    p.add_argument("--link", help="helm class name (found automatically when the file has one)")
+    p.add_argument("--label", default="Idle", help="game animation to play (default: %(default)s)")
+    p.add_argument("--armor", default=DEFAULT_ARMOR, help="armor worn by the preview bodies (default: %(default)s)")
+    p.add_argument("--snapshot", help="save one image instead of opening the window")
+    p.add_argument("--frames", type=int, default=0, help="frames to play (24 fps) before the snapshot")
+    p.add_argument("--size", default="800x600", help="snapshot size, WIDTHxHEIGHT")
+    p.set_defaults(run=_cmd_preview)
     args = parser.parse_args(argv)
     return args.run(args)
