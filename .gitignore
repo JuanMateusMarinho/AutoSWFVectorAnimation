@@ -1,0 +1,22 @@
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Build output
+build/
+dist/
+*.spec.bak
+
+# Downloaded AQW reference files and model weights (never committed)
+cache/
+models/
+
+# OS / editors
+Thumbs.db
+.DS_Store
+.vscode/
+.idea/
