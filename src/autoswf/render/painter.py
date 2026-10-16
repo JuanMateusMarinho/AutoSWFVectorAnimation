@@ -12,6 +12,8 @@ from PySide6.QtGui import (QBrush, QColor, QGradient, QImage, QLinearGradient, Q
 from autoswf.model.geometry import ColorTransform, Matrix, Point
 from autoswf.render.colors import PlayerColors, apply, concat
 from autoswf.render.display import ClipInstance, DisplayObject, ShapeInstance, effective_color
+from autoswf.render.effects import (BLEND_MODES, apply_filters, array_to_qimage, blend_note, filter_padding,
+                                    qimage_to_array)
 from autoswf.render.paths import fill_paths, interpolate_morph, stroke_paths
 from autoswf.swf.decode import BitmapStyle, GradientStyle, MorphShapeDef, ShapeDef, SolidStyle
 
@@ -139,10 +141,40 @@ class Renderer:
         m = parent @ obj.matrix
         own = effective_color(obj, self._colors)
         ct = concat(parent_ct, own) if own is not None else parent_ct
+        if obj.filters or obj.blend not in (None, "normal"):
+            self._draw_layered(painter, obj, parent, m, ct)
+        else:
+            self._draw_content(painter, obj, m, ct)
+
+    def _draw_content(self, painter: QPainter, obj: DisplayObject, m: Matrix, ct: ColorTransform) -> None:
         if isinstance(obj, ShapeInstance):
             self._draw_shape(painter, obj, m, ct)
         elif isinstance(obj, ClipInstance):
             self._draw_children(painter, obj.children, m, ct)
+
+    def _draw_layered(self, painter: QPainter, obj: DisplayObject, parent: Matrix, m: Matrix, ct: ColorTransform) -> None:
+        """Filters and blend modes: draw the object alone into a layer, filter it, composite it with its mode."""
+        bounds = object_bounds(obj, parent)
+        if bounds is None:
+            return
+        rect = _device_rect(bounds, painter, filter_padding(obj.filters, self._filter_scale))
+        if rect.isEmpty():
+            return
+        layer, p = _new_layer(rect)
+        self._draw_content(p, obj, Matrix.translate(-rect.x(), -rect.y()) @ m, ct)
+        p.end()
+        if obj.filters:
+            arr, notes = apply_filters(qimage_to_array(layer), obj.filters, self._filter_scale)
+            self.notes.update(notes)
+            layer = array_to_qimage(arr)
+        note = blend_note(obj.blend)
+        if note:
+            self.notes.add(note)
+        painter.resetTransform()
+        painter.save()
+        painter.setCompositionMode(BLEND_MODES.get(obj.blend or "normal", BLEND_MODES["normal"]))
+        painter.drawImage(rect.topLeft(), layer)
+        painter.restore()
 
     def _draw_children(self, painter: QPainter, children: list[DisplayObject], m: Matrix, ct: ColorTransform) -> None:
         i = 0
