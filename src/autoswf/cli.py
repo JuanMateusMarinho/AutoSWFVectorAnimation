@@ -139,6 +139,34 @@ def _cmd_preview(args) -> int:
     return 0
 
 
+def _cmd_fidelity(args) -> int:
+    import os
+    from autoswf.aqw.assets import AqwCache, default_cache_dir
+    from autoswf.render.fidelity import default_targets, public_classes, run_fidelity
+    from autoswf.swf.decode import MovieData
+    ffdec = args.ffdec or os.environ.get("AUTOSWF_FFDEC")
+    if not ffdec:
+        print("Tell AutoSWF where FFDec is: --ffdec FOLDER or the AUTOSWF_FFDEC environment variable.")
+        return 1
+    _qt_app()
+    cache = AqwCache(default_cache_dir())
+    targets = default_targets(cache) + [(Path(f), n) for f in args.files for n in public_classes(MovieData(f))]
+    if not targets:
+        print("Nothing to compare: run python -m autoswf download-aqw --samples, or pass SWF files.")
+        return 1
+    out = Path(args.out) if args.out else Path(cache.root) / "fidelity"
+    rows = run_fidelity(targets, Path(ffdec), out, zoom=args.zoom)
+    for r in rows:
+        if r.result is None:
+            print("ERROR  %s  %s  %s" % (r.file, r.class_name, r.error))
+        else:
+            state = "PASS " if r.passed else ("KNOWN" if r.known else "FAIL ")
+            print("%s  %s  %s  IoU %.3f  error %.1f" % (state, r.file, r.class_name, r.result.iou, r.result.mean_error))
+    failed = [r for r in rows if not r.passed and not r.known]
+    print("%d of %d classes match FFDec. Report: %s" % (len(rows) - len(failed), len(rows), out / "report.html"))
+    return 1 if failed else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     reconfigure = getattr(sys.stdout, "reconfigure", None)
     if reconfigure:
@@ -181,5 +209,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--frames", type=int, default=0, help="frames to play (24 fps) before the snapshot")
     p.add_argument("--size", default="800x600", help="snapshot size, WIDTHxHEIGHT")
     p.set_defaults(run=_cmd_preview)
+    p = sub.add_parser("fidelity", help="compare the renderer with JPEXS FFDec on official items")
+    p.add_argument("files", nargs="*", help="extra SWF files to compare (all their exported classes)")
+    p.add_argument("--ffdec", help="FFDec folder (default: the AUTOSWF_FFDEC environment variable)")
+    p.add_argument("--out", help="report folder (default: <cache>/fidelity)")
+    p.add_argument("--zoom", type=float, default=4.0)
+    p.set_defaults(run=_cmd_fidelity)
     args = parser.parse_args(argv)
     return args.run(args)
