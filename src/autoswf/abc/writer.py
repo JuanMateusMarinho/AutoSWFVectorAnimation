@@ -1,0 +1,91 @@
+"""ABC (AVM2 bytecode) builder: deduplicating constant pool and serializer."""
+import struct
+from dataclasses import dataclass
+
+from autoswf.abc.code import u30
+
+PACKAGE = 0x16
+PACKAGE_INTERNAL = 0x17
+PROTECTED = 0x18
+QNAME = 0x07
+CLASS_PROTECTED_NS = 0x08
+
+
+@dataclass(frozen=True)
+class MethodTrait:
+    name_mn: int
+    method: int
+
+
+class AbcBuilder:
+    def __init__(self):
+        self._strings: dict[str, int] = {}
+        self._namespaces: dict[tuple[int, int], int] = {}
+        self._multinames: dict[tuple[int, int], int] = {}
+        self._methods: list[tuple[int, int, int, int, bytes]] = []
+        self._classes: list[tuple] = []
+        self._scripts: list[tuple[int, int, int]] = []
+
+    @staticmethod
+    def _intern(table: dict, key) -> int:
+        if key not in table:
+            table[key] = len(table) + 1      # index 0 is implicit in every pool
+        return table[key]
+
+    def string(self, s: str) -> int:
+        return self._intern(self._strings, s)
+
+    def namespace(self, kind: int, name: str) -> int:
+        return self._intern(self._namespaces, (kind, self.string(name)))
+
+    def qname(self, ns_kind: int, ns_name: str, name: str) -> int:
+        ns = self.namespace(ns_kind, ns_name)
+        return self._intern(self._multinames, (ns, self.string(name)))
+
+    def method(self, max_stack: int, local_count: int, init_scope_depth: int, max_scope_depth: int,
+               code: bytes) -> int:
+        self._methods.append((max_stack, local_count, init_scope_depth, max_scope_depth, code))
+        return len(self._methods) - 1
+
+    def add_class(self, name_mn: int, super_mn: int, protected_ns: int, iinit: int, cinit: int,
+                  instance_traits: list[MethodTrait]) -> int:
+        self._classes.append((name_mn, super_mn, protected_ns, iinit, cinit, list(instance_traits)))
+        return len(self._classes) - 1
+
+    def add_script(self, init_method: int, class_name_mn: int, class_index: int) -> None:
+        self._scripts.append((init_method, class_name_mn, class_index))
+
+    def serialize(self) -> bytes:
+        out = bytearray(struct.pack("<HH", 16, 46))
+        out += u30(0) + u30(0) + u30(0)                       # int, uint, double pools
+        out += u30(len(self._strings) + 1)
+        for s in self._strings:
+            data = s.encode("utf-8")
+            out += u30(len(data)) + data
+        out += u30(len(self._namespaces) + 1)
+        for kind, name in self._namespaces:
+            out += bytes([kind]) + u30(name)
+        out += u30(0)                                          # ns_set pool
+        out += u30(len(self._multinames) + 1)
+        for ns, name in self._multinames:
+            out += bytes([QNAME]) + u30(ns) + u30(name)
+        out += u30(len(self._methods))
+        for _ in self._methods:
+            out += u30(0) + u30(0) + u30(0) + bytes([0])       # no params, return *, no name, no flags
+        out += u30(0)                                          # metadata
+        out += u30(len(self._classes))
+        for name_mn, super_mn, protected_ns, iinit, _cinit, traits in self._classes:
+            out += u30(name_mn) + u30(super_mn) + bytes([CLASS_PROTECTED_NS]) + u30(protected_ns)
+            out += u30(0) + u30(iinit) + u30(len(traits))
+            for t in traits:
+                out += u30(t.name_mn) + bytes([1]) + u30(0) + u30(t.method)
+        for *_rest, cinit, _traits in self._classes:
+            out += u30(cinit) + u30(0)
+        out += u30(len(self._scripts))
+        for init, class_mn, class_index in self._scripts:
+            out += u30(init) + u30(1) + u30(class_mn) + bytes([4]) + u30(1) + u30(class_index)
+        out += u30(len(self._methods))
+        for index, (max_stack, locals_, init_scope, max_scope, code) in enumerate(self._methods):
+            out += u30(index) + u30(max_stack) + u30(locals_) + u30(init_scope) + u30(max_scope)
+            out += u30(len(code)) + code + u30(0) + u30(0)
+        return bytes(out)
