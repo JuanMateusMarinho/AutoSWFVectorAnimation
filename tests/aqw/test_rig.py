@@ -1,0 +1,61 @@
+# tests/aqw/test_rig.py
+import pytest
+from aqw_fakes import helm, mini_armor, mini_client
+from autoswf.aqw.assets import DEFAULT_ARMOR
+from autoswf.aqw.rig import BLACK_TINT, AvatarRig
+from autoswf.model.geometry import Matrix
+from autoswf.swf.decode import MovieData
+
+def rig(gender="M", helm_bytes=None, armor=True):
+    return AvatarRig(MovieData(mini_client()), gender, armor=MovieData(mini_armor(gender)) if armor else None, armor_link="TestArmor",
+                     helm=MovieData(helm_bytes) if helm_bytes else None, helm_link="Kit" if helm_bytes else None)
+
+def test_armor_head_and_helm_go_where_the_game_puts_them():
+    s = rig(helm_bytes=helm("Kit", backhair=True)).skel
+    assert s.child_by_name("chest").children[0].class_name == "TestArmorMChest"
+    assert [s.child_by_name(n).children[0].class_name for n in ("frontthigh", "backthigh")] == ["TestArmorMThigh"] * 2
+    assert s.child_by_name("backhand").children[0].color == BLACK_TINT
+    head = s.child_by_name("head")
+    assert [c.name for c in head.children] == ["face", "helm", "hair"]
+    assert head.children[0].class_name == "mcHeadM" and head.children[0].matrix == Matrix()
+    assert head.child_by_name("helm").visible and head.child_by_name("helm").children[0].class_name == "Kit"
+    assert not head.child_by_name("hair").visible
+    assert s.child_by_name("backhair").visible and s.child_by_name("backhair").children[0].class_name == "Kit_backhair"
+    assert not s.child_by_name("frontfoot").visible and s.child_by_name("idlefoot").visible
+    assert not any(s.child_by_name(n).visible for n in ("cape", "weapon", "shield", "pvpFlag", "backrobe"))
+    assert s.child_by_name("robe").visible
+
+def test_female_parts_and_helm_without_backhair():
+    s = rig("F", helm_bytes=helm("Kit", backhair=False)).skel
+    assert not s.child_by_name("backhair").visible
+    assert s.child_by_name("chest").children[0].class_name == "TestArmorFChest"
+    assert s.child_by_name("head").children[0].class_name == "mcHeadF"
+
+def test_missing_armor_keeps_the_placeholders():
+    assert rig(armor=False).skel.child_by_name("chest").children[0].class_name is None
+
+def test_idle_holds_and_walk_loops_without_showing_its_loop_frame():
+    r = rig(helm_bytes=helm())
+    assert r.labels == ["Ready", "Idle", "Walk"] and r.label == "Idle" and r.skel.frame == 1
+    seq = []
+    for _ in range(3):
+        r.tick(); seq.append(r.skel.frame)
+    assert seq == [1, 1, 1]
+    r.set_label("Walk"); seq = [r.skel.frame]
+    for _ in range(4):
+        r.tick(); seq.append(r.skel.frame)
+    assert seq == [3, 4, 3, 4, 3]
+    assert r.head().children[0].class_name == "mcHeadM"
+
+@pytest.mark.aqw
+def test_real_client_idle_and_walk(aqw_cache):
+    armor = MovieData(aqw_cache.armor_path("M", DEFAULT_ARMOR))
+    r = AvatarRig(MovieData(aqw_cache.client_path()), "M", armor=armor, armor_link=DEFAULT_ARMOR)
+    assert {"Idle", "Walk", "Attack1", "Cast1"} <= set(r.labels)
+    for _ in range(3):
+        r.tick()
+    assert r.skel.frame == 7 and r.skel.child_by_name("idlefoot").visible and not r.skel.child_by_name("frontfoot").visible
+    r.set_label("Walk"); frames = set()
+    for _ in range(30):
+        r.tick(); frames.add(r.skel.frame)
+    assert frames == set(range(53, 67)) and r.skel.child_by_name("frontfoot").visible

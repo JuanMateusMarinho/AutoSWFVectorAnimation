@@ -8,8 +8,8 @@ vector shapes that look hand-made in Animate, finds the parts with AI (eyes, hai
 accessories), animates them Flash-style (blinking eyes, swaying hair, light cloth physics), wires AQW's
 color customization, shows the item on the AQW body, and exports a SWF ready for the game.
 
-> **Status: early development.** Nothing is usable yet. Phase 1 (helms and morph helms) is being built,
-> starting with the SWF engine.
+> **Status: early development.** Phase 1 (helms and morph helms) is being built. Done so far: the SWF engine
+> (AQW-valid helm export) and the preview of a helm on the AQW male and female bodies.
 
 ## Why
 
@@ -61,7 +61,20 @@ py -3.13 -m venv .venv
 Documentation:
 
   — includes the AQW item format, verified against live game files.
-  currently `plan1-swf-engine`, until it is merged)
+  merged)
+
+### Try it
+
+```bash
+.venv/Scripts/python -m autoswf download-aqw
+.venv/Scripts/python -m autoswf demo-helm cache/demo.swf
+.venv/Scripts/python -m autoswf preview cache/demo.swf
+```
+
+`download-aqw` fetches the current AQW game client and one armor (for the preview body) from AQW's public server.
+AQW files are only downloaded when you ask, stay on your computer (in `cache/`), and are never committed or shared.
+Other commands: `inspect FILE` describes a SWF, `render FILE --class NAME --out OUT.png` renders one class, and
+`fidelity` compares the renderer with JPEXS FFDec on official items.
 
 ## Disclaimer
 
