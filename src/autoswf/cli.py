@@ -95,6 +95,20 @@ def _cmd_render(args) -> int:
     return 0
 
 
+def _cmd_download(args) -> int:
+    from autoswf.aqw.assets import AqwCache, DownloadError, default_cache_dir, download_reference_files
+    cache = AqwCache(default_cache_dir())
+    try:
+        download_reference_files(cache, armor=args.armor, samples=args.samples, refresh=args.refresh,
+                                 base_url=args.base_url, progress=print)
+    except DownloadError as e:
+        print("Download failed: %s" % e)
+        return 1
+    print("Done. AQW files are in %s. They are only used for the local preview and are never shared."
+          % (Path(cache.root) / "aqw"))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     reconfigure = getattr(sys.stdout, "reconfigure", None)
     if reconfigure:
@@ -121,5 +135,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--frame", type=int, default=0, help="frames to play (24 fps) before rendering")
     p.add_argument("--drawn-colors", action="store_true", help="keep the drawn colors instead of player colors")
     p.set_defaults(run=_cmd_render)
+    from autoswf.aqw.assets import DEFAULT_ARMOR, GAME_BASE_URL
+    p = sub.add_parser("download-aqw", help="download the AQW game client and an armor for the preview (local only)")
+    p.add_argument("--armor", default=DEFAULT_ARMOR, help="armor file shown on the preview body (default: %(default)s)")
+    p.add_argument("--samples", action="store_true", help="also download official items used for fidelity checks")
+    p.add_argument("--refresh", action="store_true", help="download again even if the files are already cached")
+    p.add_argument("--base-url", default=GAME_BASE_URL, help=argparse.SUPPRESS)
+    p.set_defaults(run=_cmd_download)
     args = parser.parse_args(argv)
     return args.run(args)
