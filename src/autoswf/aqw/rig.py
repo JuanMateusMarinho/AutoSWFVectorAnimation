@@ -91,6 +91,9 @@ class AvatarRig:
             return
         if link not in helm.classes:
             raise ValueError("Class '%s' was not found in the helm file" % link)
+        helm_item = _new(helm, link)
+        if helm_item is None:
+            raise ValueError("Class '%s' in the helm file cannot be drawn (it is not a MovieClip or shape)" % link)
         head = self.head()
         helm_slot, hair, back = head.child_by_name("helm"), head.child_by_name("hair"), self._slot("backhair")
         if helm_slot.children:
@@ -104,7 +107,7 @@ class AvatarRig:
             if back_item is not None:
                 _replace_first(back, back_item)
                 back.visible = True
-        helm_slot.add_child(_new(helm, link))
+        helm_slot.add_child(helm_item)
 
     # ------------------------------------------------------------ playback
 

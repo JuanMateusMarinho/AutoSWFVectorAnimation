@@ -1,4 +1,6 @@
 # tests/preview/test_scene.py
+import struct
+
 import pytest
 from aqw_fakes import blob_helm, helm, mini_armor, mini_client, write_mini_cache
 from autoswf.aqw.assets import AqwCache
@@ -57,3 +59,27 @@ def test_preview_snapshot_command(tmp_path, qapp, monkeypatch, capsys):
     write_mini_cache(tmp_path / "cache"); monkeypatch.setenv("AUTOSWF_CACHE", str(tmp_path / "cache"))
     assert main(["preview", str(kit), "--armor", "TestArmor", "--snapshot", str(out), "--label", "Walk", "--frames", "2"]) == 0
     assert QImage(str(out)).size().toTuple() == (800, 600)
+
+
+def root_class_helm() -> bytes:
+    """A helm whose class is the main timeline (SymbolClass id 0), plus a class bound to nothing drawable."""
+    from swf_builders import place2, shape_tag, swf, symbol_class
+    disc = {"fill1": 1, "start": (-20, -20), "edges": [(20, -20), (20, 20), (-20, 20), (-20, -20)]}
+    return swf([shape_tag(1, 3, fills=[("solid", (0, 0, 0, 255))], lines=[], paths=[disc]), place2(1, cid=1),
+                symbol_class({0: "Kit", 7: "Ghost"})])
+
+
+def test_root_class_and_corrupt_helms_in_the_cli(tmp_path, qapp, monkeypatch, capsys):
+    from autoswf.cli import main
+    write_mini_cache(tmp_path / "cache"); monkeypatch.setenv("AUTOSWF_CACHE", str(tmp_path / "cache"))
+    root, bad, out = tmp_path / "root.swf", tmp_path / "bad.swf", tmp_path / "shot.png"
+    root.write_bytes(root_class_helm())
+    bad.write_bytes(b"CWS\x0f" + struct.pack("<I", 500) + b"junk")
+    assert main(["preview", str(root), "--armor", "TestArmor", "--snapshot", str(out)]) == 0
+    assert main(["render", str(root), "--class", "Kit", "--out", str(out)]) == 0
+    capsys.readouterr()
+    assert main(["preview", str(bad), "--armor", "TestArmor", "--snapshot", str(out)]) == 1
+    assert "bad.swf is not a valid SWF file" in capsys.readouterr().out
+    assert main(["render", str(bad), "--class", "Kit", "--out", str(out)]) == 1
+    assert main(["render", str(root), "--class", "Ghost", "--out", str(out)]) == 1
+    assert "cannot be drawn" in capsys.readouterr().out

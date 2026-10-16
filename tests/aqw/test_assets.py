@@ -1,11 +1,14 @@
 # tests/aqw/test_assets.py
 import json
+import struct
 import threading
+import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 from autoswf.aqw.assets import AqwCache, DownloadError, download_reference_files
 
-SWF_BYTES = b"FWS\x0f" + bytes(20)
+SWF_BYTES = b"FWS\x0f" + struct.pack("<I", 24) + bytes(16)     # a complete (if empty) uncompressed SWF
+DROP = object()                                                 # served as a long body cut after a few bytes
 QUIET = {"progress": lambda message: None}
 
 @pytest.fixture
@@ -15,6 +18,10 @@ def server():
         def do_GET(self):
             hits.append(self.path)
             body = files.get(self.path)
+            if body is DROP:
+                self.send_response(200); self.send_header("Content-Length", "100000"); self.end_headers()
+                self.wfile.write(b"FWS\x0f")
+                return
             self.send_response(200 if body is not None else 404); self.end_headers()
             if body is not None:
                 self.wfile.write(body)
@@ -66,3 +73,32 @@ def test_download_command(tmp_path, server, capsys, monkeypatch):
     files, hits, url = server; publish(files); monkeypatch.setenv("AUTOSWF_CACHE", str(tmp_path))
     assert main(["download-aqw", "--armor", "TestArmor", "--base-url", url]) == 0
     assert "never shared" in capsys.readouterr().out and AqwCache(tmp_path).missing("TestArmor") == []
+
+
+def test_dropped_connections_and_truncated_files_raise_download_errors(tmp_path, server):
+    files, hits, url = server; publish(files)
+    files["/game/gamefiles/classes/M/TestArmor.swf"] = DROP
+    with pytest.raises(DownloadError, match="classes/M/TestArmor.swf"):
+        download_reference_files(AqwCache(tmp_path), armor="TestArmor", base_url=url, **QUIET)
+    files["/game/gamefiles/classes/M/TestArmor.swf"] = b"CWS\x0f" + struct.pack("<I", 5000) + zlib.compress(bytes(4000))[:20]
+    with pytest.raises(DownloadError, match="classes/M/TestArmor.swf"):
+        download_reference_files(AqwCache(tmp_path), armor="TestArmor", base_url=url, **QUIET)
+    assert not AqwCache(tmp_path).armor_path("M", "TestArmor").exists()
+
+
+def test_a_failed_client_update_keeps_the_previous_client(tmp_path, server):
+    files, hits, url = server; publish(files, client="Game1.swf")
+    cache = AqwCache(tmp_path)
+    download_reference_files(cache, armor="TestArmor", base_url=url, **QUIET)
+    files["/game/api/data/gameversion"] = json.dumps({"sFile": "Game2.swf"}).encode()      # not on the server yet
+    with pytest.raises(DownloadError, match="Game2.swf"):
+        download_reference_files(cache, armor="TestArmor", base_url=url, **QUIET)
+    assert cache.client_path() == tmp_path / "aqw" / "gamefiles" / "Game1.swf"
+
+
+def test_save_failures_are_download_errors(tmp_path, server):
+    files, hits, url = server; publish(files)
+    (tmp_path / "aqw" / "gamefiles").mkdir(parents=True)
+    (tmp_path / "aqw" / "gamefiles" / "classes").write_text("a file where a folder should be")
+    with pytest.raises(DownloadError, match="Could not save"):
+        download_reference_files(AqwCache(tmp_path), armor="TestArmor", base_url=url, **QUIET)

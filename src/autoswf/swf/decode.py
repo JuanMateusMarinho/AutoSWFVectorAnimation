@@ -3,8 +3,10 @@
 Characters are decoded lazily: the constructor only indexes the tags. Edge coordinates stay in integer twips
 (exact joins between edges); everything else is in pixels.
 """
+import lzma
 import os
 import struct
+import zlib
 from dataclasses import dataclass, field, replace
 from typing import Literal
 
@@ -392,8 +394,19 @@ class MovieData:
     """A decoded SWF. `cache` is free memo space for the runtime and render layers (per movie)."""
 
     def __init__(self, source: bytes | str | os.PathLike):
-        raw = source if isinstance(source, (bytes, bytearray)) else open(source, "rb").read()
-        _, self.version, _, self._d = decompress(bytes(raw))
+        """Raises ValueError (naming the file) for anything that is not a complete, readable SWF."""
+        is_data = isinstance(source, (bytes, bytearray))
+        raw = source if is_data else open(source, "rb").read()
+        try:
+            _, self.version, length, self._d = decompress(bytes(raw))
+            if len(self._d) + 8 < length:
+                raise ValueError("the file is truncated")
+            self._read(len(self._d))
+        except (ValueError, IndexError, struct.error, zlib.error, lzma.LZMAError, EOFError) as e:
+            name = "This data" if is_data else os.path.basename(os.fspath(source))
+            raise ValueError("%s is not a valid SWF file (%s)" % (name, e)) from e
+
+    def _read(self, end: int) -> None:
         r = R(self._d, 0)
         self.size = _bounds(r)
         self.frame_rate = r.u16() / 256
@@ -404,7 +417,7 @@ class MovieData:
         self._chars: dict[int, ShapeDef | MorphShapeDef | SpriteDef | None] = {}
         self._abc_blocks: list[bytes] = []
         self._abcs: list[ABC] | None = None
-        frames, labels = self._timeline(r.p, len(self._d), top=True)
+        frames, labels = self._timeline(r.p, end, top=True)
         self.root = _sprite(0, frame_count, frames, labels)
         self._names = {cid: name for name, cid in self.classes.items()}
 
@@ -423,6 +436,9 @@ class MovieData:
         return self._abcs
 
     def character(self, char_id: int) -> ShapeDef | MorphShapeDef | SpriteDef | None:
+        """Character 0 is the main timeline (a class bound to it in SymbolClass is the document class)."""
+        if char_id == 0:
+            return self.root
         if char_id in self._chars:
             return self._chars[char_id]
         entry = self._index.get(char_id)

@@ -12,7 +12,7 @@ from autoswf.model.geometry import Matrix
 from autoswf.render.colors import PlayerColors
 from autoswf.render.effects import array_to_qimage, qimage_to_array
 from autoswf.render.painter import Renderer, object_bounds
-from autoswf.swf.decode import MovieData
+from autoswf.swf.decode import MorphShapeDef, MovieData, ShapeDef, SpriteDef
 
 RGBA = tuple[int, int, int, int]
 GENDERS = ("M", "F")
@@ -26,7 +26,9 @@ class MissingReferenceFiles(Exception):
 
 
 def find_helm_link(movie: MovieData, file_name: str = "the file") -> str:
-    candidates = [n for n in movie.classes if "." not in n and not n.endswith("_backhair")]
+    """The only exported class that could be the helm: no package, not the back hair, and drawable."""
+    candidates = [n for n, cid in movie.classes.items() if "." not in n and not n.endswith("_backhair")
+                  and isinstance(movie.character(cid), (SpriteDef, ShapeDef, MorphShapeDef))]
     if len(candidates) == 1:
         return candidates[0]
     raise ValueError("Could not find the helm class in %s; pass --link NAME" % file_name)
@@ -75,8 +77,14 @@ class PreviewScene:
             rig.colors = self.colors
 
     def set_helm(self, helm: MovieData | None, link: str | None) -> None:
+        """Swap the helm; on failure the scene keeps showing the previous one."""
+        previous = self.helm, self.helm_link
         self.helm, self.helm_link = helm, link
-        self._build()
+        try:
+            self._build()
+        except Exception:
+            self.helm, self.helm_link = previous
+            raise
 
     def tick(self) -> None:
         for rig in self.rigs.values():

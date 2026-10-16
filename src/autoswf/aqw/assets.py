@@ -1,14 +1,20 @@
 """AQW reference files: the local cache layout and the downloader. Downloads only happen when the user asks
 (the `download-aqw` command or the preview window's button); the files never leave the user's computer."""
+import http.client
 import json
+import lzma
 import os
 import re
+import struct
 import tempfile
 import urllib.error
 import urllib.request
+import zlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
+
+from autoswf.swf.reader import decompress
 
 GAME_BASE_URL = "https://game.aq.com/game"
 DEFAULT_ARMOR = "PalidanRevamp"
@@ -75,22 +81,39 @@ def _get(url: str, timeout: float) -> bytes:
             return response.read()
     except urllib.error.HTTPError as e:
         raise DownloadError("Could not download %s (HTTP %d)" % (url, e.code)) from e
-    except (urllib.error.URLError, OSError) as e:
-        raise DownloadError("Could not download %s (%s)" % (url, getattr(e, "reason", e))) from e
+    except (urllib.error.URLError, OSError, http.client.HTTPException, ValueError) as e:
+        reason = getattr(e, "reason", None) or str(e) or type(e).__name__
+        raise DownloadError("Could not download %s (%s)" % (url, reason)) from e
+
+
+def _check_swf(url: str, body: bytes) -> None:
+    """A complete SWF: known signature, and a body that decompresses to the length its header announces."""
+    if body[:3] not in SWF_SIGNATURES:
+        raise DownloadError("%s is not a SWF file" % url)
+    try:
+        _, _, length, data = decompress(body)
+    except (ValueError, zlib.error, lzma.LZMAError, EOFError, struct.error) as e:
+        raise DownloadError("%s is not a complete SWF file" % url) from e
+    if len(data) + 8 < length:
+        raise DownloadError("%s is not a complete SWF file" % url)
 
 
 def _save(path: Path, data: bytes) -> None:
     """Write next to the target and move into place, so a failure never leaves a partial file."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".part")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".part")
+    except OSError as e:
+        raise DownloadError("Could not save %s (%s)" % (path, e.strerror or e)) from e
     try:
         with os.fdopen(fd, "wb") as f:
             f.write(data)
         os.replace(tmp, path)
-    except BaseException:
+    except OSError as e:
+        raise DownloadError("Could not save %s (%s)" % (path, e.strerror or e)) from e
+    finally:
         if os.path.exists(tmp):
             os.remove(tmp)
-        raise
 
 
 def download_reference_files(cache: AqwCache, *, armor: str = DEFAULT_ARMOR, samples: bool = False,
@@ -108,19 +131,18 @@ def download_reference_files(cache: AqwCache, *, armor: str = DEFAULT_ARMOR, sam
         raise DownloadError("AQW returned an unexpected client name '%s'" % client)
     if not ARMOR_NAME.match(armor):
         raise DownloadError("'%s' is not a valid armor file name" % armor)
-    _save(cache.version_file(), answer)
 
     wanted = [client] + ["classes/%s/%s.swf" % (g, armor) for g in "MF"] + (list(SAMPLE_FILES) if samples else [])
     written = []
     for rel in wanted:
         target = cache.file_path(rel)
-        if target.exists() and not refresh:
-            continue
-        url = "%s/gamefiles/%s" % (base, rel)
-        body = _get(url, timeout)
-        if body[:3] not in SWF_SIGNATURES:
-            raise DownloadError("%s is not a SWF file" % url)
-        _save(target, body)
-        written.append(target)
-        progress("Downloaded %s (%d KB)" % (rel, max(1, len(body) // 1024)))
+        if refresh or not target.exists():
+            url = "%s/gamefiles/%s" % (base, rel)
+            body = _get(url, timeout)
+            _check_swf(url, body)
+            _save(target, body)
+            written.append(target)
+            progress("Downloaded %s (%d KB)" % (rel, max(1, len(body) // 1024)))
+        if rel == client:
+            _save(cache.version_file(), answer)     # only now: a failed update keeps the previous client usable
     return written

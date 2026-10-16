@@ -76,15 +76,22 @@ def _cmd_render(args) -> int:
     from autoswf.render.display import ScriptContext, instantiate, run_pending_actions, tick
     from autoswf.render.painter import render_fitted
     from autoswf.swf.decode import MovieData
-    movie = MovieData(args.file)
+    try:
+        movie = MovieData(args.file)
+    except (ValueError, OSError) as e:
+        print(e)
+        return 1
     char_id = movie.classes.get(args.class_name)
     if char_id is None:
         print("Class '%s' was not found in %s. Classes: %s" % (args.class_name, args.file, ", ".join(sorted(movie.classes))))
         return 1
+    obj = instantiate(movie, char_id)
+    if obj is None:
+        print("Class '%s' in %s cannot be drawn (it is not a MovieClip or shape)" % (args.class_name, args.file))
+        return 1
     _qt_app()
     colors = None if args.drawn_colors else PlayerColors()
     ctx = ScriptContext(colors)
-    obj = instantiate(movie, char_id)
     run_pending_actions(obj, ctx)
     for _ in range(args.frame):
         tick(obj, ctx)

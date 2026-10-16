@@ -1,8 +1,9 @@
 """PySide6 preview window: the helm on the AQW male and female bodies, the game's labels at 24 fps, player colors,
 morph check, and the user-initiated download of the AQW reference files."""
+import threading
 from pathlib import Path
 
-from PySide6.QtCore import QElapsedTimer, QObject, Qt, QThread, QTimer, Signal
+from PySide6.QtCore import QElapsedTimer, QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import (QApplication, QCheckBox, QColorDialog, QComboBox, QFileDialog, QGroupBox, QHBoxLayout,
                                QMainWindow, QMessageBox, QPushButton, QSlider, QVBoxLayout, QWidget)
@@ -53,10 +54,14 @@ class _Downloader(QObject):
         self._cache, self._armor = cache, armor
 
     def run(self) -> None:
+        """Runs on a daemon thread; always reports back, whatever happens."""
         try:
             download_reference_files(self._cache, armor=self._armor, progress=self.progress.emit)
         except DownloadError as e:
             self.finished.emit(str(e))
+            return
+        except Exception as e:
+            self.finished.emit("Unexpected error while downloading: %s" % e)
             return
         self.finished.emit("")
 
@@ -69,7 +74,7 @@ class PreviewWindow(QMainWindow):
         self.background = (51, 51, 51, 255)
         self.empty_message = "AQW reference files are not downloaded yet."
         self._morph_text, self._ticks_since_check = "", MORPH_CHECK_EVERY
-        self._thread = self._worker = None
+        self._worker = None
         self._update_title()
 
         self.canvas = _Canvas(self)
@@ -268,21 +273,27 @@ class PreviewWindow(QMainWindow):
         self._refresh_swatches()
         self.canvas.update()
 
-    def _on_open(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Open helm", "", "SWF files (*.swf)")
-        if not path:
-            return
+    def open_helm(self, path: str | Path) -> str | None:
+        """Show another helm; returns an error message (and keeps the current helm) when the file cannot be used."""
         try:
             helm = MovieData(path)
             link = find_helm_link(helm, Path(path).name)
+            if self.scene is not None:
+                self.scene.set_helm(helm, link)
         except (ValueError, OSError) as e:
-            QMessageBox.warning(self, "Cannot open helm", str(e))
-            return
+            return str(e)
         self.helm_path, self.link = Path(path), link
         self._update_title()
         if self.scene is not None:
-            self.scene.set_helm(helm, link)
             self._set_scene(self.scene)
+        return None
+
+    def _on_open(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Open helm", "", "SWF files (*.swf)")
+        if path:
+            error = self.open_helm(path)
+            if error:
+                QMessageBox.warning(self, "Cannot open helm", error)
 
     def _on_save(self) -> None:
         if self.scene is None:
@@ -296,13 +307,11 @@ class PreviewWindow(QMainWindow):
         if answer != QMessageBox.StandardButton.Yes:
             return
         self.download_button.setEnabled(False)
-        self._thread, self._worker = QThread(self), _Downloader(self.cache, self.armor)
-        self._worker.moveToThread(self._thread)
-        self._thread.started.connect(self._worker.run)
+        # A daemon thread: closing the window never waits for (or kills) a download in progress.
+        self._worker = _Downloader(self.cache, self.armor)
         self._worker.progress.connect(self.statusBar().showMessage)
         self._worker.finished.connect(self._on_downloaded)
-        self._worker.finished.connect(self._thread.quit)
-        self._thread.start()
+        threading.Thread(target=self._worker.run, name="aqw-download", daemon=True).start()
 
     def _on_downloaded(self, error: str) -> None:
         self.download_button.setEnabled(True)
@@ -318,9 +327,6 @@ class PreviewWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         self._timer.stop()
-        if self._thread is not None:
-            self._thread.quit()
-            self._thread.wait(5000)
         super().closeEvent(event)
 
 

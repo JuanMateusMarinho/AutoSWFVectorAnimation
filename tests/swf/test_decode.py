@@ -1,4 +1,6 @@
 # tests/swf/test_decode.py
+import struct
+
 import pytest
 from swf_builders import swf, shape_tag, morph_tag, sprite_tag, place2, place3, remove2, frame_label, symbol_class
 from autoswf.model.geometry import ColorTransform, Matrix
@@ -73,3 +75,17 @@ def test_place3_filters_blend_and_clip_depth():
 def test_unknown_characters_and_root_timeline():
     md = MovieData(swf([red_square(), place2(1, cid=1)]))
     assert md.character(99) is None and md.root.frame_count == 1 and md.root.frames[0][0].char_id == 1
+
+
+def test_corrupt_files_raise_a_clear_error(tmp_path):
+    bad = tmp_path / "bad.swf"
+    bad.write_bytes(b"CWS\x0f" + struct.pack("<I", 500) + b"not zlib data")
+    with pytest.raises(ValueError, match="bad.swf is not a valid SWF file"):
+        MovieData(bad)
+    with pytest.raises(ValueError, match="not a valid SWF file"):
+        MovieData(swf([red_square()])[:20])
+
+
+def test_class_bound_to_the_root_timeline_is_drawable():
+    md = MovieData(swf([red_square(), place2(1, cid=1), symbol_class({0: "Kit"})]))
+    assert md.character(0) is md.root and md.class_name(0) == "Kit"
