@@ -1,9 +1,0 @@
-pyproject.toml
-src/autoswf/__init__.py
-src/autoswf.egg-info/PKG-INFO
-src/autoswf.egg-info/SOURCES.txt
-src/autoswf.egg-info/dependency_links.txt
-src/autoswf.egg-info/requires.txt
-src/autoswf.egg-info/top_level.txt
-src/autoswf/abc/__init__.py
-src/autoswf/swf/__init__.py
