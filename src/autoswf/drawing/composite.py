@@ -109,7 +109,8 @@ def _draw_nodes(nodes: list[LayerNode], dst: np.ndarray, ctx: _Context) -> None:
     for node in nodes:
         if node.kind == "group":
             base_alpha = None
-            if not node.visible:
+            if not node.visible:               # like a hidden pixel base: hides the layers clipped to it
+                base_alpha = np.zeros(dst.shape[:2], np.float32)
                 continue
             if node.blend == "pass_through":
                 before = dst.copy() if node.opacity < 1 else None

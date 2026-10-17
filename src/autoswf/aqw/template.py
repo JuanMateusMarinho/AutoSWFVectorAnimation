@@ -24,7 +24,8 @@ PASS_STYLES = {"Shadow": ("multiply", True), "Occlusion": ("multiply", True), "L
 class Alignment:
     scale: float                               # source px per head unit
     origin: tuple[float, float]                # source pixel of the head origin
-    rotation: float = 0.0                      # degrees the drawing is turned clockwise on screen
+    rotation: float = 0.0                      # degrees to turn the drawing clockwise onto the head (a drawing that
+                                               # is itself turned clockwise needs a negative value)
 
     def matrix(self) -> Matrix:
         """Source px -> head-local px."""
@@ -38,7 +39,7 @@ class Alignment:
             values = [float(v) for v in text.split(",")]
         except ValueError:
             values = []
-        if len(values) not in (3, 4) or values[0] <= 0:
+        if len(values) not in (3, 4) or not all(map(math.isfinite, values)) or values[0] <= 0:
             raise ValueError("Alignment must look like SCALE,X,Y or SCALE,X,Y,DEGREES")
         return cls(values[0], (values[1], values[2]), values[3] if len(values) == 4 else 0.0)
 

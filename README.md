@@ -87,7 +87,7 @@ layers for each painting pass; art drawn on it lands on the head exactly (the `.
 | Role | Layer names it recognizes (English, Portuguese, Japanese) |
 |---|---|
 | Line | Line, Lineart, Ink, Outline, Linha, Contorno, 線画 |
-| Flat colors | Flats, Base, Colors, Fill, Cores chapadas, Cores, 下塗り |
+| Flat colors | Flats, Base, Colors, Fill, Cores chapadas, Cores, 下塗り, ベタ |
 | Shadow | Shadow, Shade, Sombra, 影 |
 | Occlusion shadow | Occlusion, AO, Oclusão, Sombra 2, Sombra escura |
 | Light | Light, Highlight, Glow, Luz, Brilho, ハイライト |
@@ -96,7 +96,8 @@ layers for each painting pass; art drawn on it lands on the head exactly (the `.
 
 Folders named like a pass give their role to the layers inside; other folders are treated as parts (Hair, Face…).
 Useful options: `--role "Layer 1=line"` (set a role by hand), `--align SCALE,X,Y[,DEG]` (where the head is, for
-drawings not made on the template), `--detail 0-100` (simpler or more faithful shapes, default 50), `--gradient Light`
+drawings not made on the template; DEG turns the drawing clockwise onto the head, so a drawing that is turned
+clockwise needs a negative DEG), `--detail 0-100` (simpler or more faithful shapes, default 50), `--gradient Light`
 (an SWF gradient instead of flat steps for a soft layer), `--separate-tones` (shadows and lights as their own shapes),
 `--list` (only show the layers and roles) and `--report` (measure the vector art against the drawing).
 
