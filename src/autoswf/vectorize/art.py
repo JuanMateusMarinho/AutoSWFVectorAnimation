@@ -95,7 +95,7 @@ def _face_colors(labels: np.ndarray, rgba: np.ndarray, count: int) -> list[RGBA]
     return out
 
 
-def _coverage(rgba: np.ndarray) -> np.ndarray:
+def stroke_coverage(rgba: np.ndarray) -> np.ndarray:
     """The pass with each stroke's alpha rescaled so half of the stroke's own peak lands on palette_labels' 0.5 cut:
     faint pencils, low-opacity layers and solid inks all keep their shape (their real opacity is restored later).
     Strokes touching only diagonally are bridged, so thin lines stay one 4-connected piece."""
@@ -183,7 +183,7 @@ def _under_lines(labels: np.ndarray, lines: np.ndarray) -> None:
     a seam, a fill reaching under its line does not. A fill grows into the line's coverage up to 1.5 px from the line's
     far edge, and only as deep as about twice that distance (so it never runs along a stroke that leaves the fill, and
     never appears under lines that touch no fill)."""
-    cover = _coverage(lines)[..., 3] >= 0.5
+    cover = stroke_coverage(lines)[..., 3] >= 0.5
     fill = labels >= 0
     zone = cover & ~fill
     if not zone.any() or not fill.any():
@@ -196,7 +196,7 @@ def _under_lines(labels: np.ndarray, lines: np.ndarray) -> None:
 
 
 def _fills(part: PartPasses, ds: DetailSettings, settings: VectorizeSettings, soft: np.ndarray):
-    flat = palette_labels(_coverage(part.flats), posterize=ds.posterize, min_pixels=ds.min_area)
+    flat = palette_labels(stroke_coverage(part.flats), posterize=ds.posterize, min_pixels=ds.min_area)
     tones = [t for t in part.tones if not t.gradient]
     levels = [_tone_levels(t.alpha, t.soft, settings.posterize_steps) for t in tones]
     code = (flat.labels + 1).astype(np.int64)                 # one int per (flat, tone levels) key: fast unique
@@ -232,7 +232,7 @@ def _fills(part: PartPasses, ds: DetailSettings, settings: VectorizeSettings, so
 
 
 def _simple(rgba: np.ndarray, ds: DetailSettings, origin, soft: np.ndarray):
-    li = palette_labels(_coverage(rgba), posterize=ds.posterize, min_pixels=ds.min_area)
+    li = palette_labels(stroke_coverage(rgba), posterize=ds.posterize, min_pixels=ds.min_area)
     labels, colors = _opacity_split(merge_small(li.labels, ds.min_area), li.colors, rgba[..., 3])
     if not colors:
         return None
@@ -288,7 +288,7 @@ def vectorize(passes: Passes, alignment: Alignment, settings: VectorizeSettings 
     return VectorArt(layers, alignment, notes, soft, ds.fit.tolerance)
 
 
-def _recolored(layer: TracedLayer, name: str, mapping: list[FaceStyle | None]) -> TracedLayer:
+def recolored(layer: TracedLayer, name: str, mapping: list[FaceStyle | None]) -> TracedLayer:
     """The same geometry with each face i drawn as mapping[i] (None = empty); faces with equal styles share a fill
     and the edges between them are dropped."""
     styles, index = [], {}
@@ -309,11 +309,11 @@ def _recolored(layer: TracedLayer, name: str, mapping: list[FaceStyle | None]) -
 def split_tones(layer: TracedLayer) -> list[TracedLayer]:
     """[base (flat colors only), one layer per tone role] with the same edges, for color-custom clips (Plan 4)."""
     base = [FaceStyle(s.flat, s.flat) if s.flat is not None else None for s in layer.styles]
-    out = [_recolored(layer, layer.name + " base", base)]
+    out = [recolored(layer, layer.name + " base", base)]
     for role in TONE_ROLES:
         mapping = [s if role in dict(s.tones) else None for s in layer.styles]
         if any(mapping):
-            out.append(_recolored(layer, "%s %s" % (layer.name, role), mapping))
+            out.append(recolored(layer, "%s %s" % (layer.name, role), mapping))
     return out
 
 
