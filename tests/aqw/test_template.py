@@ -21,6 +21,11 @@ def test_alignment_matrix_parse_and_print():
     with pytest.raises(ValueError, match="Alignment must look like SCALE,X,Y or SCALE,X,Y,DEGREES"):
         Alignment.parse("big")
 
+def test_a_drawing_turned_clockwise_needs_a_negative_rotation():
+    # The head's "up" (0, -1) in a drawing turned 90° clockwise points right, to (1, 0).
+    up = Alignment(1, (0, 0), -90).matrix().apply(Point(1, 0))
+    assert up.x == pytest.approx(0, abs=1e-9) and up.y == pytest.approx(-1)
+
 def test_fit_alignment_puts_the_art_on_the_head():
     m = fit_alignment((100, 300, 50, 350)).matrix()
     hx, hy = (HEAD_BOX[0] + HEAD_BOX[1]) / 2, (HEAD_BOX[2] + HEAD_BOX[3]) / 2

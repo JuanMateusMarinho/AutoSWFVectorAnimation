@@ -24,7 +24,8 @@ PASS_STYLES = {"Shadow": ("multiply", True), "Occlusion": ("multiply", True), "L
 class Alignment:
     scale: float                               # source px per head unit
     origin: tuple[float, float]                # source pixel of the head origin
-    rotation: float = 0.0                      # degrees the drawing is turned clockwise on screen
+    rotation: float = 0.0                      # degrees to turn the drawing clockwise onto the head (a drawing that
+                                               # is itself turned clockwise needs a negative value)
 
     def matrix(self) -> Matrix:
         """Source px -> head-local px."""

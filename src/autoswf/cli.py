@@ -351,7 +351,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--role", action="append", default=[], metavar="LAYER=ROLE",
                    help="set a layer's role: line, flat, shadow, occlusion, light, details or ignore (repeatable)")
     p.add_argument("--align", metavar="SCALE,X,Y[,DEG]",
-                   help="drawing pixels per head unit, the pixel of the head origin, and an optional rotation")
+                   help="drawing pixels per head unit, the pixel of the head origin, and an optional rotation: DEG "
+                        "turns the drawing clockwise onto the head (a drawing that is turned clockwise needs a "
+                        "negative DEG)")
     p.add_argument("--gradient", action="append", default=[], metavar="LAYER",
                    help="draw this soft shadow/occlusion/light layer as an SWF gradient instead of flat steps")
     p.add_argument("--separate-tones", action="store_true",
