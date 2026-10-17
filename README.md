@@ -9,7 +9,8 @@ accessories), animates them Flash-style (blinking eyes, swaying hair, light clot
 color customization, shows the item on the AQW body, and exports a SWF ready for the game.
 
 > **Status: early development.** Phase 1 (helms and morph helms) is being built. Done so far: the SWF engine
-> (AQW-valid helm export) and the preview of a helm on the AQW male and female bodies.
+> (AQW-valid helm export), the preview of a helm on the AQW male and female bodies, and the conversion of a layered
+> drawing (`.clip`, `.psd`, `.png`) into a static vector helm.
 
 ## Why
 
@@ -70,6 +71,34 @@ Documentation:
 .venv/Scripts/python -m autoswf demo-helm cache/demo.swf
 .venv/Scripts/python -m autoswf preview cache/demo.swf
 ```
+
+### Convert a drawing
+
+```bash
+.venv/Scripts/python -m autoswf template cache/template.psd --clip cache/template.clip
+.venv/Scripts/python -m autoswf convert my-helm.clip -o cache/my-helm.swf --report
+.venv/Scripts/python -m autoswf preview cache/my-helm.swf
+```
+
+`template` writes a 2000 x 2000 canvas with the AQW male and female heads on locked `AQW Guide` layers and empty
+layers for each painting pass; art drawn on it lands on the head exactly (the `.clip` version is experimental — use the
+`.psd` if Clip Studio Paint does not open it). `convert` finds each layer's role from its name:
+
+| Role | Layer names it recognizes (English, Portuguese, Japanese) |
+|---|---|
+| Line | Line, Lineart, Ink, Outline, Linha, Contorno, 線画 |
+| Flat colors | Flats, Base, Colors, Fill, Cores chapadas, Cores, 下塗り |
+| Shadow | Shadow, Shade, Sombra, 影 |
+| Occlusion shadow | Occlusion, AO, Oclusão, Sombra 2, Sombra escura |
+| Light | Light, Highlight, Glow, Luz, Brilho, ハイライト |
+| Details | Details, Detalhes, Extras |
+| Not used | Paper, Background, Sketch, Rascunho, Reference, `AQW Guide …`, hidden layers |
+
+Folders named like a pass give their role to the layers inside; other folders are treated as parts (Hair, Face…).
+Useful options: `--role "Layer 1=line"` (set a role by hand), `--align SCALE,X,Y[,DEG]` (where the head is, for
+drawings not made on the template), `--detail 0-100` (simpler or more faithful shapes, default 50), `--gradient Light`
+(an SWF gradient instead of flat steps for a soft layer), `--separate-tones` (shadows and lights as their own shapes),
+`--list` (only show the layers and roles) and `--report` (measure the vector art against the drawing).
 
 `download-aqw` fetches the current AQW game client and one armor (for the preview body) from AQW's public server.
 AQW files are only downloaded when you ask, stay on your computer (in `cache/`), and are never committed or shared.

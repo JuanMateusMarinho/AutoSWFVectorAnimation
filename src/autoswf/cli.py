@@ -1,7 +1,9 @@
-"""Command line: `python -m autoswf inspect FILE` and `python -m autoswf demo-helm OUT.swf`."""
+"""Command line: inspect, demo-helm, render, download-aqw, preview, fidelity, convert and template."""
 import argparse
 import sys
 from pathlib import Path
+
+import numpy as np
 
 from autoswf.aqw.contract import sanitize_link
 from autoswf.aqw.helm import HelmItem, export_helm
@@ -174,6 +176,125 @@ def _cmd_fidelity(args) -> int:
     return 1 if failed else 0
 
 
+BACKGROUND_NAMES = ("paper", "papel", "background", "bg", "fundo", "用紙")
+
+
+def _role_reason(node, ancestors, role, siblings) -> str:
+    from autoswf.drawing.roles import IGNORE, detect_role
+    if role.source == "hidden":
+        return "hidden"
+    if role.source == "guide":
+        return "ignored: guide"
+    if role.source == "override":
+        return "--role"
+    if role.source == "folder":
+        folder = next(a.name for a in reversed(ancestors) if detect_role(a.name))
+        return "folder '%s'" % folder
+    if role.source == "clipped":
+        base = next(s for s in reversed(siblings[:siblings.index(node)]) if not s.clipping)
+        return "clipped to '%s'" % base.name
+    if role.role == IGNORE:
+        words = node.name.casefold().split()
+        return "ignored: background" if any(w in BACKGROUND_NAMES for w in words) else "ignored: sketch or reference"
+    if role.role is None:
+        return 'no role in its name; pass --role "%s=line"' % node.name
+    return "name"
+
+
+def _parse_roles(items: list[str]) -> dict[str, str]:
+    roles = {}
+    for item in items:
+        layer, sep, role = item.rpartition("=")
+        if not sep or not layer:
+            raise ValueError('Roles look like "LAYER=ROLE", for example --role "Layer 1=line"')
+        roles[layer] = role.strip()
+    return roles
+
+
+def _cmd_convert(args) -> int:
+    from autoswf.aqw.template import Alignment, choose_alignment
+    from autoswf.drawing.layers import DrawingError
+    from autoswf.drawing.passes import extract_passes
+    from autoswf.drawing.readers import read_drawing
+    from autoswf.drawing.roles import IGNORE, assign_roles
+    from autoswf.vectorize.art import VectorizeSettings, helm_from_art, vectorize
+    from autoswf.vectorize.metrics import quality_report
+    out = Path(args.out) if args.out else Path(args.drawing).with_suffix(".swf")
+    if out.resolve() == Path(args.drawing).resolve():
+        print("The output %s would overwrite the drawing; choose another name" % out.name)
+        return 1
+    if out.suffix.lower() != ".swf":
+        print("The output must be a .swf file (got %s)" % out.name)
+        return 1
+    try:
+        overrides = _parse_roles(args.role)
+        override = Alignment.parse(args.align) if args.align else None
+        link = sanitize_link(args.link or out.stem)
+        drawing = read_drawing(args.drawing)
+        roles = assign_roles(drawing, overrides)
+    except (DrawingError, ValueError) as e:
+        print(e)
+        return 1
+    layers = [(n, a) for n, a in drawing.walk() if n.kind != "group"]
+    print("Opened %s (%d x %d, %d layers)" % (Path(args.drawing).name, drawing.width, drawing.height, len(layers)))
+    for node, ancestors in layers:
+        role = roles[node]
+        siblings = ancestors[-1].children if ancestors else drawing.layers
+        shown = role.role if role.role not in (None, IGNORE) else "not used"
+        path = "/".join([a.name for a in ancestors] + [node.name])
+        print("  %s  %s  (%s)" % (path, shown, _role_reason(node, ancestors, role, siblings)))
+    if args.list:
+        return 0
+    try:
+        passes = extract_passes(drawing, roles, gradient_layers=frozenset(args.gradient))
+        ys, xs = np.nonzero(passes.full[..., 3] > 0)
+        alignment, reason = choose_alignment(drawing, (xs.min(), xs.max() + 1, ys.min(), ys.max() + 1), override)
+        art = vectorize(passes, alignment, VectorizeSettings(detail=args.detail))
+    except (DrawingError, ValueError) as e:
+        print(e)
+        return 1
+    for note in art.notes:
+        print(note)
+    print("Alignment: %s: --align %s" % (reason, alignment))
+    for layer in art.layers:
+        segments = sum(len(p.segments) for p in layer.shape.paths)
+        print("%s: %d region%s, %d segments" % (layer.name, len(layer.styles), "" if len(layer.styles) == 1 else "s", segments))
+    data = export_helm(helm_from_art(art, link, separate_tones=args.separate_tones))
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_bytes(data)
+    if len(data) > SIZE_WARNING_BYTES:
+        print("Warning: %s is larger than 200 KB; official helms are usually a few KB. Try a lower --detail." % out)
+    problems = validate_helm_swf(data, link)
+    for p in problems:
+        print("Problem: " + p)
+    if problems:
+        return 1
+    print("Wrote %s (%.1f KB, class %s) — valid" % (out, len(data) / 1024, link))
+    if args.report:
+        print(quality_report(passes, art, data, link).format())
+    return 0
+
+
+def _cmd_template(args) -> int:
+    from autoswf.aqw.assets import AqwCache, default_cache_dir
+    from autoswf.aqw.template import TEMPLATE_ORIGIN, TEMPLATE_SCALE, TEMPLATE_SIZE, write_template
+    from autoswf.swf.decode import MovieData
+    client = AqwCache(default_cache_dir()).client_path()
+    if client is None or not client.exists():
+        print("AQW reference files are missing: the game client. Run: python -m autoswf download-aqw")
+        return 1
+    clip = Path(args.clip) if args.clip else None
+    for path in (Path(args.out), clip):
+        if path is not None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+    write_template(MovieData(client), Path(args.out), clip=clip)
+    print("Wrote %s (%d x %d, head origin at %g,%g, %g px per head unit)"
+          % (args.out, *TEMPLATE_SIZE, *TEMPLATE_ORIGIN, TEMPLATE_SCALE))
+    if clip is not None:
+        print("Wrote %s (experimental: if Clip Studio Paint cannot open it, use the .psd)" % clip)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     reconfigure = getattr(sys.stdout, "reconfigure", None)
     if reconfigure:
@@ -222,5 +343,25 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--out", help="report folder (default: <cache>/fidelity)")
     p.add_argument("--zoom", type=float, default=4.0)
     p.set_defaults(run=_cmd_fidelity)
+    p = sub.add_parser("convert", help="turn a layered drawing (.clip, .psd or .png) into a vector helm SWF")
+    p.add_argument("drawing")
+    p.add_argument("-o", "--out", help="SWF to write (default: next to the drawing, with .swf)")
+    p.add_argument("--link", help="helm class name AQW loads (default: from the output file name)")
+    p.add_argument("--detail", type=int, default=50, help="0 = simplest shapes, 100 = most faithful (default: %(default)s)")
+    p.add_argument("--role", action="append", default=[], metavar="LAYER=ROLE",
+                   help="set a layer's role: line, flat, shadow, occlusion, light, details or ignore (repeatable)")
+    p.add_argument("--align", metavar="SCALE,X,Y[,DEG]",
+                   help="drawing pixels per head unit, the pixel of the head origin, and an optional rotation")
+    p.add_argument("--gradient", action="append", default=[], metavar="LAYER",
+                   help="draw this soft shadow/occlusion/light layer as an SWF gradient instead of flat steps")
+    p.add_argument("--separate-tones", action="store_true",
+                   help="draw shadow, occlusion and light as separate shapes over the flat colors")
+    p.add_argument("--report", action="store_true", help="measure the result against the drawing")
+    p.add_argument("--list", action="store_true", help="only list the layers and the role of each")
+    p.set_defaults(run=_cmd_convert)
+    p = sub.add_parser("template", help="write a drawing template with the AQW heads as guide layers")
+    p.add_argument("out", help="PSD file to write")
+    p.add_argument("--clip", help="also write a Clip Studio Paint .clip (experimental)")
+    p.set_defaults(run=_cmd_template)
     args = parser.parse_args(argv)
     return args.run(args)

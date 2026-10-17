@@ -90,3 +90,15 @@ def test_raster_cache_reuses_shapes_and_matches_direct_drawing(qapp):
     plain = direct.render_image(obj, 40, 40, Matrix(), None)
     assert cached.cache_hits >= 2 and direct.cache_hits == 0
     assert all(abs(a - b) <= 2 for y in range(40) for x in range(40) for a, b in zip(rgba(again, x, y), rgba(plain, x, y)))
+
+def test_fills_sharing_an_edge_leave_no_seam(qapp):
+    # one shape: red upper-right triangle and blue lower-left triangle share the diagonal (0,0)-(20,20)
+    paths = [{"fill1": 1, "start": (0, 0), "edges": [(20, 0), (20, 20)]},
+             {"fill1": 2, "start": (20, 20), "edges": [(0, 20), (0, 0)]},
+             {"fill0": 1, "fill1": 2, "start": (0, 0), "edges": [(20, 20)]}]
+    tags = [shape_tag(1, 3, fills=[("solid", RED), ("solid", BLUE)], lines=[], paths=paths)]
+    for renderer in (Renderer(), Renderer(cache_bytes=0)):
+        obj = instantiate(MovieData(swf(tags)), 1)
+        img = renderer.render_image(obj, 30, 30, Matrix.scale(1.0, 1.0), None)
+        assert min(rgba(img, x, y)[3] for x in range(1, 19) for y in range(1, 19)) >= 254
+        assert rgba(img, 15, 3) == RED and rgba(img, 3, 15) == BLUE
