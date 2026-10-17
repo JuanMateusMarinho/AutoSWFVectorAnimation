@@ -1,7 +1,9 @@
 """Fidelity check: render official classes with AutoSWF and with JPEXS FFDec (an independent renderer on the
 user's computer) and compare them. FFDec does not run ActionScript, so both sides use the drawn colors."""
+import hashlib
 import html
 import re
+import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -130,18 +132,28 @@ def _slug(text: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", text)
 
 
+def _file_key(path: Path) -> str:
+    """A readable name that is unique per file: classes/M/X.swf and classes/F/X.swf must not share an export folder."""
+    digest = hashlib.sha1(str(Path(path).resolve()).lower().encode("utf-8")).hexdigest()[:8]
+    return "%s_%s" % (_slug(Path(path).stem), digest)
+
+
 def run_fidelity(targets: list[tuple[Path, str]], ffdec_dir: Path, out_dir: Path, zoom: float = 4.0) -> list[FidelityRow]:
     groups: dict[Path, list[str]] = {}
     for path, name in targets:
         groups.setdefault(Path(path), []).append(name)
     out_dir = Path(out_dir)
+    for folder in (out_dir / "ffdec", out_dir / "ours"):     # a reused report folder must never mix in earlier renders
+        if folder.exists():
+            shutil.rmtree(folder)
     (out_dir / "ours").mkdir(parents=True, exist_ok=True)
     rows, images = [], {}
     for path, names in groups.items():
         movie = MovieData(path)
         ids = {n: movie.classes[n] for n in names if n in movie.classes}
+        key = _file_key(path)
         try:
-            refs = _ffdec_export(ffdec_dir, path, sorted(set(ids.values())), zoom, out_dir / "ffdec" / _slug(path.stem))
+            refs = _ffdec_export(ffdec_dir, path, sorted(set(ids.values())), zoom, out_dir / "ffdec" / key)
         except RuntimeError as e:
             rows += [FidelityRow(path.name, n, None, str(e), False, None) for n in names]
             continue
@@ -150,7 +162,7 @@ def run_fidelity(targets: list[tuple[Path, str]], ffdec_dir: Path, out_dir: Path
                 rows.append(FidelityRow(path.name, name, None, "No reference image for this class", False, None))
                 continue
             ours = render_fitted(instantiate(movie, ids[name]), zoom, None)
-            ours_path = out_dir / "ours" / ("%s_%s.png" % (_slug(path.stem), _slug(name)))
+            ours_path = out_dir / "ours" / ("%s_%s.png" % (key, _slug(name)))
             ours.save(str(ours_path))
             result = compare_images(ours, QImage(str(refs[ids[name]])))
             passed = result.iou >= IOU_MIN and result.mean_error <= ERROR_MAX
