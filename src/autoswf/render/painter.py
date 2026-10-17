@@ -6,6 +6,7 @@ matrices it is given (Flash convention, px).
 import math
 from collections import OrderedDict
 
+import numpy as np
 from PySide6.QtCore import QPointF, QRect, QRectF, Qt
 from PySide6.QtGui import (QBrush, QColor, QGradient, QImage, QLinearGradient, QPainter, QPainterPath, QPen,
                            QRadialGradient, QTransform)
@@ -139,6 +140,7 @@ class Renderer:
         self._cache_size = 0
         self._colors: PlayerColors | None = None
         self._filter_scale = 1.0
+        self._pixels = np.empty(0, np.uint32)       # the seam-free fill layers' memory, kept between shapes
 
     def _cache_get(self, key):
         item = self._cache.get(key)
@@ -356,7 +358,7 @@ class Renderer:
                 painter.setBrush(drawable[0][1])
                 painter.drawPath(drawable[0][0])
             elif drawable:
-                _paint_fills_seamless(painter, transform, drawable)
+                self._paint_fills_seamless(painter, transform, drawable)
                 painter.setTransform(transform)
             painter.setBrush(Qt.BrushStyle.NoBrush)
             for index, path in strokes:
@@ -366,44 +368,51 @@ class Renderer:
                     painter.setPen(self._pen(style, brush, scale))
                     painter.drawPath(path)
 
+    def _paint_fills_seamless(self, painter: QPainter, transform: QTransform,
+                              fills: list[tuple[QPainterPath, QBrush]]) -> None:
+        """Draw the fills of one shape layer the way Flash does: their anti-aliased coverages add up, so two fills
+        sharing an edge cover its pixels completely (drawn one by one with source-over, the backdrop shows through as
+        a seam). Each fill is rasterized alone into one scratch layer, and the rasters are added up (premultiplied,
+        saturating) in a second layer, which is then drawn source-over. Qt's Plus mode adds exactly only when it
+        blits whole pixels: drawing a path with it saturates before the anti-aliased coverage is applied.
 
-def _paint_fills_seamless(painter: QPainter, transform: QTransform, fills: list[tuple[QPainterPath, QBrush]]) -> None:
-    """Draw the fills of one shape layer the way Flash does: their anti-aliased coverages add up, so two fills
-    sharing an edge cover its pixels completely (drawn one by one with source-over, the backdrop shows through as a
-    seam). Each fill is rasterized alone into one scratch layer, and the rasters are added up (premultiplied,
-    saturating) in a second layer, which is then drawn source-over. Qt's Plus mode adds exactly only when it blits
-    whole pixels: drawing a path with it saturates before the anti-aliased coverage is applied."""
-    device = painter.device()
-    full = QRect(0, 0, device.width(), device.height())
-    rects = [transform.mapRect(path.boundingRect()).toAlignedRect().adjusted(-1, -1, 1, 1).intersected(full)
-             for path, _ in fills]
-    union = QRect()
-    for r in rects:
-        if not r.isEmpty():
-            union = union.united(r)
-    if union.isEmpty():
-        return
-    sum_layer, total = _new_layer(union)
-    total.setCompositionMode(QPainter.CompositionMode.CompositionMode_Plus)
-    one, p = _new_layer(union)
-    p.setPen(Qt.PenStyle.NoPen)
-    shift = QTransform.fromTranslate(-union.x(), -union.y())
-    for (path, brush), r in zip(fills, rects):
-        if r.isEmpty():
-            continue
-        local = r.translated(-union.x(), -union.y())
-        p.resetTransform()
-        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
-        p.fillRect(local, Qt.GlobalColor.transparent)
-        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
-        p.setTransform(transform * shift)
-        p.setBrush(brush)
-        p.drawPath(path)
-        total.drawImage(local.topLeft(), one, local)
-    p.end()
-    total.end()
-    painter.resetTransform()
-    painter.drawImage(union.topLeft(), sum_layer)
+        Small fills cost more in overhead than in pixels, so: the layers live in memory the renderer keeps (fresh
+        memory for every shape cost a page fault per 4 KB on Windows), and a fill's box is cleared through the
+        scratch layer's numpy view, without changing its painter's mode and transform."""
+        device = painter.device()
+        width, height = device.width(), device.height()
+        boxes = []                                # (path, brush, x0, y0, x1, y1): device px, 1 px margin, clipped
+        for path, brush in fills:
+            x0, y0, x1, y1 = transform.mapRect(path.boundingRect()).getCoords()
+            x0, y0 = max(math.floor(x0) - 1, 0), max(math.floor(y0) - 1, 0)
+            x1, y1 = min(math.ceil(x1) + 1, width), min(math.ceil(y1) + 1, height)
+            if x0 < x1 and y0 < y1:
+                boxes.append((path, brush, x0, y0, x1, y1))
+        if not boxes:
+            return
+        ux, uy = min(b[2] for b in boxes), min(b[3] for b in boxes)
+        w, h = max(b[4] for b in boxes) - ux, max(b[5] for b in boxes) - uy
+        if self._pixels.size < 2 * w * h:
+            self._pixels = np.empty(2 * w * h, np.uint32)
+        sums, scratch = self._pixels[:w * h].reshape(h, w), self._pixels[w * h:2 * w * h].reshape(h, w)
+        sums[:] = 0
+        sum_layer, one = QImage(sums.data, w, h, 4 * w, ARGB), QImage(scratch.data, w, h, 4 * w, ARGB)
+        total = QPainter(sum_layer)
+        total.setCompositionMode(QPainter.CompositionMode.CompositionMode_Plus)
+        p = QPainter(one)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setTransform(transform * QTransform.fromTranslate(-ux, -uy))
+        for path, brush, x0, y0, x1, y1 in boxes:
+            x0, y0, x1, y1 = x0 - ux, y0 - uy, x1 - ux, y1 - uy
+            scratch[y0:y1, x0:x1] = 0
+            p.setBrush(brush)
+            p.drawPath(path)
+            total.drawImage(x0, y0, one, x0, y0, x1 - x0, y1 - y0)
+        p.end()
+        total.end()
+        painter.resetTransform()
+        painter.drawImage(ux, uy, sum_layer)
 
 
 def render_fitted(obj: DisplayObject, scale: float, colors: PlayerColors | None, padding: int = 2, *,
