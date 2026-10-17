@@ -51,3 +51,15 @@ def test_template_command(tmp_path, capsys, monkeypatch, qapp):
 def test_convert_the_users_real_clip_file(real_drawing, tmp_path, capsys, qapp):
     assert main(["convert", str(real_drawing), "-o", str(tmp_path / "real.swf")]) == 0
     assert "Paper  not used  (ignored: background)" in capsys.readouterr().out
+
+def test_convert_refuses_transparent_drawings_and_overwriting_the_drawing(tmp_path, capsys, qapp):
+    write_psd(tmp_path / "ghost.psd", 40, 40, [LayerSpec("Flats", rect(40, 40, (200, 0, 0, 255), 5, 5, 30, 30), opacity=0.0)])
+    assert main(["convert", str(tmp_path / "ghost.psd")]) == 1
+    assert "Nothing to vectorize" in capsys.readouterr().out
+    write_psd(tmp_path / "helm.psd", 40, 40, [LayerSpec("Flats", rect(40, 40, (200, 0, 0, 255), 5, 5, 30, 30))])
+    before = (tmp_path / "helm.psd").read_bytes()
+    assert main(["convert", str(tmp_path / "helm.psd"), "-o", str(tmp_path / "helm.psd")]) == 1
+    assert main(["convert", str(tmp_path / "helm.psd"), "-o", str(tmp_path / "helm.png")]) == 1
+    out = capsys.readouterr().out
+    assert "would overwrite the drawing" in out and "must be a .swf file" in out
+    assert (tmp_path / "helm.psd").read_bytes() == before and not (tmp_path / "helm.png").exists()

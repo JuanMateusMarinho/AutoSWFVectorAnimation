@@ -22,6 +22,8 @@ class ToneCoverage:
     soft: bool
     layers: tuple[str, ...]
     blends: tuple[str, ...] = ()
+    color: tuple[int, int, int] | None = None    # the layers' own paint color where they are strong
+    gradient: bool = False                       # drawn as an SWF gradient (left out of the fill composite)
 
 
 @dataclass
@@ -45,6 +47,7 @@ class Passes:
     full: np.ndarray                     # every used layer on the whole canvas
     flattened: bool
     notes: list[str] = field(default_factory=list)
+    gradient_layers: frozenset[str] = frozenset()
 
 
 def is_soft(alpha: np.ndarray) -> bool:
@@ -82,8 +85,37 @@ def _flattened(drawing: Drawing, roles: dict[LayerNode, LayerRole], notes: list[
     return Passes(drawing.width, drawing.height, [part], full, True, notes + sorted(cnotes))
 
 
-def extract_passes(drawing: Drawing, roles: dict[LayerNode, LayerRole]) -> Passes:
+def _paint_color(rgba: np.ndarray) -> tuple[int, int, int] | None:
+    alpha = rgba[..., 3]
+    if not alpha.any():
+        return None
+    strong = alpha >= 0.5 * alpha.max()
+    color = np.median(rgba[strong][:, :3] / alpha[strong][:, None], axis=0)
+    return tuple(int(round(v)) for v in np.clip(color, 0, 1) * 255)
+
+
+def _tone(drawing: Drawing, include, role: str, layers: list[LayerNode], box, gradient: bool) -> ToneCoverage | None:
+    own = composite(drawing, include, force_normal=True, box=box)
+    alpha = own[..., 3]
+    if not alpha.any():
+        return None
+    return ToneCoverage(role, alpha, is_soft(alpha), tuple(n.name for n in layers), tuple(n.blend for n in layers),
+                        _paint_color(own), gradient)
+
+
+def extract_passes(drawing: Drawing, roles: dict[LayerNode, LayerRole],
+                   gradient_layers: frozenset[str] = frozenset()) -> Passes:
+    """`gradient_layers`: tone layers (by name) to draw as SWF gradients; they stay out of the fill composite."""
+    tone_names = {n.name for n, r in roles.items() if r.role in TONE_ROLES}
+    missing = sorted(set(gradient_layers) - tone_names)
+    if missing:
+        raise ValueError("No tone layer named '%s' to draw with gradients (only shadow, occlusion and light layers "
+                         "can be gradients)" % missing[0])
     notes, cnotes = list(drawing.notes), set()
+    for node, role in roles.items():
+        if role.role in ROLES and node.kind == "pixel" and node.pixels is None:
+            notes.append("Layer '%s' (%s) is empty; if it is a vector layer, rasterize it in Clip Studio Paint "
+                         "(Layer > Rasterize) and save again" % (node.name, role.role))
     order = {node: i for i, (node, _) in enumerate(drawing.walk())}
     used = [n for n, r in roles.items() if r.role in ROLES and n.kind == "pixel" and n.pixels is not None]
     if drawing.flattened or not used:
@@ -94,7 +126,7 @@ def extract_passes(drawing: Drawing, roles: dict[LayerNode, LayerRole]) -> Passe
         parts.setdefault(roles[node].part, []).append(node)
     result = []
     for part, nodes in parts.items():
-        members = set(nodes)
+        members = {n for n in nodes if n.name not in gradient_layers}
 
         def only(*wanted, members=members):
             return lambda n: n in members and roles[n].role in wanted
@@ -108,13 +140,13 @@ def extract_passes(drawing: Drawing, roles: dict[LayerNode, LayerRole]) -> Passe
         box = (x0, y0, x1, y1)
         tones = []
         for role in TONE_ROLES:
-            layers = [n for n in nodes if roles[n].role == role]
-            if not layers:
-                continue
-            alpha = composite(drawing, only(role), force_normal=True, box=box)[..., 3]
-            if alpha.any():
-                tones.append(ToneCoverage(role, alpha, is_soft(alpha), tuple(n.name for n in layers),
-                                           tuple(n.blend for n in layers)))
+            plain = [n for n in nodes if roles[n].role == role and n.name not in gradient_layers]
+            if plain:
+                tones.append(_tone(drawing, only(role), role, plain, box, False))
+            for n in nodes:
+                if roles[n].role == role and n.name in gradient_layers:
+                    tones.append(_tone(drawing, lambda node, n=n: node is n, role, [n], box, True))
+        tones = [t for t in tones if t is not None]
         first = {}
         for group, group_roles in GROUPS:
             indexes = [order[n] for n in nodes if roles[n].role in group_roles]
@@ -135,6 +167,7 @@ def extract_passes(drawing: Drawing, roles: dict[LayerNode, LayerRole]) -> Passe
             tone_above_lines=bool(above)))
     used_set = set(used)
     full = composite(drawing, lambda n: n in used_set, notes=cnotes)
-    if not result:
-        raise DrawingError("Nothing to vectorize: every layer is empty, hidden or ignored")
-    return Passes(drawing.width, drawing.height, result, full, False, notes + sorted(cnotes))
+    if not result or not full[..., 3].any():
+        raise DrawingError("Nothing to vectorize: the layers with a role draw nothing visible (fully transparent, "
+                           "0 % opacity, or clipped to an empty layer)")
+    return Passes(drawing.width, drawing.height, result, full, False, notes + sorted(cnotes), frozenset(gradient_layers))

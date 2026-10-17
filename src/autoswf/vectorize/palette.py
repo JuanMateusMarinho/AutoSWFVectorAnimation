@@ -8,6 +8,7 @@ from scipy import ndimage
 RGBA = tuple[int, int, int, int]
 NEIGHBOR_RADIUS = 3
 MAX_STEPS = 8
+CHUNK = 1 << 16                  # pixels per block when comparing with the palette
 
 
 @dataclass
@@ -94,6 +95,22 @@ def _kmeans_steps(x: np.ndarray, limit: float) -> np.ndarray:
     return centers
 
 
+def _nearest(pixels: np.ndarray, allowed: np.ndarray | None, palette: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Index of and distance to the nearest palette color (only `allowed` ones when given), in chunks so memory stays
+    flat on big drawings."""
+    best = np.empty(len(pixels), np.int64)
+    dist = np.empty(len(pixels), np.float32)
+    pal = palette.astype(np.float32)
+    for i in range(0, len(pixels), CHUNK):
+        d = ((pixels[i:i + CHUNK, None, :].astype(np.float32) - pal[None]) ** 2).sum(axis=-1)
+        if allowed is not None:
+            d[~allowed[i:i + CHUNK]] = np.inf
+        b = np.argmin(d, axis=1)
+        best[i:i + CHUNK] = b
+        dist[i:i + CHUNK] = np.sqrt(d[np.arange(len(b)), b])
+    return best, dist
+
+
 def _presence(labels: np.ndarray, count: int, ys: np.ndarray, xs: np.ndarray) -> np.ndarray:
     """For the pixels (ys, xs): which labels lie within NEIGHBOR_RADIUS px (dilation done inside each label's box)."""
     present = np.zeros((len(ys), count), bool)
@@ -119,12 +136,7 @@ def palette_labels(rgba: np.ndarray, *, tolerance: float = 12.0, posterize: floa
     palette = _palette(color[pure], tolerance, min_pixels)
     labels = np.full(alpha.shape, -1, np.int32)
 
-    def nearest(pixels: np.ndarray, allowed: np.ndarray | None, pal: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        d = np.linalg.norm(pixels[:, None, :] - pal[None], axis=2)
-        if allowed is not None:
-            d = np.where(allowed, d, np.inf)
-        best = np.argmin(d, axis=1)
-        return best, d[np.arange(len(best)), best]
+    nearest = _nearest
 
     if len(palette):
         ys, xs = np.nonzero(pure)
@@ -171,8 +183,8 @@ def palette_labels(rgba: np.ndarray, *, tolerance: float = 12.0, posterize: floa
     out = []
     for i, c in enumerate(colors):
         a = alpha[labels == i]
-        median = float(np.median(a)) if a.size else 1.0
-        out.append(tuple(int(round(v)) for v in c) + (255 if median >= 0.98 else int(round(median * 255)),))
+        level = float(np.percentile(a, 95)) if a.size else 1.0     # thin strokes are mostly edge pixels
+        out.append(tuple(int(round(v)) for v in c) + (255 if level >= 0.98 else int(round(level * 255)),))
     return LabelImage(labels, out, frozenset(posterized))
 
 
@@ -212,12 +224,13 @@ def merge_small(labels: np.ndarray, min_area: int) -> np.ndarray:
                 continue                                     # already merged into something else
             ring = ndimage.binary_dilation(mask) & ~mask
             neighbors = region[ring]
-            if neighbors.size == 0:
-                continue
-            values, counts = np.unique(neighbors, return_counts=True)
-            if (values != -1).any():
-                counts = np.where(values == -1, -1, counts)
-            target = int(values[np.argmax(counts)])
+            if neighbors.size == 0:                          # the speck is the whole image: outside is empty
+                target = -1
+            else:
+                values, counts = np.unique(neighbors, return_counts=True)
+                if (values != -1).any():
+                    counts = np.where(values == -1, -1, counts)
+                target = int(values[np.argmax(counts)])
             if target != value:
                 region[mask] = target
                 changed = True

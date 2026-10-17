@@ -85,3 +85,66 @@ def test_one_tone_layer_with_two_tints_keeps_both():
     expected = sorted(tuple(int(round(v)) for v in blend("multiply", np.array(RED[:3]) / 255, np.array(c) / 255) * 255)
                       for c in (BLUE[:3], (230, 200, 120)))
     assert len(tinted) == 2 and np.abs(np.array(tinted) - np.array(expected)).max() <= 2
+
+def test_low_opacity_details_and_lines_keep_their_opacity():
+    specs = [LayerSpec("Flats", rect(W, H, RED, 0, 0, W, H)),
+             LayerSpec("Details", rect(W, H, (255, 255, 255, 255), 10, 70, 50, 110), opacity=0.3),
+             LayerSpec("Line", ring(W, H, INK, 30, 30, 18, 13)),
+             LayerSpec("Line 2", ring(W, H, INK, 90, 30, 18, 13), opacity=0.4)]
+    art = art_of(specs)
+    assert [l.name for l in art.layers] == ["Fills", "Details", "Line"]
+    (detail,) = art.layers[1].styles
+    assert detail.color[:3] == (255, 255, 255) and abs(detail.color[3] - 77) <= 6
+    alphas = sorted(s.color[3] for s in art.layers[2].styles)
+    assert len(alphas) == 2 and abs(alphas[0] - 102) <= 8 and alphas[1] == 255
+
+def test_thin_lines_stay_opaque_and_whole(qapp):
+    from PySide6.QtCore import QPointF, Qt
+    from PySide6.QtGui import QColor, QPen
+    from drawings import _qt_layer
+    from autoswf.vectorize.metrics import _inverse, _render
+    strokes = [(3, (10, 15, 110, 15)), (2, (10, 30, 90, 110)), (1.5, (30, 30, 110, 110)), (1, (10, 50, 100, 83)),
+               (1, (40, 10, 110, 80))]
+    def paint(p):
+        for width, (x0, y0, x1, y1) in strokes:
+            pen = QPen(QColor(*INK[:3])); pen.setWidthF(width); pen.setCapStyle(Qt.PenCapStyle.FlatCap)
+            p.setPen(pen); p.drawLine(QPointF(x0, y0), QPointF(x1, y1))
+    light = (240, 230, 200, 255)
+    specs = [LayerSpec("Flats", rect(W, H, light, 0, 0, W, H)), LayerSpec("Line", _qt_layer(W, 1.0, (0, 0), paint))]
+    d = drawing_from_specs(W, H, specs)
+    passes = extract_passes(d, assign_roles(d))
+    art = vectorize(passes, Alignment(4, (60, 60)))
+    assert all(s.color[3] >= 250 for s in art.layers[-1].styles)
+    image = _render(export_helm(helm_from_art(art, "T")), "T", W, H, _inverse(art.alignment.matrix()))
+    luma = image[..., :3] @ np.array([0.3, 0.59, 0.11]) * 255
+    for width, (x0, y0, x1, y1) in strokes:
+        t = np.linspace(0.1, 0.9, 20)
+        xs, ys = (x0 + (x1 - x0) * t).astype(int), (y0 + (y1 - y0) * t).astype(int)
+        dark = [min(luma[y - 1:y + 2, x - 1:x + 2].min(), 255) < 150 for x, y in zip(xs, ys)]
+        assert sum(dark) >= 17, (width, (x0, y0, x1, y1), sum(dark))
+
+def test_fills_never_cover_lines_below_them_or_hide_under_lone_lines():
+    under = art_of([LayerSpec("Line", ring(W, H, INK, 60, 60, 47, 40)), LayerSpec("Flats", disc(W, H, RED, 60, 60, 40))])
+    assert [l.name for l in under.layers] == ["Line", "Fills"]
+    lone = art_of([LayerSpec("Flats", disc(W, H, RED, 40, 60, 25)), LayerSpec("Line", ring(W, H, INK, 95, 60, 15, 11))])
+    (face,) = lone.layers[0].styles
+    for art, x in ((under, 104), (lone, 108)):          # inside the ring's stroke, away from the flats: no fill there
+        from autoswf.aqw.helm import HelmItem
+        from autoswf.model.document import Frame, Placement, Symbol
+        from autoswf.model.geometry import Matrix
+        from autoswf.render.display import ScriptContext, instantiate, run_pending_actions
+        from autoswf.render.effects import qimage_to_array
+        from autoswf.render.painter import Renderer
+        from autoswf.swf.decode import MovieData
+        fills = next(l for l in art.layers if l.role == "fills")
+        md = MovieData(export_helm(HelmItem("F", Symbol("F", [Frame([Placement(fills.shape, 1)])]))))
+        obj = instantiate(md, md.classes["F"]); run_pending_actions(obj, ScriptContext(None))
+        img = qimage_to_array(Renderer().render_image(obj, W, H, Matrix.scale(4, 4) @ Matrix.translate(15, 15), None))
+        assert img[60, x, 3] == 0
+
+def test_translucent_flats_keep_their_opacity_and_empty_results_are_errors():
+    from autoswf.drawing.layers import DrawingError
+    (face,) = art_of([LayerSpec("Flats", disc(W, H, RED, 60, 60, 40), opacity=0.4)]).layers[0].styles
+    assert face.color[:3] == RED[:3] and abs(face.color[3] - 102) <= 6
+    with pytest.raises(DrawingError, match="Nothing was traced"):
+        art_of([LayerSpec("Line", rect(W, H, INK, 10, 10, 12, 12))])

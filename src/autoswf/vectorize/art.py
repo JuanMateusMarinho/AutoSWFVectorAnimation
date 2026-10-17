@@ -8,6 +8,7 @@ from scipy import ndimage
 
 from autoswf.aqw.helm import HelmItem
 from autoswf.aqw.template import Alignment
+from autoswf.drawing.layers import DrawingError
 from autoswf.drawing.passes import PartPasses, Passes
 from autoswf.drawing.roles import TONE_ROLES
 from autoswf.model.document import Frame, Placement, Symbol
@@ -44,13 +45,13 @@ class VectorArt:
     alignment: Alignment
     notes: list[str]
     soft: np.ndarray                              # canvas-sized: posterized areas (left out of color metrics)
+    tolerance: float = 0.8                        # curve fitting tolerance used, source px
 
 
 @dataclass(frozen=True)
 class VectorizeSettings:
     detail: int = 50
     posterize_steps: int = 3
-    gradient_layers: frozenset[str] = field(default_factory=frozenset)
 
 
 def _straight(rgba: np.ndarray) -> np.ndarray:
@@ -89,18 +90,64 @@ def _face_colors(labels: np.ndarray, rgba: np.ndarray, count: int) -> list[RGBA]
         inner = ndimage.binary_erosion(mask)
         pick = inner if inner.any() else mask
         c = np.median(color[box][pick], axis=0)
-        a = float(np.median(alpha[box][pick]))
+        a = float(np.percentile(alpha[box][pick], 95))
         out.append(tuple(int(round(v)) for v in c) + (255 if a >= 0.98 else int(round(a * 255)),))
     return out
 
 
-def _rescaled(rgba: np.ndarray) -> np.ndarray:
-    """Alpha rescaled so the pass's own relative threshold lands on 0.5 (faint pencils and solid inks alike)."""
-    threshold = relative_threshold(rgba[..., 3])
-    out = rgba * (0.5 / max(threshold, 1e-6))
+def _coverage(rgba: np.ndarray) -> np.ndarray:
+    """The pass with each stroke's alpha rescaled so half of the stroke's own peak lands on palette_labels' 0.5 cut:
+    faint pencils, low-opacity layers and solid inks all keep their shape (their real opacity is restored later).
+    Strokes touching only diagonally are bridged, so thin lines stay one 4-connected piece."""
+    alpha = rgba[..., 3]
+    strokes, count = ndimage.label(alpha > 0.02, structure=np.ones((3, 3)))
+    if count == 0:
+        return rgba
+    peak = np.zeros(count + 1, np.float32)
+    peak[1:] = ndimage.maximum(alpha, strokes, index=np.arange(1, count + 1))
+    scale = np.where(strokes > 0, 1.0 / np.maximum(peak[strokes], 1e-6), 1.0)
+    out = rgba * scale[..., None]
     over = out[..., 3] > 1
     out[over] /= out[over][:, 3:4]
+    for _ in range(2):
+        solid = out[..., 3] >= 0.5
+        for flip in (False, True):
+            s = solid[:, ::-1] if flip else solid
+            a = out[:, ::-1, 3] if flip else out[..., 3]
+            gap = s[:-1, :-1] & s[1:, 1:] & ~s[:-1, 1:] & ~s[1:, :-1]
+            ys, xs = np.nonzero(gap)
+            if not len(ys):
+                continue
+            right_better = a[ys, xs + 1] >= a[ys + 1, xs]          # turn on the stronger of the two corner pixels
+            ty = np.where(right_better, ys, ys + 1)
+            tx = np.where(right_better, xs + 1, xs)
+            sx = xs
+            if flip:
+                tx, sx = out.shape[1] - 1 - tx, out.shape[1] - 1 - xs
+            source = out[ys, sx]                                     # paint it with the stroke's own color
+            out[ty, tx, :3] = source[:, :3] / np.maximum(source[:, 3:4], 1e-6) * 0.5
+            out[ty, tx, 3] = 0.5
     return out
+
+
+def _opacity_split(labels: np.ndarray, colors: list[RGBA], alpha: np.ndarray) -> tuple[np.ndarray, list[RGBA]]:
+    """Each connected piece of a label gets the real opacity of its stroke (95th percentile of the pass's own alpha):
+    a 40 % line next to a 100 % line of the same color becomes its own face."""
+    out = np.full(labels.shape, -1, np.int32)
+    styles: dict[RGBA, int] = {}
+    count = int(labels.max()) + 1 if labels.size else 0
+    for value, box in enumerate(ndimage.find_objects(labels + 1, max_label=count)):
+        if box is None:
+            continue
+        pieces, n = ndimage.label(labels[box] == value, structure=np.ones((3, 3)))
+        levels = ndimage.labeled_comprehension(alpha[box], pieces, np.arange(1, n + 1),
+                                               lambda a: np.percentile(a, 95), np.float64, 0.0)
+        for piece, level in enumerate(levels, start=1):
+            a = 255 if level >= 0.98 else max(1, int(round(level * 255)))
+            style = tuple(colors[value][:3]) + (a,)
+            index = styles.setdefault(style, len(styles))
+            out[box][pieces == piece] = index
+    return out, list(styles)
 
 
 def _paste(canvas: np.ndarray, mask: np.ndarray, origin: tuple[int, int]) -> None:
@@ -132,18 +179,25 @@ def _split_tints(labels: np.ndarray, keys: np.ndarray, fills: np.ndarray, ds: De
 
 
 def _under_lines(labels: np.ndarray, lines: np.ndarray) -> None:
-    """Fills that stop where the line art starts are extended under the line's opaque core (as Animate artists draw
-    them): two shapes that only touch leave a seam, a fill tucked under its line does not."""
-    core = ndimage.binary_erosion(lines[..., 3] >= 0.99)
-    grow = core & (labels < 0)
-    if grow.any() and (labels >= 0).any():
-        nearest = ndimage.distance_transform_edt(labels < 0, return_distances=False, return_indices=True)
-        labels[grow] = labels[nearest[0][grow], nearest[1][grow]]
+    """Fills tuck under the line art drawn over them (as Animate artists draw them): two shapes that only touch leave
+    a seam, a fill reaching under its line does not. A fill grows into the line's coverage up to 1.5 px from the line's
+    far edge, and only as deep as about twice that distance (so it never runs along a stroke that leaves the fill, and
+    never appears under lines that touch no fill)."""
+    cover = _coverage(lines)[..., 3] >= 0.5
+    fill = labels >= 0
+    zone = cover & ~fill
+    if not zone.any() or not fill.any():
+        return
+    to_fill, nearest = ndimage.distance_transform_edt(~fill, return_indices=True)
+    outside = ~fill & ~cover
+    to_out = ndimage.distance_transform_edt(~outside) if outside.any() else np.full(labels.shape, np.inf)
+    grow = zone & (to_out >= 1.5) & (to_fill <= 2 * to_out + 1)
+    labels[grow] = labels[nearest[0][grow], nearest[1][grow]]
 
 
 def _fills(part: PartPasses, ds: DetailSettings, settings: VectorizeSettings, soft: np.ndarray):
-    flat = palette_labels(part.flats, posterize=ds.posterize, min_pixels=ds.min_area)
-    tones = [t for t in part.tones if not set(t.layers) & settings.gradient_layers]
+    flat = palette_labels(_coverage(part.flats), posterize=ds.posterize, min_pixels=ds.min_area)
+    tones = [t for t in part.tones if not t.gradient]
     levels = [_tone_levels(t.alpha, t.soft, settings.posterize_steps) for t in tones]
     code = (flat.labels + 1).astype(np.int64)                 # one int per (flat, tone levels) key: fast unique
     for level in levels:
@@ -159,7 +213,8 @@ def _fills(part: PartPasses, ds: DetailSettings, settings: VectorizeSettings, so
     if empty:
         labels[labels == empty[0]] = -1
     unique = _split_tints(labels, unique, part.fills, ds)
-    _under_lines(labels, part.lines)
+    if {"line", "fills"} <= set(part.order) and part.order.index("line") > part.order.index("fills"):
+        _under_lines(labels, part.lines)
     labels, old = _compact(merge_small(labels, ds.min_area))
     if not old.size:
         return None
@@ -177,44 +232,36 @@ def _fills(part: PartPasses, ds: DetailSettings, settings: VectorizeSettings, so
 
 
 def _simple(rgba: np.ndarray, ds: DetailSettings, origin, soft: np.ndarray):
-    li = palette_labels(_rescaled(rgba), posterize=ds.posterize, min_pixels=ds.min_area)
-    labels, old = _compact(merge_small(li.labels, ds.min_area))
-    if not old.size:
+    li = palette_labels(_coverage(rgba), posterize=ds.posterize, min_pixels=ds.min_area)
+    labels, colors = _opacity_split(merge_small(li.labels, ds.min_area), li.colors, rgba[..., 3])
+    if not colors:
         return None
     if li.posterized:
         _paste(soft, np.isin(li.labels, list(li.posterized)), origin)
-    return labels, [FaceStyle(li.colors[i], None) for i in old]
+    return labels, [FaceStyle(c, None) for c in colors]
 
 
-def _gradient_layer(part: PartPasses, tone, name: str, ds: DetailSettings, matrix: Matrix, soft: np.ndarray,
-                    notes: list[str]) -> TracedLayer | None:
-    """A soft tone drawn as one gradient-filled shape over the fills, in normal blend."""
+def _gradient_layer(part: PartPasses, tone, ds: DetailSettings, matrix: Matrix, soft: np.ndarray,
+                    notes: list[str], prefix: str) -> TracedLayer | None:
+    """A soft tone layer drawn as one gradient-filled shape over the fills (which leave it out), in normal blend."""
     alpha = tone.alpha
     mask = alpha > 2 / 255
-    if not mask.any():
+    if not mask.any() or tone.color is None:
         return None
-    strong = alpha >= 0.5 * alpha.max()
-    a = alpha[strong][:, None]
-    color = np.median((part.fills[strong][:, :3] - part.flats[strong][:, :3] * (1 - a)) / a, axis=0)
-    color = tuple(int(round(v)) for v in np.clip(color, 0, 1) * 255)
-    gradient, _ = fit_gradient(color, alpha)
+    gradient, _ = fit_gradient(tone.color, alpha)
     fill = GradientFill(gradient.kind, gradient.stops, matrix @ gradient.matrix)
     labels = merge_small(np.where(mask, 0, -1).astype(np.int32), ds.min_area)
     if any(b != "normal" for b in tone.blends):
-        notes.append("Layer '%s' is drawn as a normal gradient; its blend mode is approximated" % name)
+        notes.append("Layer '%s' is drawn as a normal gradient; its blend mode is approximated" % tone.layers[0])
     _paste(soft, mask, part.origin)
     shape = trace_shape(labels, [fill], ds.fit, matrix)
-    return TracedLayer(name + " (gradient)", "gradient", part.part, shape, [FaceStyle(color + (255,), None)])
+    return TracedLayer(prefix + tone.layers[0] + " (gradient)", "gradient", part.part, shape,
+                       [FaceStyle(tone.color + (255,), None)])
 
 
 def vectorize(passes: Passes, alignment: Alignment, settings: VectorizeSettings = VectorizeSettings()) -> VectorArt:
     ds = detail_settings(settings.detail)
     soft = np.zeros((passes.height, passes.width), bool)
-    tone_names = {n for part in passes.parts for t in part.tones for n in t.layers}
-    missing = sorted(settings.gradient_layers - tone_names)
-    if missing:
-        raise ValueError("No tone layer named '%s' to draw with gradients (only shadow, occlusion and light layers "
-                         "can be gradients)" % missing[0])
     notes = list(passes.notes)
     layers = []
     for part in passes.parts:
@@ -232,11 +279,13 @@ def vectorize(passes: Passes, alignment: Alignment, settings: VectorizeSettings 
             layers.append(TracedLayer(prefix + LAYER_NAMES[role], role, part.part, shape, styles))
             if role == "fills":
                 for tone in part.tones:
-                    wanted = [n for n in tone.layers if n in settings.gradient_layers]
-                    overlay = _gradient_layer(part, tone, prefix + wanted[0], ds, matrix, soft, notes) if wanted else None
+                    overlay = _gradient_layer(part, tone, ds, matrix, soft, notes, prefix) if tone.gradient else None
                     if overlay is not None:
                         layers.append(overlay)
-    return VectorArt(layers, alignment, notes, soft)
+    if not layers:
+        raise DrawingError("Nothing was traced: every region is smaller than the detail setting keeps (try a higher "
+                           "--detail) or too faint")
+    return VectorArt(layers, alignment, notes, soft, ds.fit.tolerance)
 
 
 def _recolored(layer: TracedLayer, name: str, mapping: list[FaceStyle | None]) -> TracedLayer:

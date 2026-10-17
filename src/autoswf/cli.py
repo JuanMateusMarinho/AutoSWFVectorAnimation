@@ -220,6 +220,12 @@ def _cmd_convert(args) -> int:
     from autoswf.vectorize.art import VectorizeSettings, helm_from_art, vectorize
     from autoswf.vectorize.metrics import quality_report
     out = Path(args.out) if args.out else Path(args.drawing).with_suffix(".swf")
+    if out.resolve() == Path(args.drawing).resolve():
+        print("The output %s would overwrite the drawing; choose another name" % out.name)
+        return 1
+    if out.suffix.lower() != ".swf":
+        print("The output must be a .swf file (got %s)" % out.name)
+        return 1
     try:
         overrides = _parse_roles(args.role)
         override = Alignment.parse(args.align) if args.align else None
@@ -240,11 +246,10 @@ def _cmd_convert(args) -> int:
     if args.list:
         return 0
     try:
-        passes = extract_passes(drawing, roles)
+        passes = extract_passes(drawing, roles, gradient_layers=frozenset(args.gradient))
         ys, xs = np.nonzero(passes.full[..., 3] > 0)
         alignment, reason = choose_alignment(drawing, (xs.min(), xs.max() + 1, ys.min(), ys.max() + 1), override)
-        settings = VectorizeSettings(detail=args.detail, gradient_layers=frozenset(args.gradient))
-        art = vectorize(passes, alignment, settings)
+        art = vectorize(passes, alignment, VectorizeSettings(detail=args.detail))
     except (DrawingError, ValueError) as e:
         print(e)
         return 1
