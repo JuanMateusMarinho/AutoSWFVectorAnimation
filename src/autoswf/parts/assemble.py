@@ -3,18 +3,24 @@ as in Flash), holding a plain baked shape, then one colorable child clip per (lo
 the same edges, then details and line art. Animation (Plan 5) goes on the wrappers, never on the colorable clips."""
 from dataclasses import dataclass
 
+import numpy as np
+from scipy import ndimage
+
 from autoswf.aqw.contract import LOCATIONS, SHADES
 from autoswf.aqw.helm import HelmItem
 from autoswf.model.document import ColorCustom, Frame, Placement, Symbol
 from autoswf.model.geometry import Matrix
-from autoswf.model.shape import Shape, translated
+from autoswf.model.shape import Shape, SolidFill, translated
 from autoswf.parts.hidden import PartLayer
 from autoswf.vectorize.art import FaceStyle, TracedLayer, VectorArt, recolored, split_tones
+from autoswf.vectorize.planar import trace_shape
 
 # The client's mcSkel in Idle (both genders, 2026-10-16): the head slot and the back-hair slot.
 IDLE_HEAD = Matrix(0.23516845703125, 0.025909423828125, -0.025909423828125, 0.23516845703125, 7.6, -100.25)
 IDLE_BACKHAIR = Matrix(0.89178466796875, 0.1094207763671875, -0.1094207763671875, 0.89178466796875, 4.0, -114.15)
 LOCATION_MATCH = 16                                # max channel difference between a face's flat and a region's
+UNDERLAP_UNITS = 1.5                               # head units a lower group of faces reaches under the groups above
+EDGE_MARGIN = 2                                    # px: and never closer than this to the part's edge
 
 
 def head_to_backhair() -> Matrix:
@@ -60,12 +66,48 @@ def _location(style: FaceStyle, layer: PartLayer) -> str | None:
     return None
 
 
+def _stack(traced: TracedLayer, groups: list[tuple[list[int], list[FaceStyle]]]) -> list[Shape]:
+    """One shape per group of faces (bottom to top), each traced from the face map with its own faces plus an underlap
+    of UNDERLAP_UNITS under the faces of the groups above it that stops EDGE_MARGIN px inside the part: a lower group
+    never reaches the part's edge under another one, so an upper group's anti-aliased edge never blends with a lower
+    group's color, and neighbors overlap by a full pixel even at one pixel per head unit."""
+    labels = traced.labels
+    m = traced.matrix
+    reach = max(EDGE_MARGIN, int(np.ceil(UNDERLAP_UNITS / max(np.hypot(m.a, m.b), 1e-9))))
+    inside = ndimage.distance_transform_edt(np.pad(labels >= 0, 1))[1:-1, 1:-1] > EDGE_MARGIN
+    shapes = []
+    for k, (faces, styles) in enumerate(groups):
+        own = np.isin(labels, faces)
+        if not own.any():
+            shapes.append(Shape([], []))
+            continue
+        above = np.isin(labels, [f for later, _ in groups[k + 1:] for f in later])
+        out = np.full(labels.shape, -1, np.int32)
+        palette, index = [], {}
+        lookup = np.full(int(labels.max()) + 2, -1, np.int32)
+        for face, style in zip(faces, styles):
+            if style not in index:
+                index[style] = len(palette)
+                palette.append(style)
+            lookup[face] = index[style]
+        out[own] = lookup[labels[own]]
+        if above.any():
+            dist, (iy, ix) = ndimage.distance_transform_edt(~own, return_indices=True)
+            under = above & (dist <= reach) & inside
+            out[under] = out[iy[under], ix[under]]
+        hidden = above if traced.hidden is None else above | traced.hidden      # covered at rest
+        shapes.append(trace_shape(out, [SolidFill(s.color) for s in palette], traced.fit, traced.matrix, hidden))
+    return shapes
+
+
 def _shape_items(traced: TracedLayer, layer: PartLayer, separate_tones: bool, colorable: list) -> list:
     """The plain shape(s) of a fills layer and its colorable clips, in drawing order."""
     if traced.role != "fills":
         return [traced.shape]
     locations = [_location(s, layer) for s in traced.styles]
     shades = [face_shade(s, layer.soft_roles) for s in traced.styles]
+    if any(locations) and traced.labels is not None and not separate_tones:
+        return _layered_items(traced, layer, locations, shades, colorable)
     flat = [FaceStyle(s.flat, s.flat) if s.flat is not None else None for s in traced.styles]
     plain = recolored(traced, traced.name, [f if loc else s for s, f, loc in zip(traced.styles, flat, locations)])
     items = [t.shape for t in (split_tones(plain) if separate_tones else [plain])]
@@ -88,6 +130,34 @@ def _shape_items(traced: TracedLayer, layer: PartLayer, separate_tones: bool, co
                 continue
             items.append(Symbol(clip.name, [Frame([Placement(clip.shape, 1)])], color_custom=ColorCustom(location, shade)))
             colorable.append((layer.name, location, shade))
+    return items
+
+
+def _layered_items(traced: TracedLayer, layer: PartLayer, locations: list, shades: list, colorable: list) -> list:
+    """Plain faces, then per location its None, Dark, Darker and Light faces, each group traced on its own (_stack)."""
+    plain = [i for i, loc in enumerate(locations) if not loc]
+    groups = [(plain, [traced.styles[i] for i in plain])]
+    names = [None]
+    for location in LOCATIONS:
+        for shade in ("None", "Dark", "Darker", "Light"):
+            faces = [i for i, (loc, sh) in enumerate(zip(locations, shades)) if loc == location and sh == shade]
+            if not faces:
+                continue
+            styles = [FaceStyle(traced.styles[i].flat, traced.styles[i].flat) if shade == "None" else traced.styles[i]
+                      for i in faces]
+            groups.append((faces, styles))
+            names.append((location, shade))
+    items = []
+    for name, shape in zip(names, _stack(traced, groups)):
+        if not shape.paths:
+            continue
+        if name is None:
+            items.append(shape)
+            continue
+        location, shade = name
+        items.append(Symbol("%s %s %s" % (layer.name, location, shade), [Frame([Placement(shape, 1)])],
+                            color_custom=ColorCustom(location, shade)))
+        colorable.append((layer.name, location, shade))
     return items
 
 

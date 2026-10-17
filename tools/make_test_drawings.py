@@ -27,6 +27,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--morph", help="also split this helm SWF (all of its public helm classes)")
     parser.add_argument("--size", type=int, default=480, help="synthetic drawing size in px")
+    parser.add_argument("--parts", action="store_true", help="also write NAME_parts.png: the parts AutoSWF finds")
     args = parser.parse_args()
     cache = AqwCache(default_cache_dir())
     out = Path(cache.root) / "test-drawings"
@@ -36,6 +37,16 @@ def main() -> int:
         path = out / (name + ".psd")
         write_psd(path, t.width, t.height, t.layers)
         print("Wrote %s  (--align %s)" % (path, t.alignment))
+        if args.parts:
+            from drawings import drawing_from_specs
+            from autoswf.drawing.passes import extract_passes
+            from autoswf.drawing.roles import assign_roles
+            from autoswf.parts.detect import detect_parts
+            from autoswf.parts.overview import parts_image
+            d = drawing_from_specs(t.width, t.height, t.layers)
+            passes = extract_passes(d, assign_roles(d))
+            parts_image(passes, detect_parts(passes, t.alignment)).save(out / (name + "_parts.png"))
+            print("Wrote %s" % (out / (name + "_parts.png")))
         if clip:
             write_clip(out / (name + ".clip"), t.width, t.height, t.layers)
             print("Wrote %s" % (out / (name + ".clip")))

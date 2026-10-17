@@ -14,7 +14,7 @@ from autoswf.drawing.roles import TONE_ROLES
 from autoswf.model.document import Frame, Placement, Symbol
 from autoswf.model.geometry import Matrix
 from autoswf.model.shape import GradientFill, Path, Shape, SolidFill
-from autoswf.vectorize.fit import DetailSettings, detail_settings
+from autoswf.vectorize.fit import DetailSettings, FitSettings, detail_settings
 from autoswf.vectorize.gradient import fit_gradient
 from autoswf.vectorize.palette import merge_small, palette_labels, relative_threshold
 from autoswf.vectorize.planar import trace_shape
@@ -37,6 +37,10 @@ class TracedLayer:
     part: str | None
     shape: Shape
     styles: list[FaceStyle]                       # per fill index
+    labels: np.ndarray | None = None              # the traced label image (face per pixel, -1 = empty)
+    matrix: Matrix | None = None                  # its pixels -> output px
+    fit: FitSettings | None = None                # the curve fitting it was traced with
+    hidden: np.ndarray | None = None              # its pixels covered at rest by other parts
 
 
 @dataclass(eq=False)
@@ -275,8 +279,10 @@ def vectorize(passes: Passes, alignment: Alignment, settings: VectorizeSettings 
             if result is None:
                 continue
             labels, styles = result
-            shape = trace_shape(labels, [SolidFill(s.color) for s in styles], ds.fit, matrix)
-            layers.append(TracedLayer(prefix + LAYER_NAMES[role], role, part.part, shape, styles))
+            hidden = part.hidden if role == "fills" else None
+            shape = trace_shape(labels, [SolidFill(s.color) for s in styles], ds.fit, matrix, hidden)
+            layers.append(TracedLayer(prefix + LAYER_NAMES[role], role, part.part, shape, styles, labels, matrix, ds.fit,
+                                      hidden))
             if role == "fills":
                 for tone in part.tones:
                     overlay = _gradient_layer(part, tone, ds, matrix, soft, notes, prefix) if tone.gradient else None

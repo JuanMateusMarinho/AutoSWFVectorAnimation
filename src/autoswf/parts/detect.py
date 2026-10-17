@@ -39,6 +39,8 @@ BROW_MAX_AREA, BROW_RATIO, MOUTH_MAX_AREA = 150.0, 1.8, 150.0
 LOCK_ELONGATION, LOCK_MAX_FRACTION = 2.0, 0.3
 HORN_ELONGATION, HORN_MIN_AREA, HORN_MAX_AREA = 2.5, 4.0, 200.0
 INSIDE_FACE = 0.8
+LEFTOVER_AREA = 3.0                                # head units²: smaller leftovers join a neighbor, never a part alone
+MAX_ACCESSORIES = 8                                # more loose pieces than this are not accessories (sketches)
 HELM_MIN_FRACTION, HELM_GROW_FRACTION, HELM_MAX_Y = 0.03, 0.1, 15.0
 NO_SKIN_NOTE = "No skin found: nothing follows the player's Skin color"
 NO_HAIR_NOTE = "No hair found: nothing follows the player's Hair color"
@@ -463,7 +465,7 @@ class _Detector:
                 self.name_of[rid] = "Face"
             elif reg.area >= EAR_MIN_AREA and (reg.center.x < -EAR_X or reg.center.x > EAR_X):
                 self.name_of[rid] = "Ear L" if reg.center.x < -EAR_X else "Ear R"
-            elif reg.area <= NOSE_MAX_AREA and x0 <= reg.center.x <= x1 and y0 <= reg.center.y <= y1:
+            elif LEFTOVER_AREA <= reg.area <= NOSE_MAX_AREA and x0 <= reg.center.x <= x1 and y0 <= reg.center.y <= y1:
                 self.name_of[rid] = "Nose"
             else:
                 self.name_of[rid] = "Face"
@@ -614,7 +616,23 @@ class _Detector:
                     if o in rest:
                         rest.discard(o)
                         stack.append(o)
+            if sum(self.region(r).area for r in comp) < LEFTOVER_AREA and not set(comp) & set(self.accessory_pool):
+                shared: dict[str, float] = {}               # a sliver left over (a tip cut off by its outline)
+                for rid in comp:                            # joins the part it borders most
+                    for o, length in self.adjacent.get(rid, {}).items():
+                        if o in self.name_of and self.name_of[o] != "Lock ?":
+                            shared[self.name_of[o]] = shared.get(self.name_of[o], 0.0) + length
+                if shared:
+                    self.name(comp, max(shared, key=shared.get))
+                    continue
             groups.append(comp)
+        loose = [c for c in groups if not set(c) & set(self.accessory_pool)]
+        if len(loose) > MAX_ACCESSORIES:                    # a sketch or a busy drawing: not accessories
+            for comp in loose:
+                self.name(comp, "Helm")
+            groups = [c for c in groups if c not in loose]
+            self.notes.append("%d small pieces were left over; they stay together in Helm (a correction can make any "
+                              "of them an accessory)" % len(loose))
         used = {PartName.parse(n).index for n in set(self.name_of.values()) | {f[0] for f in self.forced.values()}
                 if n.startswith("Accessory")}
         k = 0
@@ -625,6 +643,7 @@ class _Detector:
             self.name(comp, "Accessory %d" % k)
 
     def join_outlines(self) -> None:
+        leftover = []
         for rid in list(self.outlines):
             shared = {o: length for o, length in self.adjacent.get(rid, {}).items() if o in self.name_of}
             neighbors = [o for o, length in shared.items() if length >= OUTLINE_NEIGHBOR * max(shared.values())]
@@ -635,10 +654,9 @@ class _Detector:
                     if best in lock:
                         lock.append(rid)
             else:
-                self.accessory_pool.append(rid)
-                self.reserved.add(rid)
-        if any(r not in self.name_of for r in self.accessory_pool):
-            self.outlines = []
+                leftover.append(rid)                    # outlines touching no part are left over like any region
+        self.outlines = []
+        if leftover:
             self.accessories()
 
     def _z(self, name: str, rid: int) -> tuple:

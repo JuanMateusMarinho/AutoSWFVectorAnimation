@@ -13,7 +13,9 @@ from autoswf.parts.detect import Part, PartMap
 from autoswf.parts.model import MOVING, PROVIDERS
 from autoswf.parts.regions import RGBA
 
-UNDERLAP = 2                                       # px a lower part reaches under the parts above it
+UNDERLAP = 2                                       # px a lower part's line art reaches under the lines above it
+UNDERLAP_UNITS = 1.5                               # head units a lower part's fill reaches under the parts above it
+SILHOUETTE_MARGIN = 2                              # px: underlaps stay this far inside the drawing's silhouette
 BALL_PIECES = ("white", "iris", "pupil", "highlight")
 SOLID = 0.99                                       # flats alpha of the pixels hidden fills copy from
 CORE_DEPTH = 2                                     # px inside a part's edge where those pixels start
@@ -70,6 +72,10 @@ class _Splitter:
     def __init__(self, passes: Passes, parts: PartMap):
         self.passes, self.parts, self.graph = passes, parts, parts.graph
         self.h, self.w = self.graph.height, self.graph.width
+        # wide enough to stay a full pixel at the smallest zoom (one pixel per head unit), so shapes never just touch
+        self.reach = max(UNDERLAP, int(np.ceil(UNDERLAP_UNITS * self.graph.scale)))
+        drawn = passes.full[..., 3] > 0.02
+        self.inside = ndimage.distance_transform_edt(drawn) >= SILHOUETTE_MARGIN
         self.units: list[_Unit] = []
         for part in parts.parts.values():
             group = self.graph.regions[part.regions[0]].group
@@ -162,13 +168,22 @@ class _Splitter:
         part_of_unit = np.array([part_names.index(u.part.name) for u in self.units] + [-1])
         visible_part = np.where(self.top >= 0, part_of_unit[self.top], -1)
         loose = (lines & (owner < 0)) | details
+        nearest = None
         if loose.any() and (self.top >= 0).any():
             _, (iy, ix) = ndimage.distance_transform_edt(self.top < 0, return_indices=True)
             nearest = part_of_unit[self.top[iy, ix]]
             owner = np.where(lines & (owner < 0), nearest, owner)
-            detail_owner = np.where(details, np.where(visible_part >= 0, visible_part, nearest), -1)
-        else:
-            detail_owner = np.where(details, visible_part, -1)
+        detail_owner = np.full((self.h, self.w), -1, np.int32)        # each detail piece stays whole and goes to
+        pieces, count = ndimage.label(details, structure=np.ones((3, 3)))   # the highest part under it (details are
+        for k, box in enumerate(ndimage.find_objects(pieces), start=1):     # painted above every flat they cover)
+            piece = pieces[box] == k
+            under = visible_part[box][piece]
+            under = under[under >= 0]
+            if under.size:
+                detail_owner[box][piece] = int(under.max())
+            elif nearest is not None:
+                ys, xs = np.nonzero(piece)
+                detail_owner[box][piece] = int(nearest[box][ys[0], xs[0]])
         self.line_unit = np.full((self.h, self.w), -1, np.int32)
         self.detail_unit = np.full((self.h, self.w), -1, np.int32)
         rows = np.arange(self.h)[:, None]
@@ -253,7 +268,8 @@ class _Splitter:
                 take = local_hole & (nearest == unit)
                 higher = local_hole & np.isin(nearest, [u for u in provider_units if u > unit])
                 if take.any() and higher.any():                    # reach under the next provider's fill too
-                    take |= higher & (ndimage.distance_transform_edt(~take) <= UNDERLAP)
+                    take |= higher & (ndimage.distance_transform_edt(~take) <= self.reach) \
+                        & self.inside[y0:y1, x0:x1]
                 take &= ~self.own(unit, (x0, y0, x1, y1))
                 if take.any():
                     ys, xs = np.nonzero(take)
@@ -266,11 +282,12 @@ class _Splitter:
     def underlap(self) -> None:
         for i, u in enumerate(self.units):
             own = self.top == i
-            box = _box(own, pad=UNDERLAP + 1, shape=(self.h, self.w))
+            box = _box(own, pad=self.reach + 1, shape=(self.h, self.w))
             if box is not None:
                 x0, y0, x1, y1 = box
-                near = ndimage.distance_transform_edt(~own[y0:y1, x0:x1]) <= UNDERLAP
-                take = near & (self.top[y0:y1, x0:x1] > i) & ~self.own(i, (x0, y0, x1, y1))
+                near = ndimage.distance_transform_edt(~own[y0:y1, x0:x1]) <= self.reach
+                take = (near & (self.top[y0:y1, x0:x1] > i) & ~self.own(i, (x0, y0, x1, y1))
+                        & self.inside[y0:y1, x0:x1])
                 if take.any():
                     ys, xs = np.nonzero(take)
                     self._extend(i, ys + y0, xs + x0)
@@ -344,7 +361,8 @@ class _Splitter:
             order.remove("fills")
         if not order:
             return None
-        passes = PartPasses(u.name, (x0, y0), flats, tones, fills, detail_rgba, line_rgba, order, src.tone_above_lines)
+        passes = PartPasses(u.name, (x0, y0), flats, tones, fills, detail_rgba, line_rgba, order, src.tone_above_lines,
+                            ext[y0:y1, x0:x1] & ~own[y0:y1, x0:x1])
         locations = []
         for rid in u.regions:
             location = self.parts.location_of.get(rid)
