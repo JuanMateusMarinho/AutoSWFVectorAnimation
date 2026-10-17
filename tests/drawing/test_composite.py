@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 from psd_tools import PSDImage
 from autoswf.drawing.composite import blend, composite
+from autoswf.drawing.layers import Drawing, LayerNode
 from autoswf.drawing.readers import read_drawing
 from autoswf.drawing.writers import LayerSpec, write_clip, write_psd
 
@@ -48,6 +49,17 @@ def test_excluded_clipping_base_still_masks(tmp_path):
     assert straight(only)[10, 25] == pytest.approx(np.array([90, 70, 170]) / 255, abs=0.01)
     cov = composite(d, include=lambda n: n.name == "Sombra", force_normal=True)
     assert cov[10, 25, 3] == pytest.approx(0.6, abs=0.01)
+
+def hidden_base(kind):
+    flats = canvas((255, 0, 0, 255), 0, 0, 20, H)
+    if kind == "pixel":
+        return LayerNode.from_canvas("Flats", flats, visible=False)
+    return LayerNode("Hair", "group", visible=False, blend=kind, children=[LayerNode.from_canvas("Flats", flats)])
+
+@pytest.mark.parametrize("kind", ["pixel", "normal", "pass_through"])
+def test_a_hidden_clipping_base_hides_the_layers_clipped_to_it(kind):
+    shade = LayerNode.from_canvas("Sombra", canvas((0, 0, 255, 255), 0, 0, W, H), clipping=True)
+    assert composite(Drawing(None, W, H, [hidden_base(kind), shade]))[..., 3].max() == 0
 
 def test_folder_isolation_opacity_and_unsupported_modes(tmp_path):
     gray, light = canvas((128, 128, 128, 255), 0, 0, W, H), canvas((200, 200, 200, 255), 0, 0, 20, H)
