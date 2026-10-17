@@ -15,6 +15,7 @@ from autoswf.vectorize.art import VectorArt, segment_count
 QUALITY_BARS = {"edge_p95": 1.0, "edge_p99": 2.0, "gaps": 0, "color_shift": 0.005}
 ZOOMS = (1, 2, 4)
 SHIFT = 12 / 255
+LABEL_BLOCK = 1 << 20          # pixel x palette color pairs measured at once (12 MB of float32 differences)
 
 
 @dataclass(frozen=True)
@@ -76,11 +77,13 @@ def _straight(rgba: np.ndarray) -> np.ndarray:
 
 
 def _labels(rgba: np.ndarray, palette: np.ndarray) -> np.ndarray:
-    color, out = _straight(rgba), np.full(rgba.shape[:2], -1, np.int32)
-    for y in range(0, rgba.shape[0], 128):
-        block = color[y:y + 128]
-        d = ((block[..., None, :] - palette[None, None]) ** 2).sum(-1)
-        out[y:y + 128] = np.argmin(d, axis=-1)
+    """Nearest palette color of each pixel (-1 where mostly transparent), a few rows at a time so that the pixel x
+    color distances stay around LABEL_BLOCK values whatever the drawing and palette size."""
+    pal, out = palette.astype(np.float32), np.empty(rgba.shape[:2], np.int32)
+    rows = max(1, LABEL_BLOCK // (rgba.shape[1] * len(pal)))
+    for y in range(0, rgba.shape[0], rows):
+        color = _straight(rgba[y:y + rows].astype(np.float32))
+        out[y:y + rows] = np.argmin(((color[..., None, :] - pal) ** 2).sum(-1), axis=-1)
     out[rgba[..., 3] < 0.5] = -1
     return out
 

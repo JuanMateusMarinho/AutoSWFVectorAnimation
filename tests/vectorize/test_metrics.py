@@ -35,3 +35,20 @@ def test_shifted_art_fails_the_edge_bar(qapp):
 def test_missing_edge_shows_as_gaps(qapp):
     r = report_for(drop_path=True)
     assert max(r.gaps.values()) > 0 and any(p.startswith("Gaps") for p in r.problems())
+
+def test_color_labels_keep_memory_flat_on_big_drawings():
+    import tracemalloc
+    import numpy as np
+    from autoswf.vectorize.metrics import _labels
+    palette = np.array([(r, g, b) for r in (.1, .4, .7, .9) for g in (.2, .5, .8) for b in (.15, .6, .95)], np.float32)
+    h = w = 2000
+    stripe = w // len(palette) + 1
+    rgba = np.ones((h, w, 4), np.float32)                         # opaque, so premultiplied = straight
+    rgba[..., :3] = np.repeat(palette, stripe, axis=0)[:w][None]  # 36 flat colors side by side
+    rgba[:, :10] = 0                                              # and a transparent strip
+    tracemalloc.start()
+    labels = _labels(rgba, palette)
+    peak = tracemalloc.get_traced_memory()[1]
+    tracemalloc.stop()
+    assert (labels[:, :10] == -1).all() and (labels[:, 10:] == (np.arange(10, w) // stripe)[None]).all()
+    assert peak < 64 * 2 ** 20, peak / 2 ** 20
