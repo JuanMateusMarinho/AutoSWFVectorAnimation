@@ -15,6 +15,7 @@ def test_inspect_lists_classes(tmp_path, capsys):
     assert "Kit_fla." in capsys.readouterr().out
 
 
+import numpy as np
 import pytest
 from drawings import synthetic_helm, rect
 from autoswf.drawing.writers import LayerSpec, write_clip, write_psd
@@ -75,3 +76,73 @@ def test_convert_refuses_transparent_drawings_and_overwriting_the_drawing(tmp_pa
     out = capsys.readouterr().out
     assert "would overwrite the drawing" in out and "must be a .swf file" in out
     assert (tmp_path / "helm.psd").read_bytes() == before and not (tmp_path / "helm.png").exists()
+
+
+def _parts_psd(tmp_path, size=720):
+    from drawings import synthetic_parts_helm
+    t = synthetic_parts_helm(size)
+    write_psd(tmp_path / "helm.psd", t.width, t.height, t.layers)
+    return t
+
+def test_convert_finds_parts_and_wires_color_custom(tmp_path, capsys, qapp):
+    t = _parts_psd(tmp_path)
+    assert main(["convert", str(tmp_path / "helm.psd"), "--align", str(t.alignment),
+                 "--parts-image", str(tmp_path / "parts.png")]) == 0
+    out = capsys.readouterr().out
+    assert "Parts (17):" in out and "Lock 6" in out and "Eye L" in out and "Helm" in out
+    assert "Color custom: Skin None, Skin Dark, Hair None, Hair Light, Hair Darker, Eye None (16 clips)" in out
+    assert "its own fixed tones" in out and "— valid" in out
+    from PIL import Image
+    assert Image.open(tmp_path / "parts.png").size == (t.width, t.height)
+
+def test_convert_reads_the_corrections_file_and_color_options(tmp_path, capsys, qapp):
+    import json
+    t = _parts_psd(tmp_path)
+    s, (ox, oy) = t.alignment.scale, t.alignment.origin
+    (tmp_path / "helm.parts.json").write_text(json.dumps({"assign": [{"at": [ox - 9 * s, oy - 17.5 * s], "part": "Helm"}]}))
+    assert main(["convert", str(tmp_path / "helm.psd"), "--align", str(t.alignment), "--color", "Helm=Base"]) == 0
+    out = capsys.readouterr().out
+    assert "Using part corrections from helm.parts.json" in out and "Accessory 1" not in out
+    assert "Base" in next(line for line in out.splitlines() if line.strip().startswith("Helm"))
+
+def test_convert_rejects_bad_corrections_and_colors(tmp_path, capsys, qapp):
+    t = _parts_psd(tmp_path, 240)
+    (tmp_path / "bad.json").write_text('{"assign": [{"at": [1, 2], "part": "Lok 2"}]}')
+    assert main(["convert", str(tmp_path / "helm.psd"), "--parts", str(tmp_path / "bad.json")]) == 1
+    assert "bad.json: entry 1 of \"assign\": Unknown part 'Lok 2'" in capsys.readouterr().out
+    assert main(["convert", str(tmp_path / "helm.psd"), "--color", "Helm=Gold"]) == 1
+    assert "Unknown color 'Gold'" in capsys.readouterr().out
+    assert not (tmp_path / "helm.swf").exists()
+
+def test_convert_without_parts_keeps_the_static_output(tmp_path, capsys, qapp):
+    t = _parts_psd(tmp_path, 240)
+    assert main(["convert", str(tmp_path / "helm.psd"), "--align", str(t.alignment), "--no-parts"]) == 0
+    out = capsys.readouterr().out
+    assert "Parts (" not in out and "Fills:" in out and "— valid" in out
+
+def test_convert_morph_check_needs_the_aqw_files(tmp_path, capsys, monkeypatch, qapp):
+    monkeypatch.setenv("AUTOSWF_CACHE", str(tmp_path / "empty"))
+    t = _parts_psd(tmp_path, 240)
+    assert main(["convert", str(tmp_path / "helm.psd"), "--align", str(t.alignment), "--morph"]) == 0
+    assert "Morph check skipped: AQW reference files are missing" in capsys.readouterr().out
+
+def test_preview_snapshot_with_player_colors(tmp_path, capsys, monkeypatch, qapp):
+    from aqw_fakes import write_mini_cache
+    write_mini_cache(tmp_path / "cache"); monkeypatch.setenv("AUTOSWF_CACHE", str(tmp_path / "cache"))
+    main(["demo-helm", str(tmp_path / "demo.swf")]); capsys.readouterr()
+    assert main(["preview", str(tmp_path / "demo.swf"), "--armor", "TestArmor", "--snapshot", str(tmp_path / "s.png"),
+                 "--player-color", "Hair=FF0000", "--player-color", "skin=#00ff00"]) == 0
+    from PIL import Image
+    pixels = [tuple(p) for p in np.asarray(Image.open(tmp_path / "s.png").convert("RGB")).reshape(-1, 3)]
+    assert pixels.count((255, 0, 0)) > 20 and pixels.count((0, 255, 0)) > 20     # the demo helm's hair and face
+    assert main(["preview", str(tmp_path / "demo.swf"), "--armor", "TestArmor", "--snapshot", str(tmp_path / "s.png"),
+                 "--player-color", "Hair=red"]) == 1
+    assert "Player colors look like Hair=FF0000" in capsys.readouterr().out
+
+
+def test_convert_line_art_only_with_parts_on(tmp_path, capsys, qapp):
+    from drawings import ring
+    write_psd(tmp_path / "ring.psd", 200, 200, [LayerSpec("Line", ring(200, 200, (20, 20, 20, 255), 100, 100, 60, 57))])
+    assert main(["convert", str(tmp_path / "ring.psd"), "--align", "2,100,100"]) == 0
+    out = capsys.readouterr().out
+    assert "no flat colors to find parts in" in out and "— valid" in out

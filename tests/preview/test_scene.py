@@ -83,3 +83,9 @@ def test_root_class_and_corrupt_helms_in_the_cli(tmp_path, qapp, monkeypatch, ca
     assert main(["render", str(bad), "--class", "Kit", "--out", str(out)]) == 1
     assert main(["render", str(root), "--class", "Ghost", "--out", str(out)]) == 1
     assert "cannot be drawn" in capsys.readouterr().out
+
+
+def test_morph_check_reports_both_genders(qapp):
+    from autoswf.preview.scene import MORPH_TOLERANCE_PX
+    small, big = scene(blob_helm("Kit", 5)).morph_check(), scene(blob_helm("Kit", 200)).morph_check()
+    assert set(small) == {"M", "F"} and min(small.values()) > MORPH_TOLERANCE_PX and big == {"M": 0, "F": 0}

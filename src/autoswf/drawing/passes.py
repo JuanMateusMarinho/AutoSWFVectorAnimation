@@ -37,6 +37,7 @@ class PartPasses:
     lines: np.ndarray
     order: list[str]                     # "fills", "details", "line" bottom to top as in the source
     tone_above_lines: bool = False
+    hidden: np.ndarray | None = None     # pixels covered at rest by other parts (hidden fills, underlaps)
 
 
 @dataclass

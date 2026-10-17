@@ -49,6 +49,13 @@ class Matrix:
     def apply(self, p: Point) -> Point:
         return Point(self.a * p.x + self.c * p.y + self.tx, self.b * p.x + self.d * p.y + self.ty)
 
+    def inverse(self) -> "Matrix":
+        det = self.a * self.d - self.b * self.c
+        if det == 0:
+            raise ValueError("Matrix is not invertible")
+        return Matrix(self.d / det, -self.b / det, -self.c / det, self.a / det,
+                      (self.c * self.ty - self.d * self.tx) / det, (self.b * self.tx - self.a * self.ty) / det)
+
 
 @dataclass(frozen=True)
 class ColorTransform:

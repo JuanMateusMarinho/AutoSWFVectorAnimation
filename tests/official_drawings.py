@@ -51,7 +51,8 @@ def _show_only(shapes, keep) -> None:
         inst.visible = inst in keep
 
 
-def official_drawing(movie, class_name: str, scale: float = 10.0) -> TestDrawing:
+def _prepared(movie, class_name: str, scale: float):
+    """The class instantiated with its thin lines widened, its shapes, and the canvas (size, origin, view) around it."""
     obj = instantiate(movie, movie.classes[class_name])
     run_pending_actions(obj, ScriptContext(None))
     shapes = _shapes(obj)
@@ -65,7 +66,39 @@ def official_drawing(movie, class_name: str, scale: float = 10.0) -> TestDrawing
     xmin, xmax, ymin, ymax = object_bounds(obj, Matrix.scale(scale, scale))
     size = (int(np.ceil(xmax - xmin)) + 2 * MARGIN, int(np.ceil(ymax - ymin)) + 2 * MARGIN)
     origin = (MARGIN - xmin, MARGIN - ymin)
-    view = Matrix.translate(*origin) @ Matrix.scale(scale, scale)
+    return obj, shapes, size, origin, Matrix.translate(*origin) @ Matrix.scale(scale, scale)
+
+
+def _located(obj, location=None, out=None):
+    """Visible drawn shapes in draw order with the color-custom location of their nearest colorable ancestor."""
+    out = [] if out is None else out
+    if not obj.visible:
+        return out
+    if obj.color_custom is not None:
+        location = obj.color_custom[0]
+    if isinstance(obj, ShapeInstance):
+        if obj.clip_depth is None:
+            out.append((obj, location))
+    elif isinstance(obj, ClipInstance):
+        for child in obj.children:
+            _located(child, location, out)
+    return out
+
+
+def official_locations(movie, class_name: str, scale: float = 10.0) -> np.ndarray:
+    """The ground truth of color custom on the canvas of `official_drawing`: per pixel the location ("Skin", "Hair",
+    "Eye"...) of the topmost shape's colorable clip, "-" for shapes outside any, "" for nothing."""
+    obj, shapes, size, origin, view = _prepared(movie, class_name, scale)
+    located = _located(obj)
+    out = np.full((size[1], size[0]), "", "<U4")
+    for inst, location in located:
+        _show_only(located, {inst})
+        out[_render(obj, view, size)[..., 3] >= 0.5] = location or "-"
+    return out
+
+
+def official_drawing(movie, class_name: str, scale: float = 10.0) -> TestDrawing:
+    obj, shapes, size, origin, view = _prepared(movie, class_name, scale)
 
     roles = {}
     for inst, shade in shapes:

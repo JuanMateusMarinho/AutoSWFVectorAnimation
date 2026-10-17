@@ -60,6 +60,18 @@ class Shape:
     paths: list[Path]
 
 
+def translated(shape: Shape, dx: float, dy: float) -> Shape:
+    """The same shape moved by (dx, dy): points, curve controls and gradient matrices."""
+    move = Matrix.translate(dx, dy)
+    fills = [GradientFill(f.kind, f.stops, move @ f.matrix) if isinstance(f, GradientFill) else f for f in shape.fills]
+    paths = []
+    for p in shape.paths:
+        segments = [QuadTo(s.cx + dx, s.cy + dy, s.x + dx, s.y + dy) if isinstance(s, QuadTo) else LineTo(s.x + dx, s.y + dy)
+                    for s in p.segments]
+        paths.append(Path(Point(p.start.x + dx, p.start.y + dy), segments, p.fill_left, p.fill_right))
+    return Shape(fills, paths)
+
+
 def _shoelace(start: Point, segments: list[Segment]) -> float:
     pts = [(start.x, start.y)]
     for s in segments:
