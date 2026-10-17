@@ -2,6 +2,7 @@
 user's computer) and compare them. FFDec does not run ActionScript, so both sides use the drawn colors."""
 import hashlib
 import html
+import os
 import re
 import shutil
 import subprocess
@@ -78,6 +79,20 @@ def compare_images(ours: QImage, ref: QImage, max_shift: int = 2) -> FidelityRes
     return FidelityResult(*best)
 
 
+def _long(path: Path) -> Path:
+    """`path` in the \\\\?\\ form Windows file calls need past 260 characters when long paths are off in the registry.
+    Python does not add it (Qt and FFDec's Java do), and FFDec's DefineSprite_<id>_<class>/1.png folders under a deep
+    report folder easily get there; unchanged on other systems."""
+    if os.name != "nt":
+        return Path(path)
+    text = os.path.abspath(path)
+    if text.startswith("\\\\?\\"):
+        return Path(text)
+    if text.startswith("\\\\"):                                # \\server\share\... -> \\?\UNC\server\share\...
+        return Path("\\\\?\\UNC\\" + text[2:])
+    return Path("\\\\?\\" + text)
+
+
 def public_classes(movie: MovieData) -> list[str]:
     return sorted(n for n, cid in movie.classes.items() if cid and "_fla." not in n)
 
@@ -87,7 +102,8 @@ def _ffdec_export(ffdec_dir: Path, swf: Path, char_ids: list[int], zoom: float, 
     jar = Path(ffdec_dir) / "ffdec-cli.jar"
     if not jar.exists():
         raise RuntimeError("FFDec was not found in %s (ffdec-cli.jar is missing)" % ffdec_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    long_out = _long(out_dir)
+    long_out.mkdir(parents=True, exist_ok=True)
     ids = ",".join(str(c) for c in char_ids)
     command = ["java", "-jar", str(jar), "-selectid", ids, "-select", ",".join("%d:1" % c for c in char_ids),
                "-zoom", "%g" % zoom, "-format", "sprite:png", "-export", "sprite", str(out_dir), str(swf)]
@@ -97,7 +113,7 @@ def _ffdec_export(ffdec_dir: Path, swf: Path, char_ids: list[int], zoom: float, 
         raise RuntimeError("Java was not found; FFDec needs it on the PATH") from e
     paths = {}
     for c in char_ids:
-        found = [p for p in out_dir.glob("DefineSprite_%d*/1.png" % c)
+        found = [out_dir / p.relative_to(long_out) for p in long_out.glob("DefineSprite_%d*/1.png" % c)
                  if re.fullmatch(r"DefineSprite_%d(_.*)?" % c, p.parent.name)]
         if found:
             paths[c] = found[0]
@@ -144,9 +160,9 @@ def run_fidelity(targets: list[tuple[Path, str]], ffdec_dir: Path, out_dir: Path
         groups.setdefault(Path(path), []).append(name)
     out_dir = Path(out_dir)
     for folder in (out_dir / "ffdec", out_dir / "ours"):     # a reused report folder must never mix in earlier renders
-        if folder.exists():
-            shutil.rmtree(folder)
-    (out_dir / "ours").mkdir(parents=True, exist_ok=True)
+        if _long(folder).exists():
+            shutil.rmtree(_long(folder))
+    _long(out_dir / "ours").mkdir(parents=True, exist_ok=True)
     rows, images = [], {}
     for path, names in groups.items():
         movie = MovieData(path)
@@ -191,4 +207,4 @@ def _write_report(rows: list[FidelityRow], images: dict, out_dir: Path) -> None:
         lines.append("<tr><td>%s<br><b>%s</b></td><td>%s</td><td>%s</td><td>%s</td></tr>" % (
             html.escape(r.file), html.escape(r.class_name), cell(ours), cell(ref), verdict))
     lines.append("</table>")
-    (out_dir / "report.html").write_text("\n".join(lines), encoding="utf-8")
+    _long(out_dir / "report.html").write_text("\n".join(lines), encoding="utf-8")

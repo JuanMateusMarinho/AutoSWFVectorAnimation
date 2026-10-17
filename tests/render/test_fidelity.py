@@ -1,5 +1,6 @@
 # tests/render/test_fidelity.py
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import pytest
@@ -35,6 +36,10 @@ def one_class_swf(class_name, radius):
     part = _holder("Part", _disc((90, 110, 140, 255), radius))
     return build_swf([part], {id(part): class_name}, build_abc([ClassSpec(class_name)]))
 
+def windows_long(path):
+    """The \\\\?\\ form Windows needs past 260 characters when long paths are off (Java and Qt add it themselves)."""
+    return Path("\\\\?\\" + os.path.abspath(path)) if os.name == "nt" else Path(path)
+
 def fake_ffdec(command, **kwargs):
     """Stands in for FFDec: renders each selected character with AutoSWF into DefineSprite_<id>_<class>/1.png."""
     ids = [int(c) for c in command[command.index("-selectid") + 1].split(",")]
@@ -43,7 +48,7 @@ def fake_ffdec(command, **kwargs):
     names = {cid: n for n, cid in movie.classes.items()}
     for cid in ids:
         folder = Path(out) / ("DefineSprite_%d_%s" % (cid, names[cid]))
-        folder.mkdir(parents=True, exist_ok=True)
+        windows_long(folder).mkdir(parents=True, exist_ok=True)
         render_fitted(instantiate(movie, cid), zoom, None).save(str(folder / "1.png"))
     return subprocess.CompletedProcess(command, 0, "", "")
 
@@ -60,6 +65,21 @@ def test_same_named_files_in_different_folders_keep_their_own_references(qapp, t
     for _ in range(2):                                                                  # a reused report folder too
         rows = run_fidelity(targets, tmp_path / "tool", tmp_path / "report")
         assert [(r.class_name, r.passed) for r in rows] == [("ItemMShin", True), ("ItemFRobe", True)], rows
+
+def test_a_report_folder_deep_enough_for_paths_past_260_characters_works(qapp, tmp_path, monkeypatch):
+    (tmp_path / "tool").mkdir(); (tmp_path / "tool" / "ffdec-cli.jar").write_bytes(b"")
+    item = tmp_path / "Item.swf"
+    item.write_bytes(one_class_swf("ItemMShin", 8))
+    report = tmp_path / ("deep" * 30) / ("folder" * 10)
+    assert len(os.path.abspath(report / "ffdec" / "Item_12345678" / "DefineSprite_1_ItemMShin" / "1.png")) > 260
+    monkeypatch.setattr(fidelity.subprocess, "run", fake_ffdec)
+    try:
+        for _ in range(2):                                                              # a reused report folder too
+            rows = run_fidelity([(item, "ItemMShin")], tmp_path / "tool", report)
+            assert [(r.class_name, r.passed, r.error) for r in rows] == [("ItemMShin", True, None)]
+        assert "ItemMShin" in windows_long(report / "report.html").read_text(encoding="utf-8")
+    finally:
+        shutil.rmtree(windows_long(tmp_path / ("deep" * 30)), ignore_errors=True)    # pytest cannot delete it
 
 @pytest.mark.aqw
 def test_official_items_match_ffdec(qapp, aqw_cache, tmp_path):
