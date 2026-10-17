@@ -6,6 +6,7 @@ matrices it is given (Flash convention, px).
 import math
 from collections import OrderedDict
 
+import numpy as np
 from PySide6.QtCore import QPointF, QRect, QRectF, Qt
 from PySide6.QtGui import (QBrush, QColor, QGradient, QImage, QLinearGradient, QPainter, QPainterPath, QPen,
                            QRadialGradient, QTransform)
@@ -346,14 +347,18 @@ class Renderer:
     def _paint_shape(self, painter: QPainter, obj: ShapeInstance, m: Matrix, ct: ColorTransform) -> None:
         shape, layers = _geometry(obj)
         scale = math.sqrt(abs(m.a * m.d - m.b * m.c)) or 1e-9
-        painter.setTransform(qt_transform(m))
+        transform = qt_transform(m)
         for fills, strokes in layers:
+            drawable = [(path, brush) for index, path in fills
+                        if (brush := self._brush(shape.fills[index], ct)) is not None]
+            painter.setTransform(transform)
             painter.setPen(Qt.PenStyle.NoPen)
-            for index, path in fills:
-                brush = self._brush(shape.fills[index], ct)
-                if brush is not None:
-                    painter.setBrush(brush)
-                    painter.drawPath(path)
+            if len(drawable) == 1:
+                painter.setBrush(drawable[0][1])
+                painter.drawPath(drawable[0][0])
+            elif drawable:
+                _paint_fills_seamless(painter, transform, drawable)
+                painter.setTransform(transform)
             painter.setBrush(Qt.BrushStyle.NoBrush)
             for index, path in strokes:
                 style = shape.lines[index]
@@ -361,6 +366,38 @@ class Renderer:
                 if brush is not None:
                     painter.setPen(self._pen(style, brush, scale))
                     painter.drawPath(path)
+
+
+def _paint_fills_seamless(painter: QPainter, transform: QTransform, fills: list[tuple[QPainterPath, QBrush]]) -> None:
+    """Draw the fills of one shape layer the way Flash does: their anti-aliased coverages add up, so two fills
+    sharing an edge cover its pixels completely (drawn one by one with source-over, the backdrop shows through as a
+    seam). Each fill is rasterized alone and the premultiplied rasters are summed."""
+    device = painter.device()
+    full = QRect(0, 0, device.width(), device.height())
+    rects = [transform.mapRect(path.boundingRect()).toAlignedRect().adjusted(-1, -1, 1, 1).intersected(full)
+             for path, _ in fills]
+    union = QRect()
+    for r in rects:
+        if not r.isEmpty():
+            union = union.united(r)
+    if union.isEmpty():
+        return
+    acc = np.zeros((union.height(), union.width(), 4), np.float32)
+    for (path, brush), r in zip(fills, rects):
+        if r.isEmpty():
+            continue
+        image, p = _new_layer(r)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setTransform(transform * QTransform.fromTranslate(-r.x(), -r.y()))
+        p.setBrush(brush)
+        p.drawPath(path)
+        p.end()
+        x, y = r.x() - union.x(), r.y() - union.y()
+        acc[y:y + r.height(), x:x + r.width()] += qimage_to_array(image)
+    np.clip(acc, 0.0, 1.0, out=acc)
+    np.minimum(acc[..., :3], acc[..., 3:4], out=acc[..., :3])
+    painter.resetTransform()
+    painter.drawImage(union.topLeft(), array_to_qimage(acc))
 
 
 def render_fitted(obj: DisplayObject, scale: float, colors: PlayerColors | None, padding: int = 2, *,
