@@ -87,7 +87,7 @@ layers for each painting pass; art drawn on it lands on the head exactly (the `.
 | Role | Layer names it recognizes (English, Portuguese, Japanese) |
 |---|---|
 | Line | Line, Lineart, Ink, Outline, Linha, Contorno, 線画 |
-| Flat colors | Flats, Base, Colors, Fill, Cores chapadas, Cores, 下塗り |
+| Flat colors | Flats, Base, Colors, Fill, Cores chapadas, Cores, 下塗り, ベタ |
 | Shadow | Shadow, Shade, Sombra, 影 |
 | Occlusion shadow | Occlusion, AO, Oclusão, Sombra 2, Sombra escura |
 | Light | Light, Highlight, Glow, Luz, Brilho, ハイライト |

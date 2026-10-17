@@ -1,10 +1,11 @@
 # tests/drawing/test_roles.py
 import pytest
 from autoswf.drawing.layers import Drawing, LayerNode
-from autoswf.drawing.roles import LayerRole, assign_roles, detect_role
+from autoswf.drawing.roles import VOCABULARY, LayerRole, assign_roles, detect_role
 
 @pytest.mark.parametrize("name, role", [
     ("Line", "line"), ("Lineart 2", "line"), ("Linha", "line"), ("Line color", "line"), ("線画", "line"),
+    ("ベタ", "flat"), ("ベタ塗り", "flat"), ("ﾍﾞﾀ", "flat"), ("下塗り 2", "flat"),
     ("Flats", "flat"), ("Cores chapadas", "flat"), ("Base", "flat"), ("Shadow", "shadow"), ("Sombra", "shadow"),
     ("Occlusion", "occlusion"), ("Oclusão", "occlusion"), ("AO", "occlusion"), ("Sombra 2", "occlusion"),
     ("Details", "details"), ("Detalhes", "details"), ("Light", "light"), ("Luz", "light"), ("Highlight", "light"),
@@ -12,6 +13,10 @@ from autoswf.drawing.roles import LayerRole, assign_roles, detect_role
     ("Layer 1", None), ("Camada 3", None), ("Hair", None)])
 def test_detect_role(name, role):
     assert detect_role(name) == role
+
+@pytest.mark.parametrize("role, phrase", [(role, phrase) for role, phrases in VOCABULARY for phrase in phrases])
+def test_every_vocabulary_phrase_names_its_role(role, phrase):
+    assert detect_role(phrase) == role
 
 def px(name, **kw):
     return LayerNode(name, "pixel", **kw)

@@ -36,9 +36,17 @@ class LayerRole:
     source: Literal["name", "folder", "clipped", "override", "hidden", "guide"]
 
 
+def _fold(text: str) -> str:
+    """Accents and width variants dropped (Oclusão -> oclusao, ﾍﾞﾀ -> ヘタ), case folded."""
+    return "".join(ch for ch in unicodedata.normalize("NFKD", text) if not unicodedata.combining(ch)).casefold()
+
+
 def _words(text: str) -> list[str]:
-    text = "".join(ch for ch in unicodedata.normalize("NFKD", text) if not unicodedata.combining(ch)).casefold()
-    return "".join(ch if ch.isalnum() else " " for ch in text).split()
+    return "".join(ch if ch.isalnum() else " " for ch in _fold(text)).split()
+
+
+# Folded like the names they are matched against (ベタ loses its dakuten in a name, so it must here too).
+_FOLDED_VOCABULARY = tuple((role, tuple(_fold(p) for p in phrases)) for role, phrases in VOCABULARY)
 
 
 def _matches(words: list[str], phrase: str) -> bool:
@@ -52,7 +60,7 @@ def detect_role(name: str) -> str | None:
     if name.strip().casefold().startswith(GUIDE_PREFIX.casefold()):
         return IGNORE
     words = _words(name)
-    for role, phrases in VOCABULARY:
+    for role, phrases in _FOLDED_VOCABULARY:
         if any(_matches(words, phrase) for phrase in phrases):
             return role
     return None
