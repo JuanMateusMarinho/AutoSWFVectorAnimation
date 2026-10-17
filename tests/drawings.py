@@ -1,5 +1,5 @@
 """Layered test drawings: small canvas helpers and in-memory drawings built from LayerSpecs."""
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -193,3 +193,244 @@ def synthetic_helm(size: int = 480) -> TestDrawing:
               LayerSpec("Details", layer(details)),
               LayerSpec("Line", layer(line))]
     return TestDrawing(size, size, layers, Alignment(scale, origin))
+
+
+# ---------------------------------------------------------------- helms with parts and their ground truth
+
+@dataclass
+class PartsDrawing(TestDrawing):
+    __test__ = False
+    truth: dict = field(default_factory=dict)          # part name -> canvas bool mask of its flats (topmost part)
+    pieces: dict = field(default_factory=dict)         # "Eye L iris" ... -> canvas bool mask
+    locations: dict = field(default_factory=dict)      # part name -> expected location of its main color
+    roots: dict = field(default_factory=dict)          # lock name -> (x, y) head units
+    tips: dict = field(default_factory=dict)
+
+
+def agreement(found: np.ndarray, truth: np.ndarray, slack: int = 2) -> tuple[float, float]:
+    """(recall on `truth` eroded by `slack` px, precision of `found` against `truth` dilated by `slack` px)."""
+    from scipy import ndimage
+    inner = ndimage.binary_erosion(truth, iterations=slack) if slack else truth
+    outer = ndimage.binary_dilation(truth, iterations=slack) if slack else truth
+    recall = float((found & inner).sum() / max(inner.sum(), 1))
+    precision = float((found & outer).sum() / max(found.sum(), 1))
+    return recall, precision
+
+
+SKIN, HAIR, IRIS, PUPIL, WHITE = (242, 201, 160), (120, 70, 40), (40, 160, 200), (20, 20, 30), (255, 255, 255)
+MOUTH, DOME, BAND, GEM, HORN, INK = (150, 40, 50), (60, 90, 170), (200, 170, 60), (200, 40, 60), (235, 230, 200), (30, 20, 40)
+EYES = {"L": -22.0, "R": 4.0}
+TEETH = [(-36.0 + 10 * k, -26.0 + 10 * k) for k in range(5)]
+SIDE_LOCK = [(14, -8), (26, -8), (28, 10), (25, 28), (19, 8)]
+HORN_POINTS = [(15, -47), (21, -44), (30, -66)]
+
+
+def _mask(size: int, scale: float, origin, path) -> np.ndarray:
+    """Pixels whose center is inside `path` (head units), without anti-aliasing."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QGuiApplication, QImage, QPainter
+    QGuiApplication.instance() or QGuiApplication([])
+    image = QImage(size, size, QImage.Format.Format_ARGB32)
+    image.fill(0)
+    p = QPainter(image)
+    p.translate(*origin)
+    p.scale(scale, scale)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(Qt.GlobalColor.white)
+    p.drawPath(path)
+    p.end()
+    return np.frombuffer(image.constBits(), np.uint8).reshape(size, size, 4)[..., 3] > 127
+
+
+def _stroke(points, width, closed=False):
+    """A constant-width ink line along a polyline (round joins), as a filled path."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QPainterPathStroker
+    stroker = QPainterPathStroker()
+    stroker.setWidth(width)
+    stroker.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    stroker.setCapStyle(Qt.PenCapStyle.RoundCap)
+    return stroker.createStroke(_path(points, closed))
+
+
+def _qt_fill(p, path, color):
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QColor
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(QColor(*color))
+    p.drawPath(path)
+
+
+def _hat_shapes():
+    dome = _ellipse(-9, -34, 40, 26).intersected(_path([(-60, -80), (40, -80), (40, -21), (-60, -21)]))
+    band = _path([(-52, -21), (34, -21), (34, -14), (-52, -14)])
+    return dome, band, _ellipse(-9, -17.5, 3, 3)
+
+
+def _hat_tones(dome, horn=None):
+    from PySide6.QtCore import QPointF, QRectF, Qt
+    from PySide6.QtGui import QBrush, QColor, QRadialGradient
+
+    def shadow(p):
+        crescent = dome.subtracted(_ellipse(-16, -34, 40, 26))
+        if horn is not None:
+            crescent = crescent.subtracted(horn)
+        _qt_fill(p, crescent, (150, 130, 200))
+
+    def light(p):
+        glow = QRadialGradient(QPointF(-20, -40), 10)
+        glow.setColorAt(0, QColor(255, 255, 255, 255))
+        glow.setColorAt(1, QColor(255, 255, 255, 0))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QBrush(glow))
+        p.drawEllipse(QRectF(-30, -50, 20, 20))
+
+    def details(p):
+        for cx in (-42, -30, 12, 24):
+            _qt_fill(p, _ellipse(cx, -17.5, 1.4, 1.4), (255, 240, 150))
+        star = [(5 + (4 if k % 2 == 0 else 1.7) * np.sin(k * np.pi / 5),
+                 -38 - (4 if k % 2 == 0 else 1.7) * np.cos(k * np.pi / 5)) for k in range(10)]
+        _qt_fill(p, _path(star), (255, 240, 120))
+    return shadow, light, details
+
+
+def _hat_lines():
+    return [_brush(_arc(-9, -34, 40, 26, 180, 360), 1.6), _stroke([(-52, -21), (34, -21)], 1.0),
+            _stroke([(-52, -14), (34, -14)], 1.0), _stroke(_arc(-9, -17.5, 3.3, 3.3, 0, 360), 0.6, closed=True)]
+
+
+def _truth(size, scale, origin, ordered) -> dict:
+    """Topmost part per pixel from (name, path) pairs in drawing order."""
+    owner = np.full((size, size), -1, np.int32)
+    names = []
+    for name, path in ordered:
+        if name not in names:
+            names.append(name)
+        owner[_mask(size, scale, origin, path)] = names.index(name)
+    return {name: owner == i for i, name in enumerate(names)}
+
+
+def synthetic_parts_helm(size: int = 720) -> PartsDrawing:
+    """A cel-shaded helm with the part kinds of spec 9.1 a helm usually has, painted in passes like the user's
+    drawings (Flats, Shadow, Occlusion, Light, Details, Line), with the ground truth of its parts (head units; the AQW
+    head faces right)."""
+    scale, origin = size / 120, (0.55 * size, 0.5575 * size)
+    face, ear = _ellipse(-9, 10, 30, 33), _ellipse(-40, 14, 7, 10)
+    mouth = _ellipse(-6, 31, 5, 1.8)
+    hair_band = _path([(-42, -14), (26, -14), (26, -8), (-42, -8)])
+    teeth = [_path([(x0, -8), (x1, -8), ((x0 + x1) / 2, 4)]) for x0, x1 in TEETH]
+    side = _path(SIDE_LOCK)
+    dome, band, gem = _hat_shapes()
+    horn = _path(HORN_POINTS)
+    eye = {}
+    for side_name, cx in EYES.items():
+        eye[side_name] = {"white": _ellipse(cx, 14, 6, 5), "iris": _ellipse(cx + 1, 14.5, 3.2, 3.2),
+                          "pupil": _ellipse(cx + 1, 14.5, 1.4, 1.4), "highlight": _ellipse(cx + 2.2, 13.2, 0.9, 0.9)}
+    brows = {s: _ellipse(cx, 6.5, 5, 1.1) for s, cx in EYES.items()}
+    flats_order = [("Ear L", ear, SKIN), ("Face", face, SKIN), ("Mouth", mouth, MOUTH)]
+    for s in "LR":
+        for piece, color in (("white", WHITE), ("iris", IRIS), ("pupil", PUPIL), ("highlight", WHITE)):
+            flats_order.append(("Eye %s %s" % (s, piece), eye[s][piece], color))
+        flats_order.append(("Brow " + s, brows[s], HAIR))
+    flats_order.append(("Hair", hair_band, HAIR))
+    flats_order += [("Lock %d" % (k + 1), tooth, HAIR) for k, tooth in enumerate(teeth)]
+    flats_order += [("Lock 6", side, HAIR), ("Helm", dome, DOME), ("Helm", band, BAND), ("Accessory 1", gem, GEM),
+                    ("Horn R", horn, HORN)]
+    hat_shadow, hat_light, hat_details = _hat_tones(dome, horn)
+
+    def flats(p):
+        for _, path, color in flats_order:
+            _qt_fill(p, path, color)
+
+    def shadow(p):
+        _qt_fill(p, _ellipse(14, 26, 5, 8).intersected(face), (150, 130, 200))
+        hat_shadow(p)
+
+    def occlusion(p):
+        _qt_fill(p, _path([(-42, -14), (26, -14), (26, -11.5), (-42, -11.5)]), (110, 90, 160))
+
+    def light(p):
+        _qt_fill(p, _ellipse(-20, -11, 6, 1.2), (255, 255, 255))
+        hat_light(p)
+
+    def line(p):
+        strokes = [_brush(_arc(-9, 10, 30, 33, 15, 165), 1.4), _brush(_arc(-9, 10, 30, 33, 140, 215), 1.2),
+                   _brush(_arc(-9, 10, 30, 33, 8, 20), 1.2), _brush(_arc(-40, 14, 7, 10, 90, 270), 1.0),
+                   _brush(_arc(-6, 31, 5.4, 2.2, 180, 360), 0.8)]
+        zigzag = [(-42, -14), (-42, -8)]
+        for x0, x1 in TEETH:
+            zigzag += [(x0, -8), ((x0 + x1) / 2, 4)]
+        zigzag += [(14, -8), (19, 8), (25, 28), (28, 10), (26, -8), (26, -14)]
+        strokes.append(_stroke(zigzag, 1.2))
+        strokes += [_brush(_arc(cx, 14, 6.5, 5.5, 190, 350), 1.2) for cx in EYES.values()]
+        strokes += _hat_lines() + [_stroke(HORN_POINTS, 1.0, closed=True)]
+        for path in strokes:
+            _qt_fill(p, path, INK)
+
+    layer = lambda paint: _qt_layer(size, scale, origin, paint)
+    layers = [LayerSpec("Flats", layer(flats)),
+              LayerSpec("Shadow", layer(shadow), blend="multiply", clipping=True),
+              LayerSpec("Occlusion", layer(occlusion), blend="multiply", clipping=True),
+              LayerSpec("Light", layer(light), blend="screen", clipping=True),
+              LayerSpec("Details", layer(hat_details)),
+              LayerSpec("Line", layer(line))]
+    owners = _truth(size, scale, origin, [(name, path) for name, path, _ in flats_order])
+    truth, pieces = {}, {}
+    for name, mask in owners.items():
+        if name.startswith("Eye "):
+            pieces[name] = mask
+            part = " ".join(name.split()[:2])
+            truth[part] = truth.get(part, np.zeros_like(mask)) | mask
+        else:
+            truth[name] = mask
+    locations = {name: None for name in truth}
+    locations.update({"Face": "Skin", "Ear L": "Skin", "Hair": "Hair", "Brow L": "Hair", "Brow R": "Hair"})
+    locations.update({"Lock %d" % k: "Hair" for k in range(1, 7)})
+    roots = {"Lock %d" % (k + 1): ((x0 + x1) / 2, -8.0) for k, (x0, x1) in enumerate(TEETH)}
+    tips = {"Lock %d" % (k + 1): ((x0 + x1) / 2, 4.0) for k, (x0, x1) in enumerate(TEETH)}
+    roots["Lock 6"], tips["Lock 6"] = (20.0, -8.0), (25.0, 28.0)
+    return PartsDrawing(size, size, layers, Alignment(scale, origin), truth, pieces, locations, roots, tips)
+
+
+def smooth_helmet(size: int = 480) -> PartsDrawing:
+    """A skin face in a smooth steel helmet with a face opening: the helmet borders the face but is not hair."""
+    scale, origin = size / 120, (0.55 * size, 0.5575 * size)
+    face = _ellipse(-9, 10, 30, 33)
+    opening = _ellipse(-9, 14, 26, 30)
+    helmet = _ellipse(-9, 0, 44, 50).subtracted(opening)
+
+    def flats(p):
+        _qt_fill(p, face, SKIN)
+        _qt_fill(p, helmet, (90, 110, 140))
+
+    def line(p):
+        for path in (_stroke(_arc(-9, 0, 44, 50, 0, 360), 1.2, closed=True),
+                     _stroke(_arc(-9, 14, 26, 30, 0, 360), 1.2, closed=True)):
+            _qt_fill(p, path, INK)
+
+    layer = lambda paint: _qt_layer(size, scale, origin, paint)
+    layers = [LayerSpec("Flats", layer(flats)), LayerSpec("Line", layer(line))]
+    truth = _truth(size, scale, origin, [("Face", face), ("Helm", helmet)])
+    return PartsDrawing(size, size, layers, Alignment(scale, origin), truth, {}, {"Face": "Skin", "Helm": None})
+
+
+def hat_only(size: int = 480) -> PartsDrawing:
+    """The parts helm's hat alone (dome, band and gem with tones, details and outlines): nothing should be colorable."""
+    scale, origin = size / 120, (0.55 * size, 0.5575 * size)
+    dome, band, gem = _hat_shapes()
+    shadow, light, details = _hat_tones(dome)
+
+    def flats(p):
+        for path, color in ((dome, DOME), (band, BAND), (gem, GEM)):
+            _qt_fill(p, path, color)
+
+    def line(p):
+        for path in _hat_lines():
+            _qt_fill(p, path, INK)
+
+    layer = lambda paint: _qt_layer(size, scale, origin, paint)
+    layers = [LayerSpec("Flats", layer(flats)), LayerSpec("Shadow", layer(shadow), blend="multiply", clipping=True),
+              LayerSpec("Light", layer(light), blend="screen", clipping=True), LayerSpec("Details", layer(details)),
+              LayerSpec("Line", layer(line))]
+    truth = _truth(size, scale, origin, [("Helm", dome), ("Helm", band), ("Accessory 1", gem)])
+    return PartsDrawing(size, size, layers, Alignment(scale, origin), truth, {}, {"Helm": None, "Accessory 1": None})

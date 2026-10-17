@@ -3,7 +3,7 @@ convert by hand:
 
     .venv/Scripts/python tools/make_test_drawings.py [--morph PATH.swf]
 
-synthetic.psd / synthetic.clip are drawn by the test suite's synthetic helm; the official ones are AQW items from the
+synthetic.psd / synthetic.clip and synthetic_parts.psd / .clip are drawn by the test suite's synthetic helms; the official ones are AQW items from the
 local cache (python -m autoswf download-aqw --samples) split into painting passes."""
 import argparse
 import os
@@ -14,7 +14,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "tests"))
 
-from drawings import synthetic_helm                            # noqa: E402
+from drawings import synthetic_helm, synthetic_parts_helm      # noqa: E402
 from official_drawings import official_drawing                 # noqa: E402
 from autoswf.aqw.assets import AqwCache, default_cache_dir      # noqa: E402
 from autoswf.drawing.writers import write_clip, write_psd      # noqa: E402
@@ -41,6 +41,7 @@ def main() -> int:
             print("Wrote %s" % (out / (name + ".clip")))
 
     save("synthetic", synthetic_helm(args.size), clip=True)
+    save("synthetic_parts", synthetic_parts_helm(), clip=True)
     targets = [(cache.file_path(rel), cls) for rel, cls in OFFICIAL if cache.file_path(rel).exists()]
     client = cache.client_path()
     if client is not None and client.exists():

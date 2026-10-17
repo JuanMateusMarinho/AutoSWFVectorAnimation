@@ -29,3 +29,21 @@ def real_drawing():
     if not path.exists():
         pytest.skip("the user's drawing is not in %s" % path)
     return path
+
+
+@pytest.fixture
+def reference_morph():
+    """The user's reference morph helm (never committed): AUTOSWF_REFERENCE_MORPH or cache/real/CrystallisOnsenMMorph4.swf;
+    skipped without it."""
+    path = Path(os.environ.get("AUTOSWF_REFERENCE_MORPH")
+                or Path(__file__).resolve().parents[1] / "cache" / "real" / "CrystallisOnsenMMorph4.swf")
+    if not path.exists():
+        pytest.skip("the reference morph is not in %s" % path)
+    return path
+
+
+@pytest.fixture(scope="session")
+def parts_helm(qapp):
+    """The synthetic helm with parts and its ground truth, built once."""
+    from drawings import synthetic_parts_helm
+    return synthetic_parts_helm()
