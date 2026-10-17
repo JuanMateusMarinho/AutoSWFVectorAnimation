@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")      # before any Qt import: tests run headless
 
@@ -19,3 +20,12 @@ def aqw_cache():
     if cache.missing(DEFAULT_ARMOR):
         pytest.skip("AQW reference files are not downloaded (python -m autoswf download-aqw)")
     return cache
+
+
+@pytest.fixture
+def real_drawing():
+    """The user's own drawing (never committed): AUTOSWF_REAL_DRAWING or cache/real/SkySavior.clip; skipped without it."""
+    path = Path(os.environ.get("AUTOSWF_REAL_DRAWING") or Path(__file__).resolve().parents[1] / "cache" / "real" / "SkySavior.clip")
+    if not path.exists():
+        pytest.skip("the user's drawing is not in %s" % path)
+    return path

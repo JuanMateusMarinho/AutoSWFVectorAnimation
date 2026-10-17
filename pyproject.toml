@@ -7,7 +7,7 @@ name = "autoswf"
 version = "0.1.0"
 description = "Turn layered cel-shaded art into AQW-ready vector SWF items"
 requires-python = ">=3.12"
-dependencies = ["PySide6>=6.8", "numpy>=2.1"]
+dependencies = ["PySide6>=6.8", "numpy>=2.1", "psd-tools>=1.25", "clipparse>=0.2", "scipy>=1.14", "Pillow>=11"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
@@ -18,4 +18,5 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["tests"]
-markers = ["aqw: needs AQW reference files downloaded with `python -m autoswf download-aqw` (skipped otherwise)"]
+markers = ["aqw: needs AQW reference files downloaded with `python -m autoswf download-aqw` (skipped otherwise)",
+           "real: needs the user's own drawing in cache/real (skipped otherwise)"]
