@@ -13,7 +13,7 @@ MIN_OUTLINE_POINTS = 40
 LOCAL_MAX_POINTS = 8               # a notch is the sharpest point within this many outline points
 INSIDE_FRACTION = 0.92             # of a cut's samples that must lie inside the mass
 NESTED_OVERLAP = 0.2               # a piece overlapping accepted locks more than this is a nested cut
-FALLBACK_TRIES = 6                 # outline points tried per notch and direction when no notch-to-notch cut works
+FALLBACK_TRIES = 6                 # nearest-point stretches tried per notch and direction without a notch-to-notch cut
 FALLBACK_LENGTH = 1.5              # a cut from a notch to a plain outline point must cut off a piece this many cuts long
 
 
@@ -53,7 +53,7 @@ def _outlines(mask: np.ndarray, settings: LockSettings, scale: float):
         p = chain.points[:-1]
         sigma = settings.smoothing * scale
         smooth = np.stack([ndimage.gaussian_filter1d(p[:, k], sigma, mode="wrap") for k in range(2)], axis=1)
-        yield smooth, chain.right == 0
+        yield smooth, p, chain.right == 0
 
 
 def _arc(p: np.ndarray) -> tuple[np.ndarray, float]:
@@ -87,9 +87,9 @@ def _candidates(mask: np.ndarray, scale: float, settings: LockSettings):
     direction when it is valid (both ends concave: the "minima rule"), else the nearest valid outline points before
     the next notch (fallback cuts, which must cut off a long piece). Each cut is (notch, other end, outline points of
     the arc cut off)."""
-    for p, inside_right in _outlines(mask, settings, scale):
-        s, length = _arc(p)
-        turn = _turning(p, s, length, settings.turn_span * scale)
+    for smooth, p, inside_right in _outlines(mask, settings, scale):
+        s, length = _arc(smooth)                    # notches are found on the smoothed outline,
+        turn = _turning(smooth, s, length, settings.turn_span * scale)   # cuts end on the drawn one
         concave = -turn if inside_right else turn
         n = len(p)
         notches = [int(i) for i in np.nonzero(concave >= settings.concave_angle)[0]
@@ -117,6 +117,14 @@ def _candidates(mask: np.ndarray, scale: float, settings: LockSettings):
                 dist = np.hypot(*(p[samples] - p[i]).T)
                 ok = ((dist > 0.4 * scale) & (dist <= settings.max_cut * scale) & (arc >= settings.elongation * dist)
                       & (arc < limit))
+                along = np.argsort(arc)                     # samples in outline order from the notch
+                d = dist[along]
+                low = np.ones(len(d), bool)                 # local minima of the distance: one try per stretch
+                low[1:] &= d[1:] <= d[:-1]
+                low[:-1] &= d[:-1] <= d[1:]
+                minima = np.zeros(len(samples), bool)
+                minima[along[low]] = True
+                ok &= minima
                 group = []
                 for j in samples[ok][np.argsort(dist[ok])]:
                     if _inside(mask, p[i], p[j]) >= INSIDE_FRACTION:

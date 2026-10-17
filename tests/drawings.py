@@ -207,14 +207,27 @@ class PartsDrawing(TestDrawing):
     tips: dict = field(default_factory=dict)
 
 
-def agreement(found: np.ndarray, truth: np.ndarray, slack: int = 2) -> tuple[float, float]:
-    """(recall on `truth` eroded by `slack` px, precision of `found` against `truth` dilated by `slack` px)."""
+def agreement(found: np.ndarray, truth: np.ndarray, slack: int = 2,
+              ignore: np.ndarray | None = None) -> tuple[float, float]:
+    """(recall on `truth` eroded by `slack` px, precision of `found` against `truth` dilated by `slack` px), leaving
+    out `ignore` pixels (under the line art, where a boundary between flats is anyone's guess)."""
     from scipy import ndimage
-    inner = ndimage.binary_erosion(truth, iterations=slack) if slack else truth
+    keep = ~ignore if ignore is not None else np.ones(truth.shape, bool)
+    inner = (ndimage.binary_erosion(truth, iterations=slack) if slack else truth) & keep
     outer = ndimage.binary_dilation(truth, iterations=slack) if slack else truth
     recall = float((found & inner).sum() / max(inner.sum(), 1))
-    precision = float((found & outer).sum() / max(found.sum(), 1))
+    precision = float((found & outer & keep).sum() / max((found & keep).sum(), 1))
     return recall, precision
+
+
+def line_mask(passes) -> np.ndarray:
+    """Canvas pixels covered by the line art (alpha >= 0.5)."""
+    out = np.zeros((passes.height, passes.width), bool)
+    for part in passes.parts:
+        x0, y0 = part.origin
+        h, w = part.lines.shape[:2]
+        out[y0:y0 + h, x0:x0 + w] |= part.lines[..., 3] >= 0.5
+    return out
 
 
 SKIN, HAIR, IRIS, PUPIL, WHITE = (242, 201, 160), (120, 70, 40), (40, 160, 200), (20, 20, 30), (255, 255, 255)
@@ -264,7 +277,7 @@ def _qt_fill(p, path, color):
 def _hat_shapes():
     dome = _ellipse(-9, -34, 40, 26).intersected(_path([(-60, -80), (40, -80), (40, -21), (-60, -21)]))
     band = _path([(-52, -21), (34, -21), (34, -14), (-52, -14)])
-    return dome, band, _ellipse(-9, -17.5, 3, 3)
+    return dome, band, _ellipse(-9, -17.5, 2.5, 2.5)
 
 
 def _hat_tones(dome, horn=None):
@@ -295,8 +308,10 @@ def _hat_tones(dome, horn=None):
 
 
 def _hat_lines():
-    return [_brush(_arc(-9, -34, 40, 26, 180, 360), 1.6), _stroke([(-52, -21), (34, -21)], 1.0),
-            _stroke([(-52, -14), (34, -14)], 1.0), _stroke(_arc(-9, -17.5, 3.3, 3.3, 0, 360), 0.6, closed=True)]
+    # the dome's outline leaves a gap where the horn stands on it (an outline drawn over the horn would cut it)
+    return [_brush(_arc(-9, -34, 40, 26, 180, 300), 1.6), _brush(_arc(-9, -34, 40, 26, 335, 360), 1.6),
+            _stroke([(-52, -21), (34, -21)], 1.0), _stroke([(-52, -14), (34, -14)], 1.0),
+            _stroke(_arc(-9, -17.5, 2.8, 2.8, 0, 360), 0.6, closed=True)]
 
 
 def _truth(size, scale, origin, ordered) -> dict:
@@ -338,9 +353,16 @@ def synthetic_parts_helm(size: int = 720) -> PartsDrawing:
                     ("Horn R", horn, HORN)]
     hat_shadow, hat_light, hat_details = _hat_tones(dome, horn)
 
-    def flats(p):
-        for _, path, color in flats_order:
-            _qt_fill(p, path, color)
+    hair_mass = hair_band
+    for path in teeth + [side]:
+        hair_mass = hair_mass.united(path)
+
+    def flats(p):                                   # the hair is painted as one fill, like a bucket fill in CSP
+        for name, path, color in flats_order:
+            if name == "Hair":
+                _qt_fill(p, hair_mass, color)
+            elif not name.startswith("Lock"):
+                _qt_fill(p, path, color)
 
     def shadow(p):
         _qt_fill(p, _ellipse(14, 26, 5, 8).intersected(face), (150, 130, 200))
