@@ -6,7 +6,6 @@ matrices it is given (Flash convention, px).
 import math
 from collections import OrderedDict
 
-import numpy as np
 from PySide6.QtCore import QPointF, QRect, QRectF, Qt
 from PySide6.QtGui import (QBrush, QColor, QGradient, QImage, QLinearGradient, QPainter, QPainterPath, QPen,
                            QRadialGradient, QTransform)
@@ -371,7 +370,9 @@ class Renderer:
 def _paint_fills_seamless(painter: QPainter, transform: QTransform, fills: list[tuple[QPainterPath, QBrush]]) -> None:
     """Draw the fills of one shape layer the way Flash does: their anti-aliased coverages add up, so two fills
     sharing an edge cover its pixels completely (drawn one by one with source-over, the backdrop shows through as a
-    seam). Each fill is rasterized alone and the premultiplied rasters are summed."""
+    seam). Each fill is rasterized alone into one scratch layer, and the rasters are added up (premultiplied,
+    saturating) in a second layer, which is then drawn source-over. Qt's Plus mode adds exactly only when it blits
+    whole pixels: drawing a path with it saturates before the anti-aliased coverage is applied."""
     device = painter.device()
     full = QRect(0, 0, device.width(), device.height())
     rects = [transform.mapRect(path.boundingRect()).toAlignedRect().adjusted(-1, -1, 1, 1).intersected(full)
@@ -382,22 +383,27 @@ def _paint_fills_seamless(painter: QPainter, transform: QTransform, fills: list[
             union = union.united(r)
     if union.isEmpty():
         return
-    acc = np.zeros((union.height(), union.width(), 4), np.float32)
+    sum_layer, total = _new_layer(union)
+    total.setCompositionMode(QPainter.CompositionMode.CompositionMode_Plus)
+    one, p = _new_layer(union)
+    p.setPen(Qt.PenStyle.NoPen)
+    shift = QTransform.fromTranslate(-union.x(), -union.y())
     for (path, brush), r in zip(fills, rects):
         if r.isEmpty():
             continue
-        image, p = _new_layer(r)
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setTransform(transform * QTransform.fromTranslate(-r.x(), -r.y()))
+        local = r.translated(-union.x(), -union.y())
+        p.resetTransform()
+        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
+        p.fillRect(local, Qt.GlobalColor.transparent)
+        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
+        p.setTransform(transform * shift)
         p.setBrush(brush)
         p.drawPath(path)
-        p.end()
-        x, y = r.x() - union.x(), r.y() - union.y()
-        acc[y:y + r.height(), x:x + r.width()] += qimage_to_array(image)
-    np.clip(acc, 0.0, 1.0, out=acc)
-    np.minimum(acc[..., :3], acc[..., 3:4], out=acc[..., :3])
+        total.drawImage(local.topLeft(), one, local)
+    p.end()
+    total.end()
     painter.resetTransform()
-    painter.drawImage(union.topLeft(), array_to_qimage(acc))
+    painter.drawImage(union.topLeft(), sum_layer)
 
 
 def render_fitted(obj: DisplayObject, scale: float, colors: PlayerColors | None, padding: int = 2, *,
