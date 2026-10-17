@@ -1,0 +1,161 @@
+"""A helm with parts (spec §4.2-4.3, §10): one wrapper symbol per part, placed at its pivot (its registration point,
+as in Flash), holding a plain baked shape, then one colorable child clip per (location, shade) on top with exactly
+the same edges, then details and line art. Animation (Plan 5) goes on the wrappers, never on the colorable clips."""
+from dataclasses import dataclass
+
+from autoswf.aqw.contract import LOCATIONS, SHADES
+from autoswf.aqw.helm import HelmItem
+from autoswf.model.document import ColorCustom, Frame, Placement, Symbol
+from autoswf.model.geometry import Matrix
+from autoswf.model.shape import Shape, translated
+from autoswf.parts.hidden import PartLayer
+from autoswf.vectorize.art import FaceStyle, TracedLayer, VectorArt, recolored, split_tones
+
+# The client's mcSkel in Idle (both genders, 2026-10-16): the head slot and the back-hair slot.
+IDLE_HEAD = Matrix(0.23516845703125, 0.025909423828125, -0.025909423828125, 0.23516845703125, 7.6, -100.25)
+IDLE_BACKHAIR = Matrix(0.89178466796875, 0.1094207763671875, -0.1094207763671875, 0.89178466796875, 4.0, -114.15)
+LOCATION_MATCH = 16                                # max channel difference between a face's flat and a region's
+
+
+def head_to_backhair() -> Matrix:
+    """Head-local space into the back-hair slot's space, so back hair shows in Idle where it was drawn."""
+    return IDLE_BACKHAIR.inverse() @ IDLE_HEAD
+
+
+def face_shade(style: FaceStyle, soft_roles: frozenset[str], steps: int = 3) -> str:
+    """The game shade of a face: Light over Darker over Dark over None; soft tones count from their middle level."""
+    levels = dict(style.tones)
+
+    def present(role: str) -> bool:
+        return levels.get(role, 0) >= ((steps + 1) // 2 if role in soft_roles else 1)
+    if present("light"):
+        return "Light"
+    if present("occlusion"):
+        return "Darker"
+    if present("shadow"):
+        return "Dark"
+    return "None"
+
+
+def instance_name(name: str) -> str:
+    """"Lock 3" -> "lock3", "Eye L ball" -> "eyeLBall", "Back hair" -> "backHair"."""
+    words = name.split()
+    return words[0].lower() + "".join(w[:1].upper() + w[1:] for w in words[1:])
+
+
+@dataclass(eq=False)
+class AssembledHelm:
+    item: HelmItem
+    wrappers: dict[str, Symbol]                    # by layer name, plus the eyes' parent wrappers ("Eye L")
+    placements: dict[str, Placement]
+    colorable: list[tuple[str, str, str]]          # (layer name, location, shade) in placement order
+
+
+def _location(style: FaceStyle, layer: PartLayer) -> str | None:
+    if style.flat is None:
+        return None
+    for color, location in layer.locations:
+        if max(abs(int(a) - int(b)) for a, b in zip(style.flat[:3], color[:3])) <= LOCATION_MATCH:
+            return location
+    return None
+
+
+def _shape_items(traced: TracedLayer, layer: PartLayer, separate_tones: bool, colorable: list) -> list:
+    """The plain shape(s) of a fills layer and its colorable clips, in drawing order."""
+    if traced.role != "fills":
+        return [traced.shape]
+    locations = [_location(s, layer) for s in traced.styles]
+    shades = [face_shade(s, layer.soft_roles) for s in traced.styles]
+    flat = [FaceStyle(s.flat, s.flat) if s.flat is not None else None for s in traced.styles]
+    plain = recolored(traced, traced.name, [f if loc else s for s, f, loc in zip(traced.styles, flat, locations)])
+    items = [t.shape for t in (split_tones(plain) if separate_tones else [plain])]
+    for location in LOCATIONS:
+        if location not in locations:
+            continue
+        has_dark = any(loc == location and sh == "Dark" for loc, sh in zip(locations, shades))
+        wanted = {"None": lambda shade: True,                      # Dark continues under Darker only where
+                  "Dark": lambda shade: shade == "Dark" or (has_dark and shade == "Darker"),   # both exist
+                  "Darker": lambda shade: shade == "Darker", "Light": lambda shade: shade == "Light"}
+        for shade in ("None", "Dark", "Darker", "Light"):
+            mapping = []
+            for s, f, loc, sh in zip(traced.styles, flat, locations, shades):
+                take = loc == location and wanted[shade](sh)
+                mapping.append((f if shade == "None" else s) if take else None)
+            if not any(mapping):
+                continue
+            clip = recolored(traced, "%s %s %s" % (layer.name, location, shade), mapping)
+            if not clip.shape.paths:
+                continue
+            items.append(Symbol(clip.name, [Frame([Placement(clip.shape, 1)])], color_custom=ColorCustom(location, shade)))
+            colorable.append((layer.name, location, shade))
+    return items
+
+
+def _wrapper(layer: PartLayer, traced: list[TracedLayer], separate_tones: bool, colorable: list) -> Symbol | None:
+    items = []
+    for t in traced:
+        items += _shape_items(t, layer, separate_tones, colorable)
+    placements = []
+    for item in items:
+        if isinstance(item, Shape):
+            if not item.paths:
+                continue
+            item = translated(item, -layer.pivot.x, -layer.pivot.y)
+        else:
+            shape = item.frames[0].placements[0].item
+            item.frames[0].placements[0].item = translated(shape, -layer.pivot.x, -layer.pivot.y)
+        placements.append(Placement(item, len(placements) + 1))
+    return Symbol(layer.name, [Frame(placements)]) if placements else None
+
+
+def assemble_helm(art: VectorArt, layers: list[PartLayer], link: str, *, separate_tones: bool = False) -> AssembledHelm:
+    traced: dict[str, list[TracedLayer]] = {}
+    for t in art.layers:
+        traced.setdefault(t.part, []).append(t)
+    wrappers: dict[str, Symbol] = {}
+    placements: dict[str, Placement] = {}
+    colorable: list[tuple[str, str, str]] = []
+    root_frame, back_frame = Frame(), Frame()
+    parents: dict[str, tuple[Symbol, object]] = {}
+    for layer in layers:
+        symbol = _wrapper(layer, traced.get(layer.name, []), separate_tones, colorable)
+        if symbol is None:
+            continue
+        wrappers[layer.name] = symbol
+        if layer.parent is None:
+            frame = back_frame if layer.back_hair else root_frame
+            p = Placement(symbol, len(frame.placements) + 1, Matrix.translate(layer.pivot.x, layer.pivot.y),
+                          name=instance_name(layer.name))
+            frame.placements.append(p)
+            placements[layer.name] = p
+            continue
+        if layer.parent not in parents:
+            pivot = next((l.pivot for l in layers if l.parent == layer.parent and l.name.endswith(" ball")), layer.pivot)
+            parent = Symbol(layer.parent, [Frame()])
+            p = Placement(parent, len(root_frame.placements) + 1, Matrix.translate(pivot.x, pivot.y),
+                          name=instance_name(layer.parent))
+            root_frame.placements.append(p)
+            parents[layer.parent] = (parent, pivot)
+            wrappers[layer.parent] = parent
+            placements[layer.parent] = p
+        parent, pivot = parents[layer.parent]
+        frame = parent.frames[0]
+        p = Placement(symbol, len(frame.placements) + 1,
+                      Matrix.translate(layer.pivot.x - pivot.x, layer.pivot.y - pivot.y), name=instance_name(layer.name))
+        frame.placements.append(p)
+        placements[layer.name] = p
+    root = Symbol(link, [root_frame])
+    backhair = None
+    if back_frame.placements:
+        inner = Symbol("Back hair art", [back_frame])
+        backhair = Symbol(link + "_backhair", [Frame([Placement(inner, 1, head_to_backhair())])])
+    return AssembledHelm(HelmItem(link, root, backhair), wrappers, placements, colorable)
+
+
+def colorable_summary(helm: AssembledHelm) -> str:
+    pairs = {(loc, shade) for _, loc, shade in helm.colorable}
+    ordered = [(loc, shade) for loc in LOCATIONS for shade in SHADES if (loc, shade) in pairs]
+    if not ordered:
+        return "Color custom: none (every part keeps its drawn colors)"
+    return "Color custom: %s (%d clip%s)" % (", ".join("%s %s" % p for p in ordered), len(helm.colorable),
+                                             "" if len(helm.colorable) == 1 else "s")

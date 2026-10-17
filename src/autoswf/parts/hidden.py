@@ -247,9 +247,14 @@ class _Splitter:
             _, (iy, ix) = ndimage.distance_transform_edt(seeds < 0, return_indices=True)
             nearest = seeds[iy, ix]
             local_hole = hole[y0:y1, x0:x1]
+            provider_units = [self.unit_of_part[p][0] for p in providers]
             for p in providers:
                 (unit,) = self.unit_of_part[p]
-                take = local_hole & (nearest == unit) & ~self.own(unit, (x0, y0, x1, y1))
+                take = local_hole & (nearest == unit)
+                higher = local_hole & np.isin(nearest, [u for u in provider_units if u > unit])
+                if take.any() and higher.any():                    # reach under the next provider's fill too
+                    take |= higher & (ndimage.distance_transform_edt(~take) <= UNDERLAP)
+                take &= ~self.own(unit, (x0, y0, x1, y1))
                 if take.any():
                     ys, xs = np.nonzero(take)
                     self._extend(unit, ys + y0, xs + x0)

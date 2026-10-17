@@ -47,3 +47,24 @@ def parts_helm(qapp):
     """The synthetic helm with parts and its ground truth, built once."""
     from drawings import synthetic_parts_helm
     return synthetic_parts_helm()
+
+
+@pytest.fixture(scope="session")
+def converted_parts_helm(parts_helm, qapp):
+    """The synthetic parts helm through detect -> split -> vectorize -> assemble -> export, once per session."""
+    from types import SimpleNamespace
+    from drawings import drawing_from_specs
+    from autoswf.aqw.helm import export_helm
+    from autoswf.drawing.passes import extract_passes
+    from autoswf.drawing.roles import assign_roles
+    from autoswf.parts.assemble import assemble_helm
+    from autoswf.parts.detect import detect_parts
+    from autoswf.parts.hidden import layered_passes, split_passes
+    from autoswf.vectorize.art import vectorize
+    t = parts_helm
+    d = drawing_from_specs(t.width, t.height, t.layers)
+    passes = extract_passes(d, assign_roles(d))
+    layers = split_passes(passes, detect_parts(passes, t.alignment))
+    art = vectorize(layered_passes(passes, layers), t.alignment)
+    helm = assemble_helm(art, layers, "PartsHelm")
+    return SimpleNamespace(t=t, passes=passes, layers=layers, art=art, helm=helm, swf=export_helm(helm.item))
