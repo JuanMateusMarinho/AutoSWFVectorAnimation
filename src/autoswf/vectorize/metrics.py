@@ -40,12 +40,13 @@ class QualityReport:
         return out
 
     def format(self) -> str:
-        gaps = ", ".join("%s %d" % item for item in self.gaps.items())
-        lines = ["Quality: edges within %.2f px (95%%) and %.2f px (99%%); gaps %s; color shift %.2f%%; %d segments; "
-                 "%.1f KB" % (self.edge_p95, self.edge_p99, gaps, self.color_shift * 100, self.segments,
-                              self.bytes / 1024)]
+        lines = ["Quality against the drawing:",
+                 "  Edges: 95%% within %.2f px, 99%% within %.2f px" % (self.edge_p95, self.edge_p99),
+                 "  Gaps: " + ", ".join("%s %d" % item for item in self.gaps.items()),
+                 "  Color shift: %.2f%% of flat areas" % (self.color_shift * 100),
+                 "  Size: %d segments, %.1f KB" % (self.segments, self.bytes / 1024)]
         problems = self.problems()
-        lines += ["  " + p for p in problems] if problems else ["  Meets the quality bar."]
+        lines += ["  Problem: " + p for p in problems] if problems else ["  Meets the quality bar."]
         return "\n".join(lines)
 
 
