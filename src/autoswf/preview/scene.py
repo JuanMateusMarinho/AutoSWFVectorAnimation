@@ -19,6 +19,7 @@ GENDERS = ("M", "F")
 AVATAR_HEIGHT = 150.0           # skeleton units from the feet to above the head, used to fit the view
 UNCOVERED_TINT = (255, 0, 0, 160)
 MORPH_CHECK_SCALE, MORPH_CHECK_SIZE = 4.0, 600
+MORPH_TOLERANCE_PX = 40         # uncovered base-head pixels (at the check's scale) still counted as covered
 
 
 class MissingReferenceFiles(Exception):
@@ -143,6 +144,10 @@ class PreviewScene:
         alphas = [qimage_to_array(self.renderer.render_image(part, x1 - x0, y1 - y0, shifted, None))[..., 3]
                   if part is not None else np.zeros((y1 - y0, x1 - x0), np.float32) for part in (face, helm)]
         return (alphas[0] >= 0.5) & (alphas[1] < 0.5), x0, y0
+
+    def morph_check(self) -> dict[str, int]:
+        """Base-head pixels the helm leaves uncovered, per gender (more than MORPH_TOLERANCE_PX means visible)."""
+        return {g: self.uncovered_head_pixels(g) for g in GENDERS}
 
     def uncovered_head_pixels(self, gender: str) -> int:
         size, head = MORPH_CHECK_SIZE, self.rigs[gender].head()

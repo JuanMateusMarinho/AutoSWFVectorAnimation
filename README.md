@@ -10,7 +10,7 @@ color customization, shows the item on the AQW body, and exports a SWF ready for
 
 > **Status: early development.** Phase 1 (helms and morph helms) is being built. Done so far: the SWF engine
 > (AQW-valid helm export), the preview of a helm on the AQW male and female bodies, and the conversion of a layered
-> drawing (`.clip`, `.psd`, `.png`) into a static vector helm.
+> drawing (`.clip`, `.psd`, `.png`) into a vector helm split into parts, with AQW color custom.
 
 ## Why
 
@@ -100,6 +100,36 @@ drawings not made on the template; DEG turns the drawing clockwise onto the head
 clockwise needs a negative DEG), `--detail 0-100` (simpler or more faithful shapes, default 50), `--gradient Light`
 (an SWF gradient instead of flat steps for a soft layer), `--separate-tones` (shadows and lights as their own shapes),
 `--list` (only show the layers and roles) and `--report` (measure the vector art against the drawing).
+
+### Parts and color custom
+
+`convert` finds the helm's parts — face, ears, eyes (white, iris, pupil, highlight, lid), brows, mouth, nose, the hair
+and each lock, horns, the helm itself and accessories — and lists them with the point (in drawing pixels) where each
+one is. Each part becomes its own symbol, ready to be animated, and what is behind the parts that move (eyes, locks,
+ears, accessories) is filled in, so nothing opens up when they move. Folders named after parts (Hair, Cabelo, Olhos,
+Eyes, Chapéu, Accessories, Back hair…) are used as they are.
+
+Hair follows the player's Hair color, skin follows Skin and irises follow Eye; shadow, occlusion and light layers become
+the game's Dark, Darker and Light tones there (the game draws those with its own fixed tones). Everything else keeps
+the colors you painted, unless you give a part a color slot.
+
+To fix a part, write `my-helm.parts.json` next to the drawing (or pass `--parts FILE`), using the points `convert`
+printed or `--parts-image` shows:
+
+```json
+{
+  "assign": [{"at": [512, 300], "part": "Lock 2"}, {"at": [400, 310], "part": "Eye L", "piece": "iris"}],
+  "cuts": [[[100, 200], [140, 260]]],
+  "colors": {"Helm": "Base", "Accessory 1": "Trim", "Brow L": "none"}
+}
+```
+
+`assign` puts the region under a point into a part (Face, Ear L/R, Nose, Mouth, Brow L/R, Eye L/R, Hair, Lock N,
+Back hair, Horn L/R, Helm, Accessory N); `cuts` split regions along a line; `colors` give a part a slot (Skin, Hair, Eye,
+Base, Trim, Accessory or `none`). More options: `--color "Helm=Base"` (same as `colors`), `--parts-image parts.png` (an
+image of the parts found), `--morph` (warn when the male or female base head shows around a morph helm) and
+`--no-parts` (one static shape set, no color custom). To see the result with other player colors:
+`preview my-helm.swf --player-color Hair=C02030 --player-color Skin=80C0FF`.
 
 `download-aqw` fetches the current AQW game client and one armor (for the preview body) from AQW's public server.
 AQW files are only downloaded when you ask, stay on your computer (in `cache/`), and are never committed or shared.

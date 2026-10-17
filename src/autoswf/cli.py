@@ -118,6 +118,20 @@ def _cmd_download(args) -> int:
     return 0
 
 
+def _parse_player_colors(items: list[str]) -> dict[str, int]:
+    from autoswf.render.colors import LOCATION_FIELDS
+    locations = {loc.casefold(): loc for loc in LOCATION_FIELDS}
+    colors = {}
+    for item in items:
+        location, sep, value = item.partition("=")
+        value = value.strip().lstrip("#")
+        if (not sep or location.strip().casefold() not in locations or len(value) != 6
+                or any(c not in "0123456789abcdefABCDEF" for c in value)):
+            raise ValueError("Player colors look like Hair=FF0000 (locations: %s)" % ", ".join(LOCATION_FIELDS))
+        colors[locations[location.strip().casefold()]] = int(value, 16)
+    return colors
+
+
 def _cmd_preview(args) -> int:
     from autoswf.aqw.assets import AqwCache, default_cache_dir
     from autoswf.preview.scene import MissingReferenceFiles, PreviewScene
@@ -127,13 +141,20 @@ def _cmd_preview(args) -> int:
     except ValueError:
         print("Size must look like 800x600")
         return 1
+    try:
+        colors = _parse_player_colors(args.player_color)
+    except ValueError as e:
+        print(e)
+        return 1
     if not args.snapshot:
         from autoswf.preview.window import run_preview
-        return run_preview(helm_path, link=args.link, label=args.label, armor=args.armor)
+        return run_preview(helm_path, link=args.link, label=args.label, armor=args.armor, colors=colors)
     _qt_app()
     try:
         scene = PreviewScene.from_cache(AqwCache(default_cache_dir()), helm_path, link=args.link, armor=args.armor)
         scene.set_label(args.label)
+        for location, rgb in colors.items():
+            scene.set_color(location, rgb)
     except (MissingReferenceFiles, ValueError) as e:
         print(e)
         return 1
@@ -230,6 +251,7 @@ def _cmd_convert(args) -> int:
         overrides = _parse_roles(args.role)
         override = Alignment.parse(args.align) if args.align else None
         link = sanitize_link(args.link or out.stem)
+        corrections, corrections_file = _corrections(args)
         drawing = read_drawing(args.drawing)
         roles = assign_roles(drawing, overrides)
     except (DrawingError, ValueError) as e:
@@ -245,21 +267,48 @@ def _cmd_convert(args) -> int:
         print("  %s  %s  (%s)" % (path, shown, _role_reason(node, ancestors, role, siblings)))
     if args.list:
         return 0
+    if corrections_file is not None:
+        print("Using part corrections from %s" % corrections_file.name)
     try:
         passes = extract_passes(drawing, roles, gradient_layers=frozenset(args.gradient))
         ys, xs = np.nonzero(passes.full[..., 3] > 0)
         alignment, reason = choose_alignment(drawing, (xs.min(), xs.max() + 1, ys.min(), ys.max() + 1), override)
-        art = vectorize(passes, alignment, VectorizeSettings(detail=args.detail))
+        settings = VectorizeSettings(detail=args.detail)
+        if args.no_parts:
+            parts = None
+            art = vectorize(passes, alignment, settings)
+        else:
+            from autoswf.parts.detect import detect_parts
+            from autoswf.parts.hidden import layered_passes, split_passes
+            parts = detect_parts(passes, alignment, corrections, args.detail)
+            layers = split_passes(passes, parts)
+            art = vectorize(layered_passes(passes, layers), alignment, settings)
     except (DrawingError, ValueError) as e:
         print(e)
         return 1
-    for note in art.notes:
+    for note in art.notes + (parts.notes if parts is not None else []):
         print(note)
     print("Alignment: %s: --align %s" % (reason, alignment))
-    for layer in art.layers:
-        segments = sum(len(p.segments) for p in layer.shape.paths)
-        print("%s: %d region%s, %d segments" % (layer.name, len(layer.styles), "" if len(layer.styles) == 1 else "s", segments))
-    data = export_helm(helm_from_art(art, link, separate_tones=args.separate_tones))
+    if parts is None:
+        for layer in art.layers:
+            segments = sum(len(p.segments) for p in layer.shape.paths)
+            print("%s: %d region%s, %d segments" % (layer.name, len(layer.styles), "" if len(layer.styles) == 1 else "s",
+                                                   segments))
+        data = export_helm(helm_from_art(art, link, separate_tones=args.separate_tones))
+    else:
+        from autoswf.parts.assemble import assemble_helm, colorable_summary
+        helm = assemble_helm(art, layers, link, separate_tones=args.separate_tones)
+        _print_parts(parts)
+        print(colorable_summary(helm))
+        if any(shade != "None" for _, _, shade in helm.colorable):
+            print("In colorable areas the game draws shadows and lights with its own fixed tones (Dark, Darker, "
+                  "Light), not the colors you painted.")
+        if args.parts_image:
+            from autoswf.parts.overview import parts_image
+            Path(args.parts_image).parent.mkdir(parents=True, exist_ok=True)
+            parts_image(passes, parts).save(args.parts_image)
+            print("Wrote %s (the parts found; drawing pixels, for corrections)" % args.parts_image)
+        data = export_helm(helm.item)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_bytes(data)
     if len(data) > SIZE_WARNING_BYTES:
@@ -272,7 +321,54 @@ def _cmd_convert(args) -> int:
     print("Wrote %s (%.1f KB, class %s) — valid" % (out, len(data) / 1024, link))
     if args.report:
         print(quality_report(passes, art, data, link).format())
+    if args.morph:
+        _morph_check(out, link)
     return 0
+
+
+def _corrections(args):
+    """The part corrections: --parts FILE, else DRAWING.parts.json next to the drawing when it exists, plus --color."""
+    from autoswf.parts.model import Corrections, check_color
+    path = Path(args.parts) if args.parts else Path(args.drawing).with_name(Path(args.drawing).stem + ".parts.json")
+    if args.parts or path.exists():
+        corrections = Corrections.load(path)
+    else:
+        corrections, path = Corrections(), None
+    for item in args.color:
+        part, sep, location = item.rpartition("=")
+        if not sep or not part:
+            raise ValueError('Colors look like "PART=LOCATION", for example --color "Helm=Base"')
+        name, location = check_color(part, location)
+        corrections.colors[name] = location
+    return corrections, path
+
+
+def _print_parts(parts) -> None:
+    from autoswf.aqw.contract import LOCATIONS
+    print("Parts (%d):" % len(parts.parts))
+    for name, part in parts.parts.items():
+        found = {parts.location_of.get(r) for r in part.regions}
+        text = [loc for loc in LOCATIONS if loc in found] + (["drawn colors"] if None in found else [])
+        x, y = parts.label_point(name)
+        print("  %-12s  %-22s  at %d,%d" % (name, ", ".join(text), x, y))
+
+
+def _morph_check(out: Path, link: str) -> None:
+    from autoswf.aqw.assets import DEFAULT_ARMOR, AqwCache, default_cache_dir
+    from autoswf.preview.scene import MORPH_TOLERANCE_PX, PreviewScene
+    cache = AqwCache(default_cache_dir())
+    if cache.missing(DEFAULT_ARMOR):
+        print("Morph check skipped: AQW reference files are missing. Run: python -m autoswf download-aqw")
+        return
+    _qt_app()
+    counts = PreviewScene.from_cache(cache, out, link=link).morph_check()
+    names = {"M": "male", "F": "female"}
+    shown = [(g, counts[g]) for g in ("M", "F") if counts[g] > MORPH_TOLERANCE_PX]
+    if not shown:
+        print("Morph check: the helm covers the male and female base heads")
+    else:
+        print("Morph check: the base head shows around the helm — %s"
+              % ", ".join("%s: %d px" % (names[g], n) for g, n in shown))
 
 
 def _cmd_template(args) -> int:
@@ -336,6 +432,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--snapshot", help="save one image instead of opening the window")
     p.add_argument("--frames", type=int, default=0, help="frames to play (24 fps) before the snapshot")
     p.add_argument("--size", default="800x600", help="snapshot size, WIDTHxHEIGHT")
+    p.add_argument("--player-color", action="append", default=[], metavar="LOCATION=RRGGBB",
+                   help="a player color, e.g. Hair=FF0000 (Skin, Hair, Eye, Base, Trim, Accessory; repeatable)")
     p.set_defaults(run=_cmd_preview)
     p = sub.add_parser("fidelity", help="compare the renderer with JPEXS FFDec on official items")
     p.add_argument("files", nargs="*", help="extra SWF files to compare (all their exported classes)")
@@ -360,6 +458,14 @@ def main(argv: list[str] | None = None) -> int:
                    help="draw shadow, occlusion and light as separate shapes over the flat colors")
     p.add_argument("--report", action="store_true", help="measure the result against the drawing")
     p.add_argument("--list", action="store_true", help="only list the layers and the role of each")
+    p.add_argument("--parts", metavar="FILE",
+                   help="part corrections (default: DRAWING.parts.json next to the drawing, when it exists)")
+    p.add_argument("--no-parts", action="store_true", help="one static shape set: no parts and no color custom")
+    p.add_argument("--color", action="append", default=[], metavar="PART=LOCATION",
+                   help="the AQW color a part follows: Skin, Hair, Eye, Base, Trim, Accessory or none (repeatable)")
+    p.add_argument("--parts-image", metavar="FILE.png", help="write an image of the parts found")
+    p.add_argument("--morph", action="store_true",
+                   help="check that the helm covers the male and female base heads (needs the AQW files)")
     p.set_defaults(run=_cmd_convert)
     p = sub.add_parser("template", help="write a drawing template with the AQW heads as guide layers")
     p.add_argument("out", help="PSD file to write")

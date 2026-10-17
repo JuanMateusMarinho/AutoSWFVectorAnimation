@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QColorDialog, QComboBox,
                                QMainWindow, QMessageBox, QPushButton, QSlider, QVBoxLayout, QWidget)
 
 from autoswf.aqw.assets import DEFAULT_ARMOR, AqwCache, DownloadError, default_cache_dir, download_reference_files
-from autoswf.preview.scene import GENDERS, MissingReferenceFiles, PreviewScene, find_helm_link
+from autoswf.preview.scene import GENDERS, MORPH_TOLERANCE_PX, MissingReferenceFiles, PreviewScene, find_helm_link
 from autoswf.render.colors import PlayerColors
 from autoswf.swf.decode import MovieData
 
@@ -223,10 +223,10 @@ class PreviewWindow(QMainWindow):
         if self.morph_box.isChecked():
             if self._ticks_since_check >= MORPH_CHECK_EVERY:
                 self._ticks_since_check = 0
-                counts = {g: self.scene.uncovered_head_pixels(g) for g in GENDERS}
-                if any(counts.values()):
+                counts = self.scene.morph_check()
+                if any(n > MORPH_TOLERANCE_PX for n in counts.values()):
                     self._morph_text = "Morph check: base head visible around the helm — %s" % ", ".join(
-                        "%s: %d px" % (GENDER_NAMES[g], counts[g]) for g in GENDERS)
+                        "%s: %d px" % (GENDER_NAMES[g], counts[g]) for g in GENDERS if counts[g] > MORPH_TOLERANCE_PX)
                 else:
                     self._morph_text = "Morph check: the helm covers the base head (male and female)"
             parts.append(self._morph_text)
@@ -331,13 +331,15 @@ class PreviewWindow(QMainWindow):
 
 
 def run_preview(helm_path: Path | None, *, link: str | None = None, label: str = "Idle",
-                armor: str = DEFAULT_ARMOR) -> int:
+                armor: str = DEFAULT_ARMOR, colors: dict[str, int] | None = None) -> int:
     app = QApplication.instance() or QApplication([])
     cache = AqwCache(default_cache_dir())
     scene, problem = None, None
     try:
         scene = PreviewScene.from_cache(cache, helm_path, link=link, armor=armor)
         scene.set_label(label)
+        for location, rgb in (colors or {}).items():
+            scene.set_color(location, rgb)
     except MissingReferenceFiles as e:
         problem = str(e)
     except (ValueError, OSError) as e:

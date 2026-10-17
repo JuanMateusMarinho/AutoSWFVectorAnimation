@@ -98,6 +98,14 @@ class PartMap:
     def region_at(self, x: float, y: float):
         return self.graph.region_at(x, y)
 
+    def label_point(self, name: str) -> tuple[int, int]:
+        """Drawing pixel deepest inside the part's largest region (where a click selects it)."""
+        largest = max(self.parts[name].regions, key=lambda r: self.graph.regions[r].pixels)
+        group, local = self.graph.mask(largest)
+        depth = ndimage.distance_transform_edt(np.pad(local, 1))[1:-1, 1:-1]
+        y, x = np.unravel_index(int(np.argmax(depth)), depth.shape)
+        return int(x) + group.origin[0], int(y) + group.origin[1]
+
     def part_mask(self, name: str) -> np.ndarray:
         out = np.zeros((self.graph.height, self.graph.width), bool)
         for rid in self.parts[name].regions:
