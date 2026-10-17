@@ -28,8 +28,10 @@ SKIN_MIN_SCORE = 5.0                               # head units²
 HAIR_MIN_AREA, HAIR_MIN_THICKNESS, HAIR_MIN_SCORE = 40.0, 1.5, 10.0
 CONTACT_WIDTH = 0.6                                # head units
 HAIR_CONTACT_WEIGHT = 2.0                          # head units² of hair-zone area per head unit of skin contact
-HAIR_HUE_SPREAD = 12.0                             # degrees: other flat colors of the hair (drawn shades)
-HAIR_VALUE_SPREAD = 0.35
+HAIR_HUE_SPREAD = 8.0                              # degrees: other flat colors of the hair (drawn shades)
+HAIR_SATURATION_SPREAD, HAIR_VALUE_SPREAD = 0.12, 0.35
+SKIN_FACE_SHARE = 0.35                             # of a skin color's visible area in the face/ear zones (bald heads: 0.44)
+LOCK_EVIDENCE_ELONGATION = 2.5                     # regions cut apart by lines count as locks when this long
 OUTLINE_THICKNESS = 1.2                            # head units: thinner dark regions are line art kept in the flats
 OUTLINE_NEIGHBOR = 0.25                            # an outline joins the highest part among its main neighbors
 FACE_FEATURE = 0.6                                 # regions this much bordered by skin are facial features, not hair
@@ -42,6 +44,7 @@ INSIDE_FACE = 0.8
 LEFTOVER_AREA = 3.0                                # head units²: smaller leftovers join a neighbor, never a part alone
 MAX_ACCESSORIES = 8                                # more loose pieces than this are not accessories (sketches)
 HELM_MIN_FRACTION, HELM_GROW_FRACTION, HELM_MAX_Y = 0.03, 0.1, 15.0
+NEVER_COLORED = ("white", "pupil", "highlight", "lid")
 NO_SKIN_NOTE = "No skin found: nothing follows the player's Skin color"
 NO_HAIR_NOTE = "No hair found: nothing follows the player's Hair color"
 
@@ -129,7 +132,9 @@ class _Detector:
         self.outlines: list[int] = []
         self.locks: list[list[int]] = []               # automatic locks (their regions), numbered at the end
         self.skin: RGBA | None = None
+        self.skin_extra: list[RGBA] = []               # colors the user marked as skin (face, ear, nose clicks)
         self.hair: list[RGBA] = []
+        self.joined_outlines: set[int] = set()
         self.eyes: dict[str, list[int]] = {}           # eye name -> its white regions
         self.hair_pool: list[int] = []                 # regions of hair folders
         self.accessory_pool: list[int] = []            # regions of accessory folders
@@ -149,19 +154,30 @@ class _Detector:
         (hcx, hcy), (hrx, hry), hymax = HAIR_ZONE
         ex0, ex1, ey0, ey1 = EAR_ZONE
         self.head_xy = []
+        top = np.full((g.height, g.width), -1, np.int64)          # the visible region per pixel (later folders on top)
         for group in g.groups:
             labels = group.labels
             ys, xs = np.mgrid[0:labels.shape[0], 0:labels.shape[1]]
             hx, hy = g.head(xs + group.origin[0], ys + group.origin[1])
             self.head_xy.append((hx.astype(np.float32), hy.astype(np.float32)))
+            x0, y0 = group.origin
+            view = top[y0:y0 + labels.shape[0], x0:x0 + labels.shape[1]]
+            sub = labels[:view.shape[0], :view.shape[1]]
+            view[sub >= 0] = sub[sub >= 0]
+        ys, xs = np.mgrid[0:g.height, 0:g.width]
+        hx, hy = g.head(xs, ys)
+        face = ((hx - fcx) / frx) ** 2 + ((hy - fcy) / fry) ** 2 <= 1
+        ear = (hx >= ex0) & (hx <= ex1) & (hy >= ey0) & (hy <= ey1)
+        hair = (((hx - hcx) / hrx) ** 2 + ((hy - hcy) / hry) ** 2 <= 1) & (hy < hymax)
+        seen = top >= 0
+        self.visible = np.bincount(top[seen], minlength=n)[:n] / self.scale ** 2
+        self.in_face_or_ear = np.bincount(top[seen & (face | ear)], minlength=n)[:n] / self.scale ** 2
+        self.in_hair_zone = np.bincount(top[seen & hair], minlength=n)[:n] / self.scale ** 2
+        del top, ys, xs, hx, hy, face, ear, hair, seen
+        for group in g.groups:
+            labels = group.labels
             if not (labels >= 0).any():
                 continue
-            face = ((hx - fcx) / frx) ** 2 + ((hy - fcy) / fry) ** 2 <= 1
-            ear = (hx >= ex0) & (hx <= ex1) & (hy >= ey0) & (hy <= ey1)
-            hair = (((hx - hcx) / hrx) ** 2 + ((hy - hcy) / hry) ** 2 <= 1) & (hy < hymax)
-            inside = labels >= 0
-            self.in_face_or_ear += np.bincount(labels[inside & (face | ear)], minlength=n)[:n] / self.scale ** 2
-            self.in_hair_zone += np.bincount(labels[inside & hair], minlength=n)[:n] / self.scale ** 2
             padded = np.pad(labels, 1, constant_values=-1)
             core = padded[1:-1, 1:-1]
             for other in (padded[1:-1, 2:], padded[1:-1, :-2], padded[2:, 1:-1], padded[:-2, 1:-1]):
@@ -202,7 +218,7 @@ class _Detector:
         return [r for r in rids if r not in self.name_of and r not in self.outlines and self.region(r).pixels > 0]
 
     def is_skin_color(self, color) -> bool:
-        return self.skin is not None and same_color(color, self.skin)
+        return any(same_color(color, c) for c in ([self.skin] if self.skin is not None else []) + self.skin_extra)
 
     def is_hair_color(self, color) -> bool:
         return any(same_color(color, c) for c in self.hair)
@@ -233,9 +249,22 @@ class _Detector:
                 reps.append(color)
         return out, reps
 
+    def face_folders(self) -> None:
+        """A folder named like a face says what the skin is: its largest color (part hints beat the heuristics)."""
+        for group in self.graph.groups:
+            if group.hint and folder_kind(group.hint) == "face":
+                rids = [r.id for r in self.graph.regions if r.group == group.index and r.pixels]
+                if rids:
+                    self.skin = self.region(max(rids, key=lambda r: self.region(r).area)).flat
+                    return
+
     def find_skin(self) -> None:
+        if self.skin is not None:
+            return
         classes, reps = self._classes(self.free())
         score: dict[int, float] = {}
+        zone: dict[int, float] = {}
+        seen: dict[int, float] = {}
         for rid, cls in classes.items():
             color = self.region(rid).flat
             h, s, v = hsv(color)
@@ -243,9 +272,11 @@ class _Detector:
                 continue
             warm = 1.5 if (h <= 50 and 0.1 <= s <= 0.6 and v >= 0.5) else 1.0
             score[cls] = score.get(cls, 0.0) + warm * self.in_face_or_ear[rid]
-        best = max(score, key=score.get) if score else None
-        if best is not None and score[best] >= SKIN_MIN_SCORE:
-            self.skin = reps[best]
+            zone[cls] = zone.get(cls, 0.0) + self.in_face_or_ear[rid]
+            seen[cls] = seen.get(cls, 0.0) + self.visible[rid]
+        faces = [c for c in score if score[c] >= SKIN_MIN_SCORE and zone[c] >= SKIN_FACE_SHARE * seen[c]]
+        if faces:                                      # most of what shows of a skin is where a face or ear is
+            self.skin = reps[max(faces, key=score.get)]
 
     def _contact(self) -> np.ndarray:
         """Per region: length (head units) of its pixels lying within CONTACT_WIDTH of skin regions."""
@@ -264,7 +295,8 @@ class _Detector:
         return out / (CONTACT_WIDTH * self.scale) / self.scale     # pixels in the band / its width -> head units
 
     def _lock_evidence(self, rids: list[int]) -> bool:
-        if len([r for r in rids if self.region(r).area >= 6]) >= 3:
+        cut = [r for r in rids if self.region(r).area >= 6 and self.elongation(r) >= LOCK_EVIDENCE_ELONGATION]
+        if len(cut) >= 3:                              # locks the line art already cut apart
             return True
         masses, _ = ndimage.label(self.canvas(rids))
         for k, box in enumerate(ndimage.find_objects(masses), start=1):
@@ -319,7 +351,7 @@ class _Detector:
 
     def _extend_hair(self, hair: set[int], classes: dict[int, int], reps: list[RGBA]) -> None:
         """Other flat colors touching the hair with nearly its hue and value (shades drawn in the flats)."""
-        h0, _, v0 = hsv(self.hair[0])
+        h0, s0, v0 = hsv(self.hair[0])
         for rid in list(hair):
             for other in self.adjacent.get(rid, {}):
                 if other not in classes:
@@ -327,7 +359,8 @@ class _Detector:
                 color = reps[classes[other]]
                 h, s, v = hsv(color)
                 dh = abs(h - h0)
-                if (min(dh, 360 - dh) <= HAIR_HUE_SPREAD and s >= 0.2 and abs(v - v0) <= HAIR_VALUE_SPREAD
+                if (min(dh, 360 - dh) <= HAIR_HUE_SPREAD and s >= 0.2 and abs(s - s0) <= HAIR_SATURATION_SPREAD
+                        and abs(v - v0) <= HAIR_VALUE_SPREAD
                         and not self.is_skin_color(color) and not self.is_hair_color(color)):
                     self.hair.append(color)
 
@@ -358,8 +391,6 @@ class _Detector:
                     self.hair_pool.extend(rids)
                     self.reserved.update(rids)
                 continue
-            if kind == "face" and self.skin is None:
-                self.skin = self.region(largest).flat
             if kind == "accessory":
                 self.accessory_pool.extend(rids)
                 self.reserved.update(rids)
@@ -379,7 +410,7 @@ class _Detector:
 
     def find_eyes(self, rids=None, band: bool = True) -> None:
         pool = self.free(rids)
-        whites = [r for r in pool if not self.is_hair_color(self.region(r).flat) and self.could_be_eye_white(r, band)]
+        whites = [r for r in pool if self.could_be_eye_white(r, band)]  # white hair: eye whites share its color
         eyes: list[list[int]] = []
         for rid in sorted(whites, key=lambda r: -self.region(r).area):
             near = [e for e in eyes if self._distance(rid, e[0]) <= 1.2 * np.sqrt(self.region(e[0]).area) + 4]
@@ -393,10 +424,11 @@ class _Detector:
             name = PartName("eye", side).name
             if name in self.eyes:
                 name = PartName("eye", "R" if side == "L" else "L").name
-            self.eyes[name] = eye
-            self._eye_pieces(name, eye, pool)
+            if self._eye_pieces(name, eye, pool):
+                self.eyes[name] = eye
 
-    def _eye_pieces(self, name: str, eye: list[int], pool: list[int]) -> None:
+    def _eye_pieces(self, name: str, eye: list[int], pool: list[int]) -> bool:
+        """Name the eye's pieces; an eye needs an iris or a dark piece (else it is not an eye and nothing is named)."""
         boxes = [self._head_box(r) for r in eye]
         bx0, by0 = min(b[0] for b in boxes), min(b[1] for b in boxes)
         bx1, by1 = max(b[2] for b in boxes), max(b[3] for b in boxes)
@@ -405,11 +437,14 @@ class _Detector:
         members = {r: "white" for r in eye}
         for rid in self.free(pool):
             reg = self.region(rid)
-            if rid in members or self.is_skin_color(reg.flat) or self.is_hair_color(reg.flat):
+            light = white_ish(reg.flat) or gray_ish(reg.flat)
+            if rid in members or self.is_skin_color(reg.flat) or (self.is_hair_color(reg.flat) and not light):
                 continue
             hx0, hy0, hx1, hy1 = self._head_box(rid)           # the whole piece lies around the eye
             if not (bx0 - grow - 2 <= hx0 and hx1 <= bx1 + grow + 2 and by0 - grow - 2 <= hy0 and hy1 <= by1 + grow + 2):
                 continue
+            if hy1 < by0 and (hx1 - hx0) >= BROW_RATIO * max(hy1 - hy0, 1e-9):
+                continue                                         # wholly above the white and wide: a brow
             if reg.area > 3 * white_area + 20:
                 continue
             if white_ish(reg.flat) or gray_ish(reg.flat):
@@ -433,9 +468,12 @@ class _Detector:
             elif rid != eye[0] and inside_iris and reg.area < 0.25 * iris_area and (
                     white_ish(reg.flat) or hsv(reg.flat)[2] >= iris_v + 0.3):
                 members[rid] = "highlight"
+        if not any(p in ("iris", "pupil", "lid") for p in members.values()):
+            return False
         for rid, piece in members.items():
             self.name_of[rid] = name
             self.piece_of[rid] = piece
+        return True
 
     def _head_box(self, rid: int) -> tuple[float, float, float, float]:
         x0, y0, x1, y1 = self.region(rid).box
@@ -506,6 +544,11 @@ class _Detector:
             if region is None:
                 continue
             self.forced[region.id] = (a.part, a.piece)
+            kind = PartName.parse(a.part).kind
+            if kind in ("hair", "lock", "back_hair") and not self.is_hair_color(region.flat):
+                self.hair.append(region.flat)            # the user says this color is hair
+            if kind in ("face", "ear", "nose") and not self.is_skin_color(region.flat):
+                self.skin_extra.append(region.flat)
             self.name_of.pop(region.id, None)
             self.piece_of.pop(region.id, None)
             if region.id in self.outlines:
@@ -650,6 +693,7 @@ class _Detector:
             if neighbors:
                 best = max(neighbors, key=lambda o: self._z(self.name_of[o], rid))
                 self.name_of[rid] = self.name_of[best]
+                self.joined_outlines.add(rid)
                 for lock in self.locks:
                     if best in lock:
                         lock.append(rid)
@@ -801,12 +845,25 @@ class _Detector:
         ordered = dict(sorted(parts.items(), key=lambda kv: kv[1].z))
         self.pivots(ordered)
         location_of = self.locations()
-        for part_name, location in self.corrections.colors.items():
+        colors = dict(self.corrections.colors)
+        if "Hair" in colors:                             # the hair's slot is its locks' slot too
+            for name in ordered:
+                if name.startswith("Lock "):
+                    colors.setdefault(name, colors["Hair"])
+        kept = False
+        for part_name, location in colors.items():
             if part_name not in ordered:
-                self.notes.append("Color for '%s' skipped: there is no such part" % part_name)
+                if part_name in self.corrections.colors:
+                    self.notes.append("Color for '%s' skipped: there is no such part" % part_name)
                 continue
             for rid in ordered[part_name].regions:
+                if location != NO_COLOR and (self.piece_of.get(rid) in NEVER_COLORED or rid in self.joined_outlines):
+                    kept = True
+                    continue
                 location_of[rid] = None if location == NO_COLOR else location
+        if kept:
+            self.notes.append("Eye whites, pupils, highlights, lids and outlines keep their colors (color slots only "
+                              "recolor the rest of a part)")
         if self.skin is None:
             self.notes.append(NO_SKIN_NOTE)
         if not self.hair:
@@ -821,6 +878,7 @@ def detect_parts(passes: Passes, alignment: Alignment, corrections: Corrections 
     graph = build_regions(passes, alignment, corrections.cuts, detail_settings(detail).min_area)
     d = _Detector(graph, corrections)
     d.measure()
+    d.face_folders()
     d.find_skin()
     d.find_hair()
     d.folder_hints()

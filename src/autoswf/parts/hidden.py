@@ -1,7 +1,8 @@
 """Each part's own passes (spec §9.3): line and detail pixels go to the part they outline, the parts that stay (face,
 hair base, helm) continue under the parts that move (eyes, locks, ears, accessories) and every part reaches 2 px under
 the parts above it, copying its own nearest pixels so the hidden fill is already on the palette. Eyes become three
-layers (ball, lash, lid) so Blink can fade the ball and move the lid."""
+layers (ball, lash, lid) so Blink can fade the ball and move the lid; any other part painted in several folders becomes
+one layer per folder, each in its folder's place (the largest keeps the part's name, the others add the folder's)."""
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -35,7 +36,7 @@ class PartLayer:
 
 @dataclass(eq=False)
 class _Unit:
-    name: str
+    name: str                                      # "Lock 3", "Eye L ball", "Hair (Bangs)"
     parent: str | None
     part: Part
     group: int                                     # the group its passes come from
@@ -77,18 +78,40 @@ class _Splitter:
         drawn = passes.full[..., 3] > 0.02
         self.inside = ndimage.distance_transform_edt(drawn) >= SILHOUETTE_MARGIN
         self.units: list[_Unit] = []
+        used = set(parts.parts)
         for part in parts.parts.values():
-            group = self.graph.regions[part.regions[0]].group
             if part.kind == "eye":
+                group = self.graph.regions[part.regions[0]].group
                 ball = [r for r in part.regions if parts.piece_of.get(r) in BALL_PIECES]
                 lid = [r for r in part.regions if r not in ball]
                 for sub, regions in (("ball", ball), ("lash", lid), ("lid", lid)):
                     self.units.append(_Unit("%s %s" % (part.name, sub), part.name, part, group, regions))
-            else:
-                self.units.append(_Unit(part.name, None, part, group, list(part.regions)))
+                continue
+            by_group: dict[int, list[int]] = {}
+            for r in part.regions:
+                by_group.setdefault(self.graph.regions[r].group, []).append(r)
+            main = max(by_group, key=lambda g: sum(self.graph.regions[r].pixels for r in by_group[g]))
+            for g, regions in sorted(by_group.items()):
+                name = part.name
+                if g != main:
+                    hint = self.graph.groups[g].hint
+                    base = name = "%s (%s)" % (part.name, hint or "folder %d" % (g + 1))
+                    k = 2
+                    while name in used:
+                        name, k = "%s %d" % (base, k), k + 1
+                    used.add(name)
+                self.units.append(_Unit(name, None, part, g, regions))
+        self.units.sort(key=lambda u: (u.group,) + tuple(u.part.z[1:]))   # bottom to top, later folders above
         self.unit_of_part = {}
         for i, u in enumerate(self.units):
             self.unit_of_part.setdefault(u.part.name, []).append(i)
+        self.eyes = {name: idx for name, idx in self.unit_of_part.items() if parts.parts[name].kind == "eye"}
+        self.owners: list[list[int]] = []                  # units sharing line art, bottom to top: an eye's three
+        for i, u in enumerate(self.units):                 # layers, else each unit alone
+            if u.parent is None:
+                self.owners.append([i])
+            elif self.unit_of_part[u.parent][0] == i:
+                self.owners.append(list(self.unit_of_part[u.parent]))
         self._own_maps()
 
     # ------------------------------------------------------------ own pixels
@@ -104,9 +127,7 @@ class _Splitter:
             unit_of_region[u.regions] = i
         self.group_units = [unit_of_region[g.labels] for g in self.graph.groups]
         self.center_row = {}
-        for part_name, idx in self.unit_of_part.items():
-            if len(idx) != 3:
-                continue
+        for part_name, idx in self.eyes.items():
             ball, lash, lid = idx
             group = self.graph.groups[self.units[ball].group]
             local = np.isin(group.labels, self.units[ball].regions)
@@ -154,30 +175,30 @@ class _Splitter:
         half = float(np.percentile(ndimage.distance_transform_edt(solid)[solid], 95)) if solid.any() else 1.0
         reach = 1 + 2 * half
         pad = int(np.ceil(reach)) + 1
-        part_names = list(self.parts.parts)
-        owner = np.full((self.h, self.w), -1, np.int32)                 # part index
-        for p, name in enumerate(part_names):                          # z ascending: higher parts win
-            units = self.unit_of_part[name]
+        owner = np.full((self.h, self.w), -1, np.int32)                 # owner index
+        for o, units in enumerate(self.owners):                        # bottom to top: higher owners win
             mask = np.isin(self.top, units)
             box = _box(mask, pad=pad, shape=(self.h, self.w))
             if box is None:
                 continue
             x0, y0, x1, y1 = box
             near = ndimage.distance_transform_edt(~mask[y0:y1, x0:x1]) <= reach
-            owner[y0:y1, x0:x1][near & lines[y0:y1, x0:x1]] = p
-        part_of_unit = np.array([part_names.index(u.part.name) for u in self.units] + [-1])
-        visible_part = np.where(self.top >= 0, part_of_unit[self.top], -1)
+            owner[y0:y1, x0:x1][near & lines[y0:y1, x0:x1]] = o
+        owner_of_unit = np.full(len(self.units) + 1, -1, np.int32)     # the last entry: no unit (top = -1)
+        for o, units in enumerate(self.owners):
+            owner_of_unit[units] = o
+        visible_owner = owner_of_unit[self.top]
         loose = (lines & (owner < 0)) | details
         nearest = None
         if loose.any() and (self.top >= 0).any():
             _, (iy, ix) = ndimage.distance_transform_edt(self.top < 0, return_indices=True)
-            nearest = part_of_unit[self.top[iy, ix]]
+            nearest = owner_of_unit[self.top[iy, ix]]
             owner = np.where(lines & (owner < 0), nearest, owner)
         detail_owner = np.full((self.h, self.w), -1, np.int32)        # each detail piece stays whole and goes to
         pieces, count = ndimage.label(details, structure=np.ones((3, 3)))   # the highest part under it (details are
         for k, box in enumerate(ndimage.find_objects(pieces), start=1):     # painted above every flat they cover)
             piece = pieces[box] == k
-            under = visible_part[box][piece]
+            under = visible_owner[box][piece]
             under = under[under >= 0]
             if under.size:
                 detail_owner[box][piece] = int(under.max())
@@ -187,19 +208,17 @@ class _Splitter:
         self.line_unit = np.full((self.h, self.w), -1, np.int32)
         self.detail_unit = np.full((self.h, self.w), -1, np.int32)
         rows = np.arange(self.h)[:, None]
-        for p, name in enumerate(part_names):
-            units = self.unit_of_part[name]
-            mine, mine_d = owner == p, detail_owner == p
+        for o, units in enumerate(self.owners):
+            mine, mine_d = owner == o, detail_owner == o
             if len(units) == 3:                                         # an eye: lines above the ball's center
                 ball, lash, lid = units                                 # are the lid, below it the lash
-                row = self.center_row[name]
+                row = self.center_row[self.units[ball].parent]
                 self.line_unit[mine & (rows < row)] = lid
                 self.line_unit[mine & (rows >= row)] = lash
                 self.detail_unit[mine_d] = ball
             else:
                 self.line_unit[mine] = units[0]
                 self.detail_unit[mine_d] = units[0]
-        self.part_owner = owner
 
     # ------------------------------------------------------------ hidden fills and underlap
 
@@ -234,12 +253,10 @@ class _Splitter:
         return iy[ys - by0, xs - bx0] + by0, ix[ys - by0, xs - bx0] + bx0
 
     def hidden(self) -> None:
-        part_names = list(self.parts.parts)
-        for name in part_names:
-            part = self.parts.parts[name]
-            if part.kind not in MOVING:
+        provider_units = [i for i, u in enumerate(self.units) if u.part.kind in PROVIDERS]
+        for units in self.owners:
+            if self.units[units[0]].part.kind not in MOVING:
                 continue
-            units = self.unit_of_part[name]
             hole = np.isin(self.top, units) | np.isin(self.line_unit, units) | np.isin(self.detail_unit, units)
             box = _box(hole, shape=(self.h, self.w))
             if box is None:
@@ -247,26 +264,22 @@ class _Splitter:
             x0, y0, x1, y1 = box
             grow = max(x1 - x0, y1 - y0) // 2 + 2
             x0, y0, x1, y1 = max(0, x0 - grow), max(0, y0 - grow), min(self.w, x1 + grow), min(self.h, y1 + grow)
-            providers = [p for p in part_names if self.parts.parts[p].kind in PROVIDERS
-                         and self.parts.parts[p].z < part.z]
+            providers = [p for p in provider_units if p < units[0]]          # the parts that stay, below it
             seeds = np.full((y1 - y0, x1 - x0), -1, np.int32)
             top = self.top[y0:y1, x0:x1]
             background = (top < 0) & (self.line_unit[y0:y1, x0:x1] < 0) & (self.detail_unit[y0:y1, x0:x1] < 0)
             empty = len(self.units)
             seeds[background] = empty
-            for p in providers:
-                (unit,) = self.unit_of_part[p]
+            for unit in providers:
                 seeds[top == unit] = unit
             if not (seeds >= 0).any():
                 continue
             _, (iy, ix) = ndimage.distance_transform_edt(seeds < 0, return_indices=True)
             nearest = seeds[iy, ix]
             local_hole = hole[y0:y1, x0:x1]
-            provider_units = [self.unit_of_part[p][0] for p in providers]
-            for p in providers:
-                (unit,) = self.unit_of_part[p]
+            for unit in providers:
                 take = local_hole & (nearest == unit)
-                higher = local_hole & np.isin(nearest, [u for u in provider_units if u > unit])
+                higher = local_hole & np.isin(nearest, [u for u in providers if u > unit])
                 if take.any() and higher.any():                    # reach under the next provider's fill too
                     take |= higher & (ndimage.distance_transform_edt(~take) <= self.reach) \
                         & self.inside[y0:y1, x0:x1]

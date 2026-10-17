@@ -179,3 +179,69 @@ def test_official_parts(qapp, aqw_cache, reference_morph):
     leppy = MovieData(aqw_cache.file_path("items/helms/GoldLeppy2018HatM.swf"))
     _, pm = detect(official_drawing(leppy, "GoldLeppy2018HatM"))
     assert {"Hair", "Ear L"} <= set(pm.parts)
+
+
+
+# ---------------------------------------------------------------- review fixes
+
+def test_a_hat_over_hair_without_a_face_has_no_skin():
+    from drawings import hat_over_hair
+    _, pm = detect(hat_over_hair())
+    assert pm.skin is None and "Skin" not in set(pm.location_of.values())
+    assert pm.hair and any(n.startswith("Lock") for n in pm.parts)
+
+def test_one_click_makes_a_region_hair_with_its_color():
+    from autoswf.parts.model import Assign, Corrections
+    t = smooth_helmet()
+    s, (ox, oy) = t.alignment.scale, t.alignment.origin
+    _, pm = detect(t, corrections=Corrections([Assign((ox - 9 * s, oy - 40 * s), "Hair")]))
+    hair = [r for n, p in pm.parts.items() if n == "Hair" or n.startswith("Lock") for r in p.regions]
+    assert hair and {pm.location_of[r] for r in hair} == {"Hair"}
+
+@pytest.mark.parametrize("names", [("Hair", "Face", "Bangs"), ("Back", "Head", "Front")])
+def test_hair_folders_over_and_under_a_face_folder(names):
+    from drawings import folder_helm
+    from autoswf.drawing.writers import LayerSpec
+    _, pm = detect(folder_helm(names))
+    assert pm.skin[:3] == (242, 201, 160) and pm.hair and pm.hair[0][:3] == (120, 70, 40)
+    face = pm.parts["Face"]
+    assert {pm.location_of[r] for r in face.regions} == {"Skin"}
+    assert {pm.graph.regions[r].group for r in face.regions} == {1}
+
+def test_white_hair_keeps_its_eyes():
+    from drawings import synthetic_parts_helm
+    t = synthetic_parts_helm(480, hair=(235, 235, 240), skin=(240, 200, 170))
+    _, pm = detect(t)
+    assert {"Eye L", "Eye R"} <= set(pm.parts)
+    loc = location_map(pm, t.width, t.height)
+    for side in "LR":
+        for piece in ("white", "pupil", "highlight"):
+            assert (loc[inner(t.pieces["Eye %s %s" % (side, piece)], 1)] == "-").mean() >= 0.95, (side, piece)
+
+@pytest.mark.parametrize("color", [(90, 110, 140), (150, 150, 150), (180, 140, 40)])
+def test_a_plated_helmet_is_not_hair(color):
+    from drawings import plated_helmet
+    _, pm = detect(plated_helmet(color))
+    assert pm.hair == [] and "Hair" not in set(pm.location_of.values())
+
+def test_blond_hair_does_not_take_a_gold_band():
+    from drawings import synthetic_parts_helm
+    t = synthetic_parts_helm(480, hair=(240, 200, 120), skin=(110, 70, 50))
+    _, pm = detect(t)
+    assert [c[:3] for c in pm.hair] == [(240, 200, 120)]
+    assert {pm.location_of[r] for r in pm.parts["Helm"].regions} == {None}
+
+def test_color_slots_never_reach_eye_whites_pupils_highlights_or_outlines(parts_helm):
+    from autoswf.parts.model import Corrections
+    t = parts_helm
+    _, pm = detect(t, corrections=Corrections(colors={"Eye L": "Eye", "Helm": "Base"}))
+    for rid in pm.parts["Eye L"].regions:
+        want = "Eye" if pm.piece_of[rid] == "iris" else None
+        assert pm.location_of[rid] == want, pm.piece_of[rid]
+    assert any("keep their colors" in n for n in pm.notes)
+
+def test_a_slot_for_the_hair_reaches_its_locks(parts_helm):
+    from autoswf.parts.model import Corrections
+    _, pm = detect(parts_helm, corrections=Corrections(colors={"Hair": "none"}))
+    locks = [r for n, p in pm.parts.items() if n.startswith("Lock") for r in p.regions]
+    assert locks and {pm.location_of[r] for r in locks} == {None}

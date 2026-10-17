@@ -281,8 +281,13 @@ def _cmd_convert(args) -> int:
             from autoswf.parts.detect import detect_parts
             from autoswf.parts.hidden import layered_passes, split_passes
             parts = detect_parts(passes, alignment, corrections, args.detail)
-            layers = split_passes(passes, parts)
-            art = vectorize(layered_passes(passes, layers), alignment, settings)
+            if parts.parts:
+                layers = split_passes(passes, parts)
+                art = vectorize(layered_passes(passes, layers), alignment, settings)
+            else:                                  # line art alone: nothing to split, one static shape set
+                parts = None
+                print("Parts: none (there are no flat colors to find parts in); writing one static shape set")
+                art = vectorize(passes, alignment, settings)
     except (DrawingError, ValueError) as e:
         print(e)
         return 1

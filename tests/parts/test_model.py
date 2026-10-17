@@ -43,6 +43,12 @@ def test_corrections_file_round_trip(tmp_path):
     ({"colors": {"Helm": "Gold"}}, "Unknown color 'Gold'; use Skin, Hair, Eye, Base, Trim, Accessory or none"),
     ({"colors": {"Lok": "Base"}}, "Unknown part 'Lok'"),
     ({"shapes": []}, "Unknown key 'shapes'"),
+    ({"assign": 5}, "\"assign\" must be a list"),
+    ({"assign": None}, "\"assign\" must be a list"),
+    ({"cuts": 5}, "\"cuts\" must be a list"),
+    ({"assign": [{"at": [float("inf"), 1], "part": "Face"}]}, "\"at\" must be two numbers"),
+    ({"assign": [{"at": [float("nan"), 1], "part": "Face"}]}, "\"at\" must be two numbers"),
+    ({"cuts": [[[0, 0], [float("inf"), 2]]]}, "each point must be two numbers"),
 ])
 def test_bad_corrections_are_clear_errors(tmp_path, data, message):
     path = tmp_path / "x.parts.json"

@@ -325,7 +325,7 @@ def _truth(size, scale, origin, ordered) -> dict:
     return {name: owner == i for i, name in enumerate(names)}
 
 
-def synthetic_parts_helm(size: int = 720) -> PartsDrawing:
+def synthetic_parts_helm(size: int = 720, hair=HAIR, skin=SKIN) -> PartsDrawing:
     """A cel-shaded helm with the part kinds of spec 9.1 a helm usually has, painted in passes like the user's
     drawings (Flats, Shadow, Occlusion, Light, Details, Line), with the ground truth of its parts (head units; the AQW
     head faces right)."""
@@ -342,14 +342,14 @@ def synthetic_parts_helm(size: int = 720) -> PartsDrawing:
         eye[side_name] = {"white": _ellipse(cx, 14, 6, 5), "iris": _ellipse(cx + 1, 14.5, 3.2, 3.2),
                           "pupil": _ellipse(cx + 1, 14.5, 1.4, 1.4), "highlight": _ellipse(cx + 2.2, 13.2, 0.9, 0.9)}
     brows = {s: _ellipse(cx, 6.5, 5, 1.1) for s, cx in EYES.items()}
-    flats_order = [("Ear L", ear, SKIN), ("Face", face, SKIN), ("Mouth", mouth, MOUTH)]
+    flats_order = [("Ear L", ear, skin), ("Face", face, skin), ("Mouth", mouth, MOUTH)]
     for s in "LR":
         for piece, color in (("white", WHITE), ("iris", IRIS), ("pupil", PUPIL), ("highlight", WHITE)):
             flats_order.append(("Eye %s %s" % (s, piece), eye[s][piece], color))
-        flats_order.append(("Brow " + s, brows[s], HAIR))
-    flats_order.append(("Hair", hair_band, HAIR))
-    flats_order += [("Lock %d" % (k + 1), tooth, HAIR) for k, tooth in enumerate(teeth)]
-    flats_order += [("Lock 6", side, HAIR), ("Helm", dome, DOME), ("Helm", band, BAND), ("Accessory 1", gem, GEM),
+        flats_order.append(("Brow " + s, brows[s], hair))
+    flats_order.append(("Hair", hair_band, hair))
+    flats_order += [("Lock %d" % (k + 1), tooth, hair) for k, tooth in enumerate(teeth)]
+    flats_order += [("Lock 6", side, hair), ("Helm", dome, DOME), ("Helm", band, BAND), ("Accessory 1", gem, GEM),
                     ("Horn R", horn, HORN)]
     hat_shadow, hat_light, hat_details = _hat_tones(dome, horn)
 
@@ -456,3 +456,69 @@ def hat_only(size: int = 480) -> PartsDrawing:
               LayerSpec("Line", layer(line))]
     truth = _truth(size, scale, origin, [("Helm", dome), ("Helm", band), ("Accessory 1", gem)])
     return PartsDrawing(size, size, layers, Alignment(scale, origin), truth, {}, {"Helm": None, "Accessory 1": None})
+
+
+def plated_helmet(color=(90, 110, 140), size: int = 480) -> PartsDrawing:
+    """The smooth helmet split into plates by a crest line and two cheek-guard seams: still a helmet, not hair."""
+    scale, origin = size / 120, (0.55 * size, 0.5575 * size)
+    face = _ellipse(-9, 10, 30, 33)
+    opening = _ellipse(-9, 14, 26, 30)
+    helmet = _ellipse(-9, 0, 44, 50).subtracted(opening)
+
+    def flats(p):
+        _qt_fill(p, face, SKIN)
+        _qt_fill(p, helmet, color)
+
+    def line(p):
+        for path in (_stroke(_arc(-9, 0, 44, 50, 0, 360), 1.2, closed=True),
+                     _stroke(_arc(-9, 14, 26, 30, 0, 360), 1.2, closed=True),
+                     _stroke([(-9, -56), (-9, -10)], 1.0), _stroke([(-60, -5), (-20, -5)], 1.0),
+                     _stroke([(2, -5), (42, -5)], 1.0)):
+            _qt_fill(p, path, INK)
+
+    layer = lambda paint: _qt_layer(size, scale, origin, paint)
+    return PartsDrawing(size, size, [LayerSpec("Flats", layer(flats)), LayerSpec("Line", layer(line))],
+                        Alignment(scale, origin))
+
+
+def hat_over_hair(size: int = 480) -> PartsDrawing:
+    """The parts helm's hat over its hair and locks, with no face at all."""
+    scale, origin = size / 120, (0.55 * size, 0.5575 * size)
+    mass = _path([(-42, -14), (26, -14), (26, -8), (-42, -8)])
+    for x0, x1 in TEETH:
+        mass = mass.united(_path([(x0, -8), (x1, -8), ((x0 + x1) / 2, 4)]))
+    mass = mass.united(_path(SIDE_LOCK))
+    dome, band, gem = _hat_shapes()
+
+    def flats(p):
+        _qt_fill(p, mass, HAIR)
+        for path, color in ((dome, DOME), (band, BAND), (gem, GEM)):
+            _qt_fill(p, path, color)
+
+    def line(p):
+        zigzag = [(-42, -14), (-42, -8)]
+        for x0, x1 in TEETH:
+            zigzag += [(x0, -8), ((x0 + x1) / 2, 4)]
+        zigzag += [(14, -8), (19, 8), (25, 28), (28, 10), (26, -8), (26, -14)]
+        for path in [_stroke(zigzag, 1.2)] + _hat_lines():
+            _qt_fill(p, path, INK)
+
+    layer = lambda paint: _qt_layer(size, scale, origin, paint)
+    return PartsDrawing(size, size, [LayerSpec("Flats", layer(flats)), LayerSpec("Line", layer(line))],
+                        Alignment(scale, origin))
+
+
+def folder_helm(names=("Hair", "Face", "Bangs")) -> TestDrawing:
+    """Hair painted in two folders, one under and one over the face folder (a common way to layer a head)."""
+    W = H = 240
+    hair, skin = HAIR + (255,), SKIN + (255,)
+    back = rect(W, H, hair, 50, 20, 190, 80)
+    bangs = rect(W, H, hair, 70, 60, 170, 110)
+    for k in range(5):
+        x = 70 + 20 * k
+        bangs[110:130, x + 4:x + 16] = hair
+    face = disc(W, H, skin, 120, 130, 60)
+    layers = [LayerSpec(names[0], children=[LayerSpec("Flats", back)]),
+              LayerSpec(names[1], children=[LayerSpec("Flats", face)]),
+              LayerSpec(names[2], children=[LayerSpec("Flats", bangs)])]
+    return TestDrawing(W, H, layers, Alignment(2.0, (137, 130)))

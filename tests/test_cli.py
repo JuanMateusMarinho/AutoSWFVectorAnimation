@@ -138,3 +138,11 @@ def test_preview_snapshot_with_player_colors(tmp_path, capsys, monkeypatch, qapp
     assert main(["preview", str(tmp_path / "demo.swf"), "--armor", "TestArmor", "--snapshot", str(tmp_path / "s.png"),
                  "--player-color", "Hair=red"]) == 1
     assert "Player colors look like Hair=FF0000" in capsys.readouterr().out
+
+
+def test_convert_line_art_only_with_parts_on(tmp_path, capsys, qapp):
+    from drawings import ring
+    write_psd(tmp_path / "ring.psd", 200, 200, [LayerSpec("Line", ring(200, 200, (20, 20, 20, 255), 100, 100, 60, 57))])
+    assert main(["convert", str(tmp_path / "ring.psd"), "--align", "2,100,100"]) == 0
+    out = capsys.readouterr().out
+    assert "no flat colors to find parts in" in out and "— valid" in out

@@ -1,6 +1,7 @@
 """A helm with parts (spec §4.2-4.3, §10): one wrapper symbol per part, placed at its pivot (its registration point,
 as in Flash), holding a plain baked shape, then one colorable child clip per (location, shade) on top with exactly
 the same edges, then details and line art. Animation (Plan 5) goes on the wrappers, never on the colorable clips."""
+import re
 from dataclasses import dataclass
 
 import numpy as np
@@ -44,8 +45,8 @@ def face_shade(style: FaceStyle, soft_roles: frozenset[str], steps: int = 3) -> 
 
 
 def instance_name(name: str) -> str:
-    """"Lock 3" -> "lock3", "Eye L ball" -> "eyeLBall", "Back hair" -> "backHair"."""
-    words = name.split()
+    """"Lock 3" -> "lock3", "Eye L ball" -> "eyeLBall", "Back hair" -> "backHair", "Hair (Bangs)" -> "hairBangs"."""
+    words = re.findall(r"[A-Za-z0-9]+", name) or ["part"]
     return words[0].lower() + "".join(w[:1].upper() + w[1:] for w in words[1:])
 
 
@@ -187,6 +188,15 @@ def assemble_helm(art: VectorArt, layers: list[PartLayer], link: str, *, separat
     colorable: list[tuple[str, str, str]] = []
     root_frame, back_frame = Frame(), Frame()
     parents: dict[str, tuple[Symbol, object]] = {}
+    taken: set[str] = set()
+
+    def unique(name: str) -> str:                  # folder names may spell alike ("Hair (髪)" -> "hair")
+        base, k = instance_name(name), 2
+        out = base
+        while out in taken:
+            out, k = "%s%d" % (base, k), k + 1
+        taken.add(out)
+        return out
     for layer in layers:
         symbol = _wrapper(layer, traced.get(layer.name, []), separate_tones, colorable)
         if symbol is None:
@@ -195,7 +205,7 @@ def assemble_helm(art: VectorArt, layers: list[PartLayer], link: str, *, separat
         if layer.parent is None:
             frame = back_frame if layer.back_hair else root_frame
             p = Placement(symbol, len(frame.placements) + 1, Matrix.translate(layer.pivot.x, layer.pivot.y),
-                          name=instance_name(layer.name))
+                          name=unique(layer.name))
             frame.placements.append(p)
             placements[layer.name] = p
             continue
@@ -203,7 +213,7 @@ def assemble_helm(art: VectorArt, layers: list[PartLayer], link: str, *, separat
             pivot = next((l.pivot for l in layers if l.parent == layer.parent and l.name.endswith(" ball")), layer.pivot)
             parent = Symbol(layer.parent, [Frame()])
             p = Placement(parent, len(root_frame.placements) + 1, Matrix.translate(pivot.x, pivot.y),
-                          name=instance_name(layer.parent))
+                          name=unique(layer.parent))
             root_frame.placements.append(p)
             parents[layer.parent] = (parent, pivot)
             wrappers[layer.parent] = parent

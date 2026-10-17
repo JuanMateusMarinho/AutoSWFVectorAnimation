@@ -107,7 +107,9 @@ clockwise needs a negative DEG), `--detail 0-100` (simpler or more faithful shap
 and each lock, horns, the helm itself and accessories — and lists them with the point (in drawing pixels) where each
 one is. Each part becomes its own symbol, ready to be animated, and what is behind the parts that move (eyes, locks,
 ears, accessories) is filled in, so nothing opens up when they move. Folders named after parts (Hair, Cabelo, Olhos,
-Eyes, Chapéu, Accessories, Back hair…) are used as they are.
+Eyes, Chapéu, Accessories, Back hair…) are used as they are; a face folder says what the skin color is. A part painted
+in several folders (hair behind and in front of the face) keeps each folder's place: the extra pieces are named after
+their folder, like `Hair (Bangs)`.
 
 Hair follows the player's Hair color, skin follows Skin and irises follow Eye; shadow, occlusion and light layers become
 the game's Dark, Darker and Light tones there (the game draws those with its own fixed tones). Everything else keeps
@@ -126,7 +128,8 @@ printed or `--parts-image` shows:
 
 `assign` puts the region under a point into a part (Face, Ear L/R, Nose, Mouth, Brow L/R, Eye L/R, Hair, Lock N,
 Back hair, Horn L/R, Helm, Accessory N); `cuts` split regions along a line; `colors` give a part a slot (Skin, Hair, Eye,
-Base, Trim, Accessory or `none`). More options: `--color "Helm=Base"` (same as `colors`), `--parts-image parts.png` (an
+Base, Trim, Accessory or `none`; a slot for Hair applies to the locks too, and eye whites, pupils, highlights, lids and
+outlines always keep their colors). More options: `--color "Helm=Base"` (same as `colors`), `--parts-image parts.png` (an
 image of the parts found), `--morph` (warn when the male or female base head shows around a morph helm) and
 `--no-parts` (one static shape set, no color custom). To see the result with other player colors:
 `preview my-helm.swf --player-color Hair=C02030 --player-color Skin=80C0FF`.

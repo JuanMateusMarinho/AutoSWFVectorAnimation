@@ -1,6 +1,7 @@
 """The helm part taxonomy (spec §9.1): part names, their z order and color defaults, part hints from folder names, and
 the user's corrections (a `<drawing>.parts.json` file next to the drawing) that Plan 6's click-to-fix will drive."""
 import json
+import math
 import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -125,7 +126,7 @@ class Assign:
 
 def _point(value, what: str) -> tuple[float, float]:
     if (not isinstance(value, (list, tuple)) or len(value) != 2
-            or not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in value)):
+            or not all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) for v in value)):
         raise ValueError("%s must be two numbers (x, y in drawing pixels)" % what)
     return float(value[0]), float(value[1])
 
@@ -146,6 +147,9 @@ class Corrections:
             if key not in ("assign", "cuts", "colors"):
                 raise fail("Unknown key '%s'; use assign, cuts, colors" % key)
         out = cls()
+        for key in ("assign", "cuts"):
+            if not isinstance(data.get(key, []), list):
+                raise fail("\"%s\" must be a list" % key)
         for n, entry in enumerate(data.get("assign", []), start=1):
             where = "entry %d of \"assign\": " % n
             try:

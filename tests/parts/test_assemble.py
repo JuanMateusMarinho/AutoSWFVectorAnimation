@@ -169,3 +169,27 @@ def test_back_hair_shows_in_idle_where_it_was_drawn(qapp, aqw_cache):
         head = reference.head()
         expected = object_bounds(head.child_by_name("helm"), head.matrix)
         assert max(abs(a - b) for a, b in zip(drawn, expected)) <= 1.0, (gender, drawn, expected)
+
+
+
+@pytest.mark.parametrize("names", [("Hair", "Face", "Bangs"), ("Back", "Head", "Front")])
+def test_a_part_split_across_folders_keeps_each_folders_place(qapp, names):
+    from drawings import drawing_from_specs, folder_helm
+    from autoswf.drawing.passes import extract_passes
+    from autoswf.drawing.roles import assign_roles
+    from autoswf.parts.detect import detect_parts
+    from autoswf.parts.hidden import layered_passes, split_passes
+    from autoswf.vectorize.art import vectorize
+    from autoswf.vectorize.metrics import quality_report
+    t = folder_helm(names)
+    d = drawing_from_specs(t.width, t.height, t.layers)
+    passes = extract_passes(d, assign_roles(d))
+    layers = split_passes(passes, detect_parts(passes, t.alignment))
+    art = vectorize(layered_passes(passes, layers), t.alignment)
+    helm = assemble_helm(art, layers, "Z")
+    swf = export_helm(helm.item)
+    assert validate_helm_swf(swf, "Z") == []
+    report = quality_report(passes, art, swf, "Z")
+    assert report.problems() == [], report.format()
+    order = [p.name for p in helm.item.root.frames[0].placements]
+    assert order.index("face") > 0 and any(order.index(n) > order.index("face") for n in order if n.startswith(("hair", "lock")))
