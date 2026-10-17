@@ -77,13 +77,15 @@ def _compact(labels: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 
 
 def _face_colors(labels: np.ndarray, rgba: np.ndarray, count: int) -> list[RGBA]:
-    """Per label: the median color of `rgba` over its pixels eroded by 1 px (all of them for thin faces)."""
+    """Per label: the median color of `rgba` over its painted pixels eroded by 1 px (all of them for thin faces)."""
     color, alpha = _straight(rgba) * 255, rgba[..., 3]
     out = []
     boxes = ndimage.find_objects(labels + 1, max_label=count)
     for i in range(count):
         box = boxes[i]
         mask = labels[box] == i
+        painted = mask & (alpha[box] > 0)
+        mask = painted if painted.any() else mask
         inner = ndimage.binary_erosion(mask)
         pick = inner if inner.any() else mask
         c = np.median(color[box][pick], axis=0)
@@ -107,16 +109,57 @@ def _paste(canvas: np.ndarray, mask: np.ndarray, origin: tuple[int, int]) -> Non
     canvas[y0:y0 + h, x0:x0 + w] |= mask
 
 
+def _split_tints(labels: np.ndarray, keys: np.ndarray, fills: np.ndarray, ds: DetailSettings) -> np.ndarray:
+    """A face whose baked colors are clearly two or more flat colors (one tone layer painted with several tints over
+    the same flat color) is split along those colors; the new faces keep the face's key. Returns the extended keys."""
+    snapped = palette_labels(fills, posterize=ds.posterize, min_pixels=ds.min_area).labels
+    keys = list(keys)
+    count = int(labels.max()) + 1 if labels.size else 0
+    for face, box in enumerate(ndimage.find_objects(labels + 1, max_label=count)):
+        if box is None:
+            continue
+        mask = labels[box] == face
+        colors, sizes = np.unique(snapped[box][mask], return_counts=True)
+        big = [c for c, n in zip(colors, sizes) if c >= 0 and n >= max(4 * ds.min_area, 0.05 * mask.sum())]
+        if len(big) < 2:
+            continue
+        big.sort(key=lambda c: -sizes[list(colors).index(c)])
+        for c in big[1:]:
+            region = labels[box]
+            region[mask & (snapped[box] == c)] = len(keys)
+            keys.append(keys[face])
+    return np.array(keys)
+
+
+def _under_lines(labels: np.ndarray, lines: np.ndarray) -> None:
+    """Fills that stop where the line art starts are extended under the line's opaque core (as Animate artists draw
+    them): two shapes that only touch leave a seam, a fill tucked under its line does not."""
+    core = ndimage.binary_erosion(lines[..., 3] >= 0.99)
+    grow = core & (labels < 0)
+    if grow.any() and (labels >= 0).any():
+        nearest = ndimage.distance_transform_edt(labels < 0, return_distances=False, return_indices=True)
+        labels[grow] = labels[nearest[0][grow], nearest[1][grow]]
+
+
 def _fills(part: PartPasses, ds: DetailSettings, settings: VectorizeSettings, soft: np.ndarray):
     flat = palette_labels(part.flats, posterize=ds.posterize, min_pixels=ds.min_area)
     tones = [t for t in part.tones if not set(t.layers) & settings.gradient_layers]
     levels = [_tone_levels(t.alpha, t.soft, settings.posterize_steps) for t in tones]
-    keys = np.stack([flat.labels + 1] + levels, axis=-1).reshape(-1, 1 + len(levels))
-    unique, inverse = np.unique(keys, axis=0, return_inverse=True)
+    code = (flat.labels + 1).astype(np.int64)                 # one int per (flat, tone levels) key: fast unique
+    for level in levels:
+        code = code * 16 + level
+    codes, inverse = np.unique(code, return_inverse=True)
     labels = inverse.reshape(flat.labels.shape).astype(np.int32)
+    unique = np.zeros((len(codes), 1 + len(levels)), np.int64)
+    for k in range(len(levels), 0, -1):
+        unique[:, k] = codes % 16
+        codes = codes // 16
+    unique[:, 0] = codes
     empty = [i for i, k in enumerate(unique) if not k.any()]
     if empty:
         labels[labels == empty[0]] = -1
+    unique = _split_tints(labels, unique, part.fills, ds)
+    _under_lines(labels, part.lines)
     labels, old = _compact(merge_small(labels, ds.min_area))
     if not old.size:
         return None

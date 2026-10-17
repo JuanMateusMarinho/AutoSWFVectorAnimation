@@ -47,7 +47,9 @@ def _palette(colors: np.ndarray, tolerance: float, min_pixels: int) -> np.ndarra
     """Group the pure colors greedily by frequency; each kept group's color is its weighted median."""
     if len(colors) == 0:
         return np.zeros((0, 3))
-    unique, counts = np.unique(np.round(colors).astype(np.int32), axis=0, return_counts=True)
+    rgb = np.clip(np.round(colors), 0, 255).astype(np.int64)
+    codes, counts = np.unique((rgb[:, 0] << 16) | (rgb[:, 1] << 8) | rgb[:, 2], return_counts=True)
+    unique = np.stack([codes >> 16, (codes >> 8) & 255, codes & 255], axis=1)
     order = np.argsort(-counts)
     unique, counts = unique[order], counts[order]
     seeds, members = [], []
@@ -92,6 +94,22 @@ def _kmeans_steps(x: np.ndarray, limit: float) -> np.ndarray:
     return centers
 
 
+def _presence(labels: np.ndarray, count: int, ys: np.ndarray, xs: np.ndarray) -> np.ndarray:
+    """For the pixels (ys, xs): which labels lie within NEIGHBOR_RADIUS px (dilation done inside each label's box)."""
+    present = np.zeros((len(ys), count), bool)
+    h, w = labels.shape
+    r = NEIGHBOR_RADIUS
+    for i, box in enumerate(ndimage.find_objects(labels + 1, max_label=count)):
+        if box is None:
+            continue
+        y0, y1 = max(box[0].start - r, 0), min(box[0].stop + r, h)
+        x0, x1 = max(box[1].start - r, 0), min(box[1].stop + r, w)
+        near = ndimage.binary_dilation(labels[y0:y1, x0:x1] == i, iterations=r)
+        inside = (ys >= y0) & (ys < y1) & (xs >= x0) & (xs < x1)
+        present[inside, i] = near[ys[inside] - y0, xs[inside] - x0]
+    return present
+
+
 def palette_labels(rgba: np.ndarray, *, tolerance: float = 12.0, posterize: float = 24.0,
                    min_pixels: int = 12) -> LabelImage:
     alpha = rgba[..., 3]
@@ -114,8 +132,7 @@ def palette_labels(rgba: np.ndarray, *, tolerance: float = 12.0, posterize: floa
     rest_y, rest_x = np.nonzero(opaque & (labels < 0))
     residual = np.zeros(alpha.shape, bool)
     if len(rest_y) and len(palette):
-        present = np.stack([ndimage.binary_dilation(labels == i, iterations=NEIGHBOR_RADIUS)[rest_y, rest_x]
-                            for i in range(len(palette))], axis=1)
+        present = _presence(labels, len(palette), rest_y, rest_x)
         allowed = present.copy()
         allowed[~present.any(axis=1)] = True                 # nothing nearby: any palette color
         pix = color[rest_y, rest_x]
@@ -137,8 +154,11 @@ def palette_labels(rgba: np.ndarray, *, tolerance: float = 12.0, posterize: floa
     colors = [tuple(c) for c in palette]
     posterized = set()
     areas, count = ndimage.label(residual, structure=np.ones((3, 3)))
-    for area in range(1, count + 1):
-        ys, xs = np.nonzero(areas == area)
+    for area, box in enumerate(ndimage.find_objects(areas), start=1):
+        ys, xs = np.nonzero(areas[box] == area)
+        ys, xs = ys + box[0].start, xs + box[1].start
+        if len(ys) < min_pixels and len(palette):          # a few odd pixels: keep their nearest neighbor color
+            continue
         centers = _kmeans_steps(color[ys, xs], posterize)
         ids = []
         for c in centers:
@@ -160,24 +180,34 @@ def merge_small(labels: np.ndarray, min_area: int) -> np.ndarray:
     """Specks: 4-connected components smaller than `min_area` take the label they share the most border with (the
     empty label -1 only when nothing else touches them)."""
     labels = labels.astype(np.int32, copy=True)
+    h, w = labels.shape
     for _ in range(3):
         specks = []
-        for value in np.unique(labels):
-            parts, n = ndimage.label(labels == value)
+        for index, box in enumerate(ndimage.find_objects(labels + 2), start=1):
+            if box is None:
+                continue
+            value = index - 2
+            parts, n = ndimage.label(labels[box] == value)
             if n == 0:
                 continue
-            sizes = ndimage.sum_labels(np.ones_like(parts), parts, index=np.arange(1, n + 1))
+            sizes = np.bincount(parts.ravel())[1:]
+            small = np.nonzero(sizes < min_area)[0]
+            if not len(small):
+                continue
             boxes = ndimage.find_objects(parts)
-            for i in np.nonzero(sizes < min_area)[0]:
-                specks.append((sizes[i], int(value), parts, i + 1, boxes[i]))
+            for i in small:
+                sub = boxes[i]
+                y0, x0 = box[0].start + sub[0].start, box[1].start + sub[1].start
+                specks.append((int(sizes[i]), value, y0, x0, parts[sub] == i + 1))
         if not specks:
             break
         changed = False
-        for _, value, parts, index, box in sorted(specks, key=lambda s: s[0]):
-            y0, y1 = max(box[0].start - 1, 0), min(box[0].stop + 1, labels.shape[0])
-            x0, x1 = max(box[1].start - 1, 0), min(box[1].stop + 1, labels.shape[1])
+        for _, value, sy, sx, own in sorted(specks, key=lambda s: s[0]):
+            y0, x0 = max(sy - 1, 0), max(sx - 1, 0)
+            y1, x1 = min(sy + own.shape[0] + 1, h), min(sx + own.shape[1] + 1, w)
             region = labels[y0:y1, x0:x1]
-            mask = parts[y0:y1, x0:x1] == index
+            mask = np.zeros(region.shape, bool)
+            mask[sy - y0:sy - y0 + own.shape[0], sx - x0:sx - x0 + own.shape[1]] = own
             if not (region[mask] == value).all():
                 continue                                     # already merged into something else
             ring = ndimage.binary_dilation(mask) & ~mask

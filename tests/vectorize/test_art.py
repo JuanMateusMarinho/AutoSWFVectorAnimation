@@ -56,3 +56,32 @@ def test_parts_are_traced_separately():
     specs = [LayerSpec("Face", children=[LayerSpec("Flats", rect(W, H, RED, 0, 60, 120, 120))]),
              LayerSpec("Hair", children=[LayerSpec("Flats", rect(W, H, BLUE, 0, 0, 120, 70))])]
     assert [l.name for l in art_of(specs).layers] == ["Face: Fills", "Hair: Fills"]
+
+def test_fills_extend_under_the_line_art_they_only_touch(qapp):
+    # flats stop exactly where an outline starts (official AQW art, or a bucket fill up to the line): the fill shape
+    # must reach under the line's opaque core, or the two abutting shapes leave a seam
+    from autoswf.aqw.helm import HelmItem
+    from autoswf.model.document import Frame, Placement, Symbol
+    from autoswf.model.geometry import Matrix
+    from autoswf.render.display import ScriptContext, instantiate, run_pending_actions
+    from autoswf.render.effects import qimage_to_array
+    from autoswf.render.painter import Renderer
+    from autoswf.swf.decode import MovieData
+    art = art_of([LayerSpec("Flats", disc(W, H, RED, 60, 60, 40)), LayerSpec("Line", ring(W, H, INK, 60, 60, 47, 40))])
+    fills = art.layers[0]
+    md = MovieData(export_helm(HelmItem("F", Symbol("F", [Frame([Placement(fills.shape, 1)])]))))
+    obj = instantiate(md, md.classes["F"]); run_pending_actions(obj, ScriptContext(None))
+    img = qimage_to_array(Renderer().render_image(obj, W, H, Matrix.scale(4, 4) @ Matrix.translate(15, 15), None))
+    assert img[60, 103, 3] == 1 and img[60, 108, 3] == 0         # under the line core (r 43), not past it (r 48)
+    assert all(s.color[:3] == RED[:3] for s in fills.styles)
+
+def test_one_tone_layer_with_two_tints_keeps_both():
+    # artists often paint one multiply layer with a different tint per area: same flat + same tone level, two colors
+    specs = [LayerSpec("Flats", rect(W, H, RED, 0, 0, W, H)),
+             LayerSpec("Shadow", rect(W, H, BLUE, 0, 0, 60, H) + rect(W, H, (230, 200, 120, 255), 60, 0, W, H),
+                       blend="multiply", clipping=True)]
+    fills = art_of(specs).layers[0]
+    tinted = sorted(s.color[:3] for s in fills.styles if s.tones == (("shadow", 1),))
+    expected = sorted(tuple(int(round(v)) for v in blend("multiply", np.array(RED[:3]) / 255, np.array(c) / 255) * 255)
+                      for c in (BLUE[:3], (230, 200, 120)))
+    assert len(tinted) == 2 and np.abs(np.array(tinted) - np.array(expected)).max() <= 2
