@@ -21,6 +21,7 @@ class ToneCoverage:
     alpha: np.ndarray                    # H x W float32 coverage 0..1 (clipping and opacity applied)
     soft: bool
     layers: tuple[str, ...]
+    blends: tuple[str, ...] = ()
 
 
 @dataclass
@@ -112,7 +113,8 @@ def extract_passes(drawing: Drawing, roles: dict[LayerNode, LayerRole]) -> Passe
                 continue
             alpha = composite(drawing, only(role), force_normal=True, box=box)[..., 3]
             if alpha.any():
-                tones.append(ToneCoverage(role, alpha, is_soft(alpha), tuple(n.name for n in layers)))
+                tones.append(ToneCoverage(role, alpha, is_soft(alpha), tuple(n.name for n in layers),
+                                           tuple(n.blend for n in layers)))
         first = {}
         for group, group_roles in GROUPS:
             indexes = [order[n] for n in nodes if roles[n].role in group_roles]

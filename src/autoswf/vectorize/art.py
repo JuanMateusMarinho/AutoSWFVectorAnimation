@@ -12,8 +12,9 @@ from autoswf.drawing.passes import PartPasses, Passes
 from autoswf.drawing.roles import TONE_ROLES
 from autoswf.model.document import Frame, Placement, Symbol
 from autoswf.model.geometry import Matrix
-from autoswf.model.shape import Path, Shape, SolidFill
+from autoswf.model.shape import GradientFill, Path, Shape, SolidFill
 from autoswf.vectorize.fit import DetailSettings, detail_settings
+from autoswf.vectorize.gradient import fit_gradient
 from autoswf.vectorize.palette import merge_small, palette_labels, relative_threshold
 from autoswf.vectorize.planar import trace_shape
 
@@ -142,9 +143,36 @@ def _simple(rgba: np.ndarray, ds: DetailSettings, origin, soft: np.ndarray):
     return labels, [FaceStyle(li.colors[i], None) for i in old]
 
 
+def _gradient_layer(part: PartPasses, tone, name: str, ds: DetailSettings, matrix: Matrix, soft: np.ndarray,
+                    notes: list[str]) -> TracedLayer | None:
+    """A soft tone drawn as one gradient-filled shape over the fills, in normal blend."""
+    alpha = tone.alpha
+    mask = alpha > 2 / 255
+    if not mask.any():
+        return None
+    strong = alpha >= 0.5 * alpha.max()
+    a = alpha[strong][:, None]
+    color = np.median((part.fills[strong][:, :3] - part.flats[strong][:, :3] * (1 - a)) / a, axis=0)
+    color = tuple(int(round(v)) for v in np.clip(color, 0, 1) * 255)
+    gradient, _ = fit_gradient(color, alpha)
+    fill = GradientFill(gradient.kind, gradient.stops, matrix @ gradient.matrix)
+    labels = merge_small(np.where(mask, 0, -1).astype(np.int32), ds.min_area)
+    if any(b != "normal" for b in tone.blends):
+        notes.append("Layer '%s' is drawn as a normal gradient; its blend mode is approximated" % name)
+    _paste(soft, mask, part.origin)
+    shape = trace_shape(labels, [fill], ds.fit, matrix)
+    return TracedLayer(name + " (gradient)", "gradient", part.part, shape, [FaceStyle(color + (255,), None)])
+
+
 def vectorize(passes: Passes, alignment: Alignment, settings: VectorizeSettings = VectorizeSettings()) -> VectorArt:
     ds = detail_settings(settings.detail)
     soft = np.zeros((passes.height, passes.width), bool)
+    tone_names = {n for part in passes.parts for t in part.tones for n in t.layers}
+    missing = sorted(settings.gradient_layers - tone_names)
+    if missing:
+        raise ValueError("No tone layer named '%s' to draw with gradients (only shadow, occlusion and light layers "
+                         "can be gradients)" % missing[0])
+    notes = list(passes.notes)
     layers = []
     for part in passes.parts:
         matrix = alignment.matrix() @ Matrix.translate(*part.origin)
@@ -159,7 +187,13 @@ def vectorize(passes: Passes, alignment: Alignment, settings: VectorizeSettings 
             labels, styles = result
             shape = trace_shape(labels, [SolidFill(s.color) for s in styles], ds.fit, matrix)
             layers.append(TracedLayer(prefix + LAYER_NAMES[role], role, part.part, shape, styles))
-    return VectorArt(layers, alignment, list(passes.notes), soft)
+            if role == "fills":
+                for tone in part.tones:
+                    wanted = [n for n in tone.layers if n in settings.gradient_layers]
+                    overlay = _gradient_layer(part, tone, prefix + wanted[0], ds, matrix, soft, notes) if wanted else None
+                    if overlay is not None:
+                        layers.append(overlay)
+    return VectorArt(layers, alignment, notes, soft)
 
 
 def _recolored(layer: TracedLayer, name: str, mapping: list[FaceStyle | None]) -> TracedLayer:
