@@ -107,6 +107,14 @@ def _resample(rgba: np.ndarray, width: int, height: int) -> np.ndarray:
                      for c in range(4)], axis=-1)
 
 
+def _enlarge(mask: np.ndarray, width: int, height: int) -> np.ndarray:
+    """Each pixel of `mask` as the block of pixels it covers at width x height."""
+    h, w = mask.shape
+    ys = np.minimum(((np.arange(height) + 0.5) * h / height).astype(np.intp), h - 1)
+    xs = np.minimum(((np.arange(width) + 0.5) * w / width).astype(np.intp), w - 1)
+    return mask[np.ix_(ys, xs)]
+
+
 def quality_report(passes: Passes, art: VectorArt, swf: bytes, link: str) -> QualityReport:
     w, h = passes.width, passes.height
     to_source = _inverse(art.alignment.matrix())
@@ -121,15 +129,17 @@ def quality_report(passes: Passes, art: VectorArt, swf: bytes, link: str) -> Qua
     distances = np.concatenate([to_src[ren_edges], to_ren[src_edges]])
     p95, p99 = (float(np.percentile(distances, q)) if distances.size else 0.0 for q in (95, 99))
 
-    gaps = {}
+    gaps, solid_at_source = {}, _inside(source[..., 3], art.tolerance)
     for zoom in ZOOMS:
         f = zoom / art.alignment.scale
         zw, zh = max(1, round(w * f)), max(1, round(h * f))
-        small = _resample(source, zw, zh)
         view = _render(swf, link, zw, zh, Matrix.scale(f, f) @ to_source)
-        solid = _inside(small[..., 3], art.tolerance * f)
+        if f > 1:      # zoomed past the drawing's own pixels: only they say what is solid (no blocky stair steps)
+            solid = _enlarge(solid_at_source, zw, zh)
+        else:
+            solid = _inside(_resample(source, zw, zh)[..., 3], art.tolerance * f)
         gaps["%dx" % zoom] = int((solid & (view[..., 3] < 0.9)).sum())
-    gaps["source"] = int((_inside(source[..., 3], art.tolerance) & (rendered[..., 3] < 0.9)).sum())
+    gaps["source"] = int((solid_at_source & (rendered[..., 3] < 0.9)).sum())
 
     interior = ((to_src > 2) & (to_ren > 2) & (source[..., 3] >= 0.99) & (rendered[..., 3] >= 0.99) & ~soft)
     shifted = np.abs(_straight(rendered) - _straight(source)).max(axis=-1) > SHIFT
