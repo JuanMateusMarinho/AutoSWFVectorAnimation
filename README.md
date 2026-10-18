@@ -59,11 +59,6 @@ py -3.13 -m venv .venv
 .venv/Scripts/python -m pytest
 ```
 
-Documentation:
-
-  — includes the AQW item format, verified against live game files.
-  merged)
-
 ### Try it
 
 ```bash
