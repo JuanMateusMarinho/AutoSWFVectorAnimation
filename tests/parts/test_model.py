@@ -61,3 +61,14 @@ def test_invalid_json_names_the_file(tmp_path):
     (tmp_path / "x.parts.json").write_text("{nope")
     with pytest.raises(ValueError, match=r"x.parts.json is not valid JSON \(line 1"):
         Corrections.load(tmp_path / "x.parts.json")
+
+
+def test_a_corrections_file_saved_with_a_byte_order_mark_reads(tmp_path):
+    (tmp_path / "bom.parts.json").write_text('{"colors": {"Helm": "Base"}}', encoding="utf-8-sig")
+    assert Corrections.load(tmp_path / "bom.parts.json") == Corrections(colors={"Helm": "Base"})
+
+
+def test_a_corrections_file_that_is_not_utf8_names_the_file(tmp_path):
+    (tmp_path / "x.parts.json").write_bytes('{"colors": {"Chapéu": "Base"}}'.encode("cp1252"))
+    with pytest.raises(ValueError, match="Could not read x.parts.json"):
+        Corrections.load(tmp_path / "x.parts.json")

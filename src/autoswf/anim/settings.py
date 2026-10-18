@@ -101,7 +101,7 @@ class AnimationSettings:
     def load(cls, path) -> "AnimationSettings":
         path = Path(path)
         try:
-            text = path.read_text(encoding="utf-8")
+            text = path.read_text(encoding="utf-8-sig")       # Notepad may save a byte order mark
         except (OSError, UnicodeDecodeError) as e:
             raise ValueError("Could not read %s: %s" % (path.name, getattr(e, "strerror", None) or e)) from None
         try:

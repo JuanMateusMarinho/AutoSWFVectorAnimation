@@ -72,6 +72,11 @@ def test_bad_settings_are_clear_errors(tmp_path, data, message):
         AnimationSettings.load(tmp_path / "y.anim.json")
 
 
+def test_a_settings_file_saved_with_a_byte_order_mark_reads(tmp_path):
+    (tmp_path / "bom.anim.json").write_text('{"parts": {"Lock 2": "none"}}', encoding="utf-8-sig")   # Notepad's "UTF-8 with BOM"
+    assert AnimationSettings.load(tmp_path / "bom.anim.json") == AnimationSettings(parts={"Lock 2": (None, {})})
+
+
 def test_a_missing_settings_file_is_a_clear_error(tmp_path):
     with pytest.raises(ValueError, match="Could not read nope.anim.json"):
         AnimationSettings.load(tmp_path / "nope.anim.json")

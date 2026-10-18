@@ -198,11 +198,13 @@ class Corrections:
     def load(cls, path: str | Path) -> "Corrections":
         path = Path(path)
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            text = path.read_text(encoding="utf-8-sig")       # Notepad may save a byte order mark
+        except (OSError, UnicodeDecodeError) as e:
+            raise ValueError("Could not read %s: %s" % (path.name, getattr(e, "strerror", None) or e)) from None
+        try:
+            data = json.loads(text)
         except json.JSONDecodeError as e:
             raise ValueError("%s is not valid JSON (line %d, column %d)" % (path.name, e.lineno, e.colno)) from None
-        except OSError as e:
-            raise ValueError("Could not read %s: %s" % (path.name, e.strerror or e)) from None
         return cls.from_dict(data, path.name)
 
     def save(self, path: str | Path) -> None:
