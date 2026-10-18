@@ -64,7 +64,17 @@ def converted_parts_helm(parts_helm, qapp):
     t = parts_helm
     d = drawing_from_specs(t.width, t.height, t.layers)
     passes = extract_passes(d, assign_roles(d))
-    layers = split_passes(passes, detect_parts(passes, t.alignment))
+    parts = detect_parts(passes, t.alignment)
+    layers = split_passes(passes, parts)
     art = vectorize(layered_passes(passes, layers), t.alignment)
     helm = assemble_helm(art, layers, "PartsHelm")
-    return SimpleNamespace(t=t, passes=passes, layers=layers, art=art, helm=helm, swf=export_helm(helm.item))
+    return SimpleNamespace(t=t, passes=passes, parts=parts, layers=layers, art=art, helm=helm,
+                           swf=export_helm(helm.item))
+
+
+@pytest.fixture(scope="session")
+def part_rigs(converted_parts_helm):
+    """What the animation presets know about each part of the synthetic parts helm."""
+    from autoswf.anim.rig import rig_parts
+    c = converted_parts_helm
+    return rig_parts(c.parts, c.helm, c.layers)
