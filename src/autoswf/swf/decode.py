@@ -435,6 +435,10 @@ class MovieData:
                     continue
         return self._abcs
 
+    def character_ids(self) -> list[int]:
+        """Every defined character (shapes, morph shapes, sprites), in file order."""
+        return list(self._index)
+
     def character(self, char_id: int) -> ShapeDef | MorphShapeDef | SpriteDef | None:
         """Character 0 is the main timeline (a class bound to it in SymbolClass is the document class)."""
         if char_id == 0:

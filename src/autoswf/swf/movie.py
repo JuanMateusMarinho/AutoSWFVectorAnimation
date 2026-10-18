@@ -3,19 +3,19 @@ import struct
 import zlib
 
 from autoswf.model.document import Symbol
-from autoswf.model.shape import Shape
+from autoswf.model.shape import MorphShape, Shape
 from autoswf.swf.bits import BitWriter, twips, write_eu32, write_rect, write_string
-from autoswf.swf.shape_encoder import encode_define_shape4
+from autoswf.swf.shape_encoder import encode_define_morph_shape, encode_define_shape4
 from autoswf.swf.sprite_encoder import encode_define_sprite, tag
 
 SWF_VERSION = 15
 FILE_ATTRIBUTES_AS3 = 0x08
 BACKGROUND = (0x66, 0x66, 0x66)
-TAG_SHOW_FRAME, TAG_END, TAG_SET_BACKGROUND, TAG_SPRITE = 1, 0, 9, 39
+TAG_SHOW_FRAME, TAG_END, TAG_SET_BACKGROUND, TAG_SPRITE, TAG_MORPH = 1, 0, 9, 39, 46
 TAG_FILE_ATTRIBUTES, TAG_SYMBOL_CLASS, TAG_DO_ABC, TAG_SHAPE4, TAG_SCENES = 69, 76, 82, 83, 86
 
 
-def _characters(symbols: list[Symbol]) -> list[Shape | Symbol]:
+def _characters(symbols: list[Symbol]) -> list[Shape | MorphShape | Symbol]:
     """Every shape and symbol reachable from `symbols`, children before parents, each once."""
     order, seen = [], set()
 
@@ -53,6 +53,8 @@ def build_swf(symbols: list[Symbol], class_names: dict[int, str], abc: bytes, *,
     for item in chars:
         if isinstance(item, Shape):
             body += tag(TAG_SHAPE4, encode_define_shape4(item, char_ids[id(item)]))
+        elif isinstance(item, MorphShape):
+            body += tag(TAG_MORPH, encode_define_morph_shape(item, char_ids[id(item)]))
         else:
             body += tag(TAG_SPRITE, encode_define_sprite(item, char_ids))
     exported = [(char_ids[id(item)], class_names[id(item)]) for item in chars if id(item) in class_names]

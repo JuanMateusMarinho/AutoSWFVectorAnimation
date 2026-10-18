@@ -59,3 +59,17 @@ def test_validator_flags_setcolor_with_wrong_multiname_kind():
     skin = Symbol("Skin", [Frame()]); root = Symbol("Root", [Frame([Placement(skin, 1)])])
     data = build_swf([root], {id(root): "X", id(skin): "X_fla.Skin_1"}, b.serialize())
     assert "Color-custom script in 'X_fla.Skin_1' is not in the format AQW expects." in validate_helm_swf(data, "X")
+
+
+def test_validator_flags_colorable_clips_moved_by_their_parent():
+    from autoswf.model.geometry import ColorTransform, Matrix
+    blob = Shape([SolidFill((1, 2, 3, 255))], [ellipse(0, 0, 0, 5, 5)])
+    skin = Symbol("Skin", [Frame([Placement(blob, 1)])], color_custom=ColorCustom("Skin", "None"))
+
+    def helm_with(second):
+        wrapper = Symbol("Wrap", [Frame([Placement(skin, 1)]), Frame([second])])
+        return export_helm(HelmItem("X", Symbol("X", [Frame([Placement(wrapper, 1)])])))
+    assert validate_helm_swf(helm_with(Placement(skin, 1)), "X") == []
+    for moved in (Placement(skin, 1, Matrix.rotate(0.2)), Placement(skin, 1, color=ColorTransform((1, 1, 1, 0.5)))):
+        assert ("Colorable clip 'X_fla.Skin_1' is moved or recolored by its parent's timeline; AQW ignores that once "
+                "mcSetColor runs, so animate its wrapper instead.") in validate_helm_swf(helm_with(moved), "X")

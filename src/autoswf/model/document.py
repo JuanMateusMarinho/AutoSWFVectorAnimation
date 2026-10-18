@@ -2,7 +2,7 @@
 from dataclasses import dataclass, field
 
 from autoswf.model.geometry import ColorTransform, Matrix
-from autoswf.model.shape import Shape
+from autoswf.model.shape import MorphShape, Shape
 
 
 @dataclass(frozen=True)
@@ -32,11 +32,12 @@ FrameScript = SetColorScript | StopScript | GotoAndPlayScript
 
 @dataclass
 class Placement:
-    item: "Shape | Symbol"
+    item: "Shape | MorphShape | Symbol"
     depth: int
     matrix: Matrix = Matrix()
     color: ColorTransform | None = None
     name: str | None = None
+    ratio: float | None = None          # 0..1, morph shapes only
 
 
 @dataclass

@@ -60,6 +60,32 @@ class Shape:
     paths: list[Path]
 
 
+@dataclass(eq=False)
+class MorphShape:
+    """A Flash shape tween: start and end have the same fills, paths and segment kinds; a placement's ratio (0..1)
+    picks the shape in between."""
+    start: Shape
+    end: Shape
+
+
+def _fill_kind(fill: Fill) -> tuple:
+    return ("solid",) if isinstance(fill, SolidFill) else (fill.kind, len(fill.stops))
+
+
+def same_structure(a: Shape, b: Shape) -> bool:
+    """Whether two shapes can be the two ends of one morph shape."""
+    if len(a.fills) != len(b.fills) or len(a.paths) != len(b.paths):
+        return False
+    if any(_fill_kind(f) != _fill_kind(g) for f, g in zip(a.fills, b.fills)):
+        return False
+    for p, q in zip(a.paths, b.paths):
+        if (p.fill_left, p.fill_right) != (q.fill_left, q.fill_right) or len(p.segments) != len(q.segments):
+            return False
+        if any(type(s) is not type(t) for s, t in zip(p.segments, q.segments)):
+            return False
+    return True
+
+
 def translated(shape: Shape, dx: float, dy: float) -> Shape:
     """The same shape moved by (dx, dy): points, curve controls and gradient matrices."""
     move = Matrix.translate(dx, dy)
