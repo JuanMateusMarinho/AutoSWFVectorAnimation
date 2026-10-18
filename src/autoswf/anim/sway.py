@@ -19,6 +19,7 @@ MAX_LINKS = 6
 ZETA = 0.35                      # damping ratio of each link's spring
 MAX_BENT_SEGMENT = 1.0           # head units: longer segments are split before bending
 MIN_BEND = 0.05                  # head units: a bend that moves no point further is left out (the part only turns)
+MAX_BEND_SAMPLES = 4000          # points the bend mode is measured on (a wide part is subsampled)
 SQRT2 = math.sqrt(2.0)
 
 
@@ -30,6 +31,7 @@ class Chain:
     _near: tuple = field(repr=False, default=None)          # nearest reachable pixel of every pixel
     _origin: Point = field(repr=False, default=None)
     _scale: float = field(repr=False, default=1.0)
+    hang: bool = False           # hangs from its top edge like a curtain (back hair): it shears instead of turning
 
     def u(self, xs, ys) -> np.ndarray:
         """0 at the root .. 1 at the tip, for head points (the value of the nearest pixel of the part)."""
@@ -55,8 +57,11 @@ def _pixel_graph(pixels: np.ndarray):
     return graph, ys, xs
 
 
-def place_chain(mask, root: Point, tip: Point | None = None, link: float = LINK_LENGTH) -> Chain:
-    """The chain from `root` along the part to `tip` (the farthest point along the part when None)."""
+def place_chain(mask, root: Point, tip: Point | None = None, link: float = LINK_LENGTH, hang: bool = False) -> Chain:
+    """The chain from `root` along the part to `tip` (the farthest point along the part when None). A hanging part
+    (`hang`) is measured straight down from `root`'s row to its bottom edge instead of along the part."""
+    if hang:
+        return _hanging_chain(mask, root, link)
     graph, ys, xs = _pixel_graph(mask.pixels)
     if not len(ys):
         raise ValueError("The part has no pixels to place a chain in")
@@ -82,6 +87,27 @@ def place_chain(mask, root: Point, tip: Point | None = None, link: float = LINK_
     field_u[ys, xs] = u
     near = ndimage.distance_transform_edt(~np.isfinite(field_u), return_distances=False, return_indices=True)
     return Chain(nodes, length, field_u, (near[0], near[1]), mask.origin, mask.scale)
+
+
+def _hanging_chain(mask, root: Point, link: float) -> Chain:
+    ys, xs = np.nonzero(mask.pixels)
+    if not len(ys):
+        raise ValueError("The part has no pixels to place a chain in")
+    hx, hy = mask.origin.x + (xs + 0.5) / mask.scale, mask.origin.y + (ys + 0.5) / mask.scale
+    bottom = mask.origin.y + (ys.max() + 1) / mask.scale
+    length = max(bottom - root.y, 1.0 / mask.scale)
+    n = int(min(max(round(length / link), 1), MAX_LINKS))
+    u = np.clip((hy - root.y) / length, 0.0, 1.0)
+    nodes = [root]
+    for k in range(1, n):
+        band = np.abs(u - k / n) <= 0.5 / n
+        nodes.append(Point(float(hx[band].mean()) if band.any() else root.x, root.y + length * k / n))
+    low = ys == ys.max()
+    nodes.append(Point(float(hx[low].mean()), bottom))
+    field_u = np.full(mask.pixels.shape, np.nan)
+    field_u[ys, xs] = u
+    near = ndimage.distance_transform_edt(~np.isfinite(field_u), return_distances=False, return_indices=True)
+    return Chain(nodes, length, field_u, (near[0], near[1]), mask.origin, mask.scale, hang=True)
 
 
 def solve_chain(links: int, length: int, stiffness: float, wind: float, phase: float) -> np.ndarray:
@@ -121,6 +147,12 @@ def bend_points(chain: Chain, angles: np.ndarray, xs, ys) -> tuple[np.ndarray, n
     xs, ys = np.array(xs, float), np.array(ys, float)
     n = len(chain.nodes) - 1
     u = chain.u(xs, ys)
+    if chain.hang:                                 # a curtain: every joint, the root too, shears what hangs below it
+        for k in range(n - 1, -1, -1):
+            delta = angles[k] - (angles[k - 1] if k > 0 else 0.0)
+            w = 1.0 if k == 0 else _smoothstep((u - k / n) * n + 0.5)
+            xs = xs + np.tan(delta * w) * (ys - chain.nodes[k].y)
+        return xs, ys
     for k in range(n - 1, 0, -1):
         delta = angles[k] - angles[k - 1]
         if delta == 0:
@@ -140,6 +172,7 @@ class Bend:
     ratios: list[float]          # the morph ratio of each frame
     error: float                 # head units: farthest the one-mode morph strays from the simulated bend
     coefficients: np.ndarray = field(repr=False, default=None)  # the bend mode's weight per frame (mean 0)
+    samples: int = 0                                            # points the mode was measured on
 
     def _field(self, xs: np.ndarray, ys: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Mean displacement over the loop and the bend mode at points (each P x 2)."""
@@ -225,6 +258,9 @@ def _rebuilt(base: Shape, points: np.ndarray) -> Shape:
 
 def _bend(chain: Chain, angles: np.ndarray) -> Bend | None:
     rows, cols = np.nonzero(np.isfinite(chain._u))
+    if len(rows) > MAX_BEND_SAMPLES:                       # one mode needs few points; big parts would need GBs
+        keep = np.linspace(0, len(rows) - 1, MAX_BEND_SAMPLES).astype(int)
+        rows, cols = rows[keep], cols[keep]
     xs = chain._origin.x + (cols + 0.5) / chain._scale
     ys = chain._origin.y + (rows + 0.5) / chain._scale
     moved = np.stack([np.stack(bend_points(chain, a, xs, ys), axis=-1) for a in angles])
@@ -238,7 +274,7 @@ def _bend(chain: Chain, angles: np.ndarray) -> Bend | None:
     err = (mean + np.outer(a, vt[0]) - flat).reshape(res.shape)
     span = a.max() - a.min()
     ratios = [float((v - a.min()) / span) for v in a]
-    return Bend(chain, angles, ratios, float(np.hypot(err[..., 0], err[..., 1]).max()), a)
+    return Bend(chain, angles, ratios, float(np.hypot(err[..., 0], err[..., 1]).max()), a, len(rows))
 
 
 def sway_ranks(rigs: dict, parts: Iterable[str]) -> dict[str, int]:
@@ -249,7 +285,8 @@ def sway_ranks(rigs: dict, parts: Iterable[str]) -> dict[str, int]:
 def sway_clip(rig, params, rank: int) -> Clip:
     if rig.mask is None:
         raise ValueError("'%s' has no shape to sway" % rig.name)
-    chain = place_chain(rig.mask, rig.pivot, rig.tip)
+    hang = rig.kind == "back_hair"                 # back hair hangs from the head like a curtain
+    chain = place_chain(rig.mask, rig.pivot, None if hang else rig.tip, hang=hang)
     links = len(chain.nodes) - 1
     theta = solve_chain(links, params.length, params.stiffness, params.wind, rank * params.delay)
     peak = float(np.abs(theta[:, -1]).max())
@@ -257,8 +294,9 @@ def sway_clip(rig, params, rank: int) -> Clip:
         theta = theta * (math.radians(params.amplitude) / peak)
     else:
         theta = np.zeros_like(theta)
-    bend = _bend(chain, theta) if links >= 2 else None
-    keys = {f: Key(Pose(rotation=math.degrees(theta[f, 0]), bend=bend.ratios[f] if bend else None))
+    bend = _bend(chain, theta) if links >= 2 or hang else None
+    turn = np.zeros(params.length) if hang else np.degrees(theta[:, 0])
+    keys = {f: Key(Pose(rotation=float(turn[f]), bend=bend.ratios[f] if bend else None))
             for f in range(params.length)}
     tracks = {layer: Track(layer, dict(keys)) for layer in rig.layers}
     return Clip(rig.name, params, params.length, tracks, {layer: bend for layer in rig.layers} if bend else {},

@@ -73,3 +73,25 @@ def test_short_locks_only_turn_and_zero_amplitude_rests(part_rigs):
     for stiffness in (0.0, 1.0):                                              # extreme but legal settings
         loop = sway_clip(part_rigs["Lock 6"], SwayParams(stiffness=stiffness, amplitude=45, length=12), rank=3)
         assert loop.length == 12 and np.isfinite([p.rotation for p in loop.poses("Lock 6")]).all()
+
+
+def test_back_hair_hangs_from_its_top_edge():
+    """A wide back-hair mass sways like a curtain: its top edge stays attached and its bottom edge stays level."""
+    rig = PartRig("Back hair", "back_hair", ["Back hair"], Point(0, 0),
+                  mask=RigMask(np.ones((46 * 4, 50 * 4), bool), Point(-25, 0), 4.0))
+    clip = sway_clip(rig, SwayParams(), rank=0)
+    assert all(p.rotation == 0 for p in clip.poses("Back hair"))
+    xs, ys = np.array([-24.5, 24.5, -24.5, 24.5, 0.0]), np.array([0.2, 0.2, 45.8, 45.8, 45.8])
+    for ends in clip.bends["Back hair"].morph_points(xs, ys):
+        assert np.abs(ends[:2] - np.stack([xs[:2], ys[:2]], axis=1)).max() < 0.1      # the top edge stays
+        assert np.abs(ends[2:, 1] - ys[2:]).max() < 0.1                               # the bottom edge stays level
+    start, end = clip.bends["Back hair"].morph_points(xs, ys)
+    assert abs(start[4, 0] - end[4, 0]) > 2.0                                        # and it swings
+
+
+def test_big_parts_bend_from_a_bounded_sample():
+    from autoswf.anim.sway import MAX_BEND_SAMPLES
+    rig = PartRig("Back hair", "back_hair", ["Back hair"], Point(0, 0),
+                  mask=RigMask(np.ones((120 * 4, 60 * 4), bool), Point(-30, 0), 4.0))
+    bend = sway_clip(rig, SwayParams(length=240), rank=0).bends["Back hair"]
+    assert bend.samples <= MAX_BEND_SAMPLES and len(bend.ratios) == 240

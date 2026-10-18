@@ -137,11 +137,13 @@ By default the eyes blink and the hair locks (and any back hair) sway; `--no-ani
 
 - **Blink** (eyes) repeats AQW's own eye clip frame for frame: an 87-frame loop where, on frames 11-12, the eye white and
   iris disappear and the upper lid line comes down over the skin, then on frames 13-16 the eye comes back squashed while
-  the lid goes up. Settings: `interval` (loop length, default 87 frames), `speed` (1 = AQW's speed; 0.5 to 2) and
-  `double` (blink twice).
+  the lid goes up. The far eye (on the right) mirrors the lid's small sideways drift, as AQW's mirrored far eye does.
+  Settings: `interval` (loop length, default 87 frames), `speed` (1 = AQW's speed; 0.5 to 2) and `double` (blink
+  twice).
 - **Sway** (hair locks, ears, ribbons, feathers, soft cloth, back hair) runs a chain of springs from the part's root to
   its tip, solved into a seamless loop; neighbouring locks follow each other a few frames apart, like a wave. Each part
-  turns about its root and bends (a Flash shape tween). Settings: `stiffness` (0 floppy to 1 stiff, default 0.5),
+  turns about its root and bends (a Flash shape tween); back hair hangs from its top edge like a curtain, which stays in
+  place while the rest swings. Settings: `stiffness` (0 floppy to 1 stiff, default 0.5),
   `amplitude` (degrees at the tip, default 12), `wind` (0 to 1, default 0.3), `delay` (frames between neighbouring
   parts, default 4) and `length` (frames per loop, default 48 = 2 seconds).
 - **Twitch** (ears and similar): a quick turn that settles, once per loop. Settings: `angle` (degrees, default 10),
@@ -159,13 +161,17 @@ next to the drawing (or `--anim FILE`); frames count from 1, as in Animate:
 {
   "presets": {"Sway": {"amplitude": 15, "length": 72}},
   "parts": {"Ear L": "Twitch", "Lock 2": "none", "Accessory 1": {"preset": "Pulse", "brightness": 0.5}},
-  "keys": [{"part": "Lock 3", "frame": 12, "rotation": 6}]
+  "keys": [{"part": "Eye L", "target": "Eye L lid", "frame": 11, "y": 9}]
 }
 ```
 
-A keyframe sets any of `x`, `y` (head units), `rotation` (degrees), `scale_x`, `scale_y`, `alpha`, `brightness` and
-`bend` (0 to 1) of one frame, on top of what the preset made; `"tween": true` blends it into the next keyframe. AQW
-plays items at 24 frames per second, and so does `preview`.
+A keyframe changes what one layer of a part does on one frame, on top of what the preset made: `target` is the layer
+(`Eye L ball`, `Eye L lid` or `Eye L lash` for an eye; the part's own name otherwise, which is also the default), and
+it sets any of `x`, `y` (head units, -500 to 500), `rotation` (degrees, -360 to 360), `scale_x`, `scale_y` (-20 to 20),
+`alpha` (0 to 1), `brightness` (-1 to 1) and `bend` (0 to 1, only for parts that bend). It holds until the next
+keyframe, and `"tween": true` blends it into the next one. Sway and Pulse make a keyframe on every frame, so a hand-made
+keyframe there changes a single frame; Blink and Twitch only key the frames where something moves. AQW plays items at
+24 frames per second, and so does `preview`.
 
 `download-aqw` fetches the current AQW game client and one armor (for the preview body) from AQW's public server.
 AQW files are only downloaded when you ask, stay on your computer (in `cache/`), and are never committed or shared.

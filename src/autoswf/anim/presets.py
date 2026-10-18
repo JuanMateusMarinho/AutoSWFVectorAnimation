@@ -62,6 +62,7 @@ OFFICIAL_BLINK = ((0.0, 1.0, 1.0, -0.2, 7.2),
                   (1.0, 1.0261993408203125, 0.9603424072265625, 0.25, 0.7),
                   (1.0, 1.0, 1.0, 0.0, 0.0))
 OFFICIAL_DROP = 7.2
+FAR_EYE_SCALE = -0.553           # the client places the far eye's clip mirrored and narrowed (mcHeadM: x-scale -0.553)
 BLINK_START = 10
 TWITCH_AT = 0.4                  # the twitch starts 40 % into its loop
 
@@ -110,7 +111,22 @@ def parse_params(name: str, values: Mapping[str, object]) -> PresetSpec:
             raise ValueError("Unknown %s setting '%s'; %s settings: %s" % (canonical, key, canonical, ", ".join(kinds)))
         kind = {"int": int, "float": float, "bool": bool}.get(kinds[key], kinds[key])
         out[key] = _value(canonical, key, kind, raw)
-    return cls(**out)
+    spec = cls(**out)
+    _check_loop(spec)
+    return spec
+
+
+def _check_loop(spec) -> None:
+    """Blink and Twitch must fit in their loops."""
+    if isinstance(spec, BlinkParams):
+        starts, n = blink_frames(spec)
+        need, got = starts[-1] + n, spec.interval
+    elif isinstance(spec, TwitchParams):
+        need, got = round(TWITCH_AT * spec.every) + 2 + spec.settle, spec.every
+    else:
+        return
+    if got < need:
+        raise ValueError("%s needs a loop of at least %d frames with these settings (got %d)" % (spec.name, need, got))
 
 
 def check_preset(name: str, part: str, kind: str) -> None:
@@ -142,17 +158,16 @@ def blink_frames(params: BlinkParams) -> tuple[list[int], int]:
 def blink_clip(rig, params: BlinkParams) -> object:
     if rig.eye is None:
         raise ValueError("'%s' has no eye ball to blink" % rig.name)
+    _check_loop(params)
     starts, n = blink_frames(params)
-    need = starts[-1] + n
-    if params.interval < need:
-        raise ValueError("Blink needs a loop of at least %d frames with these settings (got %d)" % (need, params.interval))
     ratio = rig.eye.drop / OFFICIAL_DROP
+    mirror = FAR_EYE_SCALE if rig.eye.far else 1.0
     ball, lid = {}, {}
     for start in starts:
         for i in range(n):
             alpha, sx, sy, dx, dy = _blink_step(i * 5 / (n - 1))
             ball[start + i] = Key(Pose(scale_x=sx, scale_y=sy, alpha=alpha))
-            lid[start + i] = Key(Pose(x=dx * ratio, y=dy * ratio))
+            lid[start + i] = Key(Pose(x=dx * ratio * mirror, y=dy * ratio))
     tracks = {rig.eye.ball: Track(rig.eye.ball, ball)}
     if rig.eye.lid:
         tracks[rig.eye.lid] = Track(rig.eye.lid, lid)
@@ -162,10 +177,8 @@ def blink_clip(rig, params: BlinkParams) -> object:
 
 
 def twitch_clip(rig, params: TwitchParams) -> object:
+    _check_loop(params)
     start = round(TWITCH_AT * params.every)
-    need = start + 2 + params.settle
-    if params.every < need:
-        raise ValueError("Twitch needs a loop of at least %d frames with these settings (got %d)" % (need, params.every))
     keys = {start: Key(Pose(rotation=0.6 * params.angle)), start + 1: Key(Pose(rotation=params.angle))}
     for k in range(1, params.settle + 1):
         tau = k / params.settle

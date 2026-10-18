@@ -17,3 +17,7 @@ def test_layers_belong_to_their_part():
     from types import SimpleNamespace as L
     assert [part_of_layer(L(name=n, parent=p)) for n, p in (("Lock 3 (Bangs)", None), ("Eye L lid", "Eye L"),
                                                               ("Hair", None))] == ["Lock 3", "Eye L", "Hair"]
+
+
+def test_the_right_eye_is_the_far_eye(part_rigs):
+    assert part_rigs["Eye L"].eye.far is False and part_rigs["Eye R"].eye.far is True

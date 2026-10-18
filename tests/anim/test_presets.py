@@ -72,3 +72,18 @@ def test_settings_are_parsed_and_checked():
     with pytest.raises(ValueError, match=re.escape("Blink works on eyes ('Mouth' is not an eye)")):
         check_preset("Blink", "Mouth", "mouth")
     check_preset("Pulse", "Helm", "shell")
+
+
+def test_loops_too_short_are_refused_when_read():
+    with pytest.raises(ValueError, match=re.escape("Blink needs a loop of at least 24 frames with these settings (got 20)")):
+        parse_params("Blink", {"interval": "20", "double": "on"})
+    with pytest.raises(ValueError, match=re.escape("Twitch needs a loop of at least 60 frames with these settings (got 24)")):
+        parse_params("Twitch", {"every": 24, "settle": 48})
+
+
+def test_the_far_eye_mirrors_the_lid_drift():
+    """The client places the far eye's clip mirrored (x-scale -0.553), so its lid drifts toward the face, not away."""
+    far = PartRig("Eye R", "eye", ["Eye R"], Point(4, 14), eye=EyeRig("Eye R ball", "Eye R lid", None, 7.2, far=True))
+    lid = blink_clip(far, BlinkParams()).poses("Eye R lid")
+    assert [round(p.x, 3) for p in lid[10:15]] == [round(-0.553 * dx, 3) for dx in (-0.2, 1.15, 2.45, 1.1, 0.25)]
+    assert [round(p.y, 2) for p in lid[10:15]] == [7.2, 6.65, 6.1, 2.7, 0.7]

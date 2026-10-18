@@ -10,8 +10,11 @@ from autoswf.anim.presets import (BlinkParams, PulseParams, SwayParams, TwitchPa
                                   check_preset, parse_params, preset_name, pulse_clip, twitch_clip, TWITCH_AT)
 from autoswf.anim.sway import sway_clip, sway_ranks
 from autoswf.anim.timeline import POSE_FIELDS, Timeline, with_fields
+from autoswf.parts.model import PartName
 
 KEY_FIELDS = POSE_FIELDS + ("tween",)
+FIELD_RANGES = {"x": (-500, 500), "y": (-500, 500), "rotation": (-360, 360), "scale_x": (-20, 20),
+                "scale_y": (-20, 20), "alpha": (0, 1), "brightness": (-1, 1), "bend": (0, 1)}
 FILE_KEYS = ("presets", "parts", "keys")
 
 
@@ -46,25 +49,32 @@ class AnimationSettings:
                 raise ValueError("Unknown key '%s'; keys are %s" % (key, ", ".join(FILE_KEYS)))
         out = cls()
         for name, values in _mapping(data.get("presets", {}), "presets").items():
-            canonical = preset_name(name)
-            if canonical is None:
-                raise ValueError("'none' has no settings")
-            values = dict(_mapping(values, "preset %s" % canonical))
-            parse_params(canonical, values)
+            try:
+                canonical = preset_name(name)
+                if canonical is None:
+                    raise ValueError("'none' has no settings")
+                values = dict(_mapping(values, "preset %s" % canonical))
+                parse_params(canonical, values)
+            except ValueError as e:
+                raise ValueError("preset \"%s\": %s" % (name, e)) from None
             out.presets[canonical] = values
         for part, entry in _mapping(data.get("parts", {}), "parts").items():
-            if isinstance(entry, dict):
-                values = {k: v for k, v in entry.items() if k != "preset"}
-                if "preset" not in entry:
-                    raise ValueError("part '%s' needs a \"preset\"" % part)
-                name = preset_name(entry["preset"])
-                if name is None and values:
-                    raise ValueError("part '%s': 'none' has no settings" % part)
-            else:
-                name, values = preset_name(entry), {}
-            if name is not None:
-                parse_params(name, values)
-            out.parts[str(part)] = (name, values)
+            try:
+                part = PartName.parse(str(part)).name
+                if isinstance(entry, dict):
+                    values = {k: v for k, v in entry.items() if k != "preset"}
+                    if "preset" not in entry:
+                        raise ValueError("it needs a \"preset\"")
+                    name = preset_name(entry["preset"])
+                    if name is None and values:
+                        raise ValueError("'none' has no settings")
+                else:
+                    name, values = preset_name(entry), {}
+                if name is not None:
+                    parse_params(name, values)
+            except ValueError as e:
+                raise ValueError("part \"%s\": %s" % (part, e)) from None
+            out.parts[part] = (name, values)
         keys = data.get("keys", [])
         if not isinstance(keys, list):
             raise ValueError("\"keys\" must be a list")
@@ -91,7 +101,11 @@ class AnimationSettings:
     def load(cls, path) -> "AnimationSettings":
         path = Path(path)
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as e:
+            raise ValueError("Could not read %s: %s" % (path.name, getattr(e, "strerror", None) or e)) from None
+        try:
+            data = json.loads(text)
         except json.JSONDecodeError as e:
             raise ValueError("%s is not valid JSON (line %d, column %d)" % (path.name, e.lineno, e.colno)) from None
         return cls.from_dict(data, path.name)
@@ -112,6 +126,7 @@ def _manual_key(entry) -> ManualKey:
     part = entry.get("part")
     if not isinstance(part, str) or not part.strip():
         raise ValueError("a keyframe needs its \"part\"")
+    part = PartName.parse(part).name
     frame = entry.get("frame")
     if isinstance(frame, bool) or not isinstance(frame, (int, float)) or frame != int(frame) or frame < 1:
         raise ValueError("frame must be a whole number from 1 (got %s)" % json.dumps(frame))
@@ -127,8 +142,10 @@ def _manual_key(entry) -> ManualKey:
                 raise ValueError("tween must be true or false (got %s)" % json.dumps(value))
             tween = value
             continue
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
-            raise ValueError("%s must be a number (got %s)" % (key, json.dumps(value)))
+        low, high = FIELD_RANGES[key]
+        if (isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value)
+                or not low <= value <= high):
+            raise ValueError("%s must be a number from %g to %g (got %s)" % (key, low, high, json.dumps(value)))
         values[key] = float(value)
     return ManualKey(part, str(target), int(frame), values, tween)
 
@@ -158,8 +175,13 @@ def build_timeline(rigs: dict, settings: AnimationSettings, *, suggest: bool = T
         check_preset(name, part, rigs[part].kind)
         chosen[part] = name
         own[part] = values
-    specs = {part: parse_params(chosen[part], {**settings.presets.get(chosen[part], {}), **own.get(part, {})})
-             for part in rigs if part in chosen}
+    specs = {}
+    for part in rigs:
+        if part in chosen:
+            try:
+                specs[part] = parse_params(chosen[part], {**settings.presets.get(chosen[part], {}), **own.get(part, {})})
+            except ValueError as e:
+                raise ValueError("Animation for '%s': %s" % (part, e)) from None
     ranks = sway_ranks(rigs, [p for p, s in specs.items() if isinstance(s, SwayParams)])
     timeline = Timeline()
     for part, spec in specs.items():
@@ -183,8 +205,13 @@ def build_timeline(rigs: dict, settings: AnimationSettings, *, suggest: bool = T
             notes.append("Keyframe at frame %d of '%s' skipped: its loop has %d frames"
                          % (key.frame, key.part, clip.length))
         else:
+            fields = dict(key.fields)
+            if "bend" in fields and key.target not in clip.bends:
+                notes.append("Keyframe at frame %d of '%s' sets a bend, but '%s' does not bend; the bend is left out"
+                             % (key.frame, key.part, key.target))
+                del fields["bend"]
             base = clip.pose(key.target, key.frame - 1)
-            clip.set_key(key.target, key.frame - 1, with_fields(base, key.fields), key.tween)
+            clip.set_key(key.target, key.frame - 1, with_fields(base, fields), key.tween)
     return timeline, notes
 
 

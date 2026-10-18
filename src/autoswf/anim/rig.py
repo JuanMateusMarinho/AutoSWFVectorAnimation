@@ -29,6 +29,7 @@ class EyeRig:
     lid: str | None
     lash: str | None
     drop: float                  # head units the lid moves down to close the eye
+    far: bool = False            # the far eye (on the right: AQW heads face right)
 
 
 @dataclass(eq=False)
@@ -109,7 +110,7 @@ def _eye(name: str, layers: dict, helm) -> EyeRig | None:
             near = lid[np.abs(lid[:, 0] - cx) <= LID_SPAN * width]
             bottom = (near if len(near) else lid)[:, 1].max()
             drop = BLINK_CLOSE * max(0.0, float(ball[:, 1].max() - bottom))
-    return EyeRig(found["ball"], found["lid"], found["lash"], drop)
+    return EyeRig(found["ball"], found["lid"], found["lash"], drop, name.endswith(" R"))
 
 
 def rig_parts(parts, helm, layers) -> dict:

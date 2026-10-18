@@ -378,6 +378,7 @@ def _animation_settings(args):
     the preset options (none with --no-parts or --no-animate)."""
     from autoswf.anim.presets import parse_params, preset_name
     from autoswf.anim.settings import AnimationSettings
+    from autoswf.parts.model import PartName
     path = Path(args.anim) if args.anim else Path(args.drawing).with_name(Path(args.drawing).stem + ".anim.json")
     if args.no_parts or args.no_animate:
         return AnimationSettings(), None
@@ -389,7 +390,7 @@ def _animation_settings(args):
         part, sep, preset = item.rpartition("=")
         if not sep or not part.strip():
             raise ValueError('Animations look like "PART=PRESET", for example --animate "Ear L=Twitch"')
-        settings.parts[part.strip()] = (preset_name(preset), {})
+        settings.parts[PartName.parse(part).name] = (preset_name(preset), {})
     for option, name in PRESET_OPTIONS:
         for item in getattr(args, option):
             key, sep, value = item.partition("=")

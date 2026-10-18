@@ -70,3 +70,40 @@ def test_bad_settings_are_clear_errors(tmp_path, data, message):
     (tmp_path / "y.anim.json").write_text("{nope")
     with pytest.raises(ValueError, match=r"y.anim.json is not valid JSON \(line 1"):
         AnimationSettings.load(tmp_path / "y.anim.json")
+
+
+def test_a_missing_settings_file_is_a_clear_error(tmp_path):
+    with pytest.raises(ValueError, match="Could not read nope.anim.json"):
+        AnimationSettings.load(tmp_path / "nope.anim.json")
+
+
+@pytest.mark.parametrize("field, value, message", [
+    ("alpha", 50, "alpha must be a number from 0 to 1 (got 50)"),
+    ("brightness", 35, "brightness must be a number from -1 to 1 (got 35)"),
+    ("bend", 7, "bend must be a number from 0 to 1 (got 7)"),
+    ("x", 1e308, "x must be a number from -500 to 500 (got 1e+308)"),
+])
+def test_keyframe_values_are_range_checked(field, value, message):
+    with pytest.raises(ValueError, match=re.escape('x.anim.json: entry 1 of "keys": ' + message)):
+        AnimationSettings.from_dict({"keys": [{"part": "Lock 1", "frame": 2, field: value}]}, "x.anim.json")
+
+
+def test_a_bend_on_a_target_that_does_not_bend_is_a_note(part_rigs):
+    timeline, notes = build_timeline(part_rigs, AnimationSettings(keys=[ManualKey("Eye L", "Eye L ball", 12,
+                                                                                  {"bend": 0.3, "alpha": 0.5})]))
+    assert notes == ["Keyframe at frame 12 of 'Eye L' sets a bend, but 'Eye L ball' does not bend; the bend is left out"]
+    assert timeline.clips["Eye L"].pose("Eye L ball", 11).bend is None
+    assert timeline.clips["Eye L"].pose("Eye L ball", 11).alpha == 0.5
+
+
+def test_part_names_are_read_like_part_corrections():
+    s = AnimationSettings.from_dict({"parts": {"lock 1": "none", "ear l": "Twitch"},
+                                     "keys": [{"part": "lock 3", "frame": 2, "rotation": 1}]})
+    assert set(s.parts) == {"Lock 1", "Ear L"} and s.keys[0].part == "Lock 3" and s.keys[0].target == "Lock 3"
+    for data, message in [({"parts": {"Lok 2": "Sway"}}, "part \"Lok 2\": Unknown part 'Lok 2'"),
+                          ({"parts": {"Lock 1": {"preset": "Sway", "length": 5}}},
+                           "part \"Lock 1\": Sway length must be a whole number from 12 to 240"),
+                          ({"presets": {"Blink": {"interval": 20, "double": True}}},
+                           "preset \"Blink\": Blink needs a loop of at least 24 frames with these settings (got 20)")]:
+        with pytest.raises(ValueError, match=re.escape("x.anim.json: " + message)):
+            AnimationSettings.from_dict(data, "x.anim.json")

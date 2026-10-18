@@ -217,3 +217,21 @@ def test_convert_without_animation(tmp_path, capsys, qapp):
     assert set(_sprite_frame_counts(tmp_path / "helm.swf")) == {1}
     assert main(["convert", str(tmp_path / "helm.psd"), "--no-parts", "--sway", "amplitude=20"]) == 1
     assert "--sway needs parts; it cannot be used with --no-parts" in capsys.readouterr().out
+
+
+def test_convert_refuses_bad_animation_input_before_reading_the_drawing(tmp_path, capsys, qapp):
+    t = _parts_psd(tmp_path, 240)
+    for args, message in [(["--anim", str(tmp_path / "missing.json")], "Could not read missing.json"),
+                          (["--animate", "Lok 2=Sway"], "Unknown part 'Lok 2'"),
+                          (["--blink", "interval=20", "--blink", "double=on"],
+                           "Blink needs a loop of at least 24 frames with these settings (got 20)")]:
+        assert main(["convert", str(tmp_path / "helm.psd"), *args]) == 1
+        out = capsys.readouterr().out
+        assert message in out and "Opened" not in out, args
+    assert not (tmp_path / "helm.swf").exists()
+
+
+def test_convert_reads_part_names_like_color(tmp_path, capsys, qapp):
+    t = _parts_psd(tmp_path)
+    assert main(["convert", str(tmp_path / "helm.psd"), "--align", str(t.alignment), "--animate", "ear l=twitch"]) == 0
+    assert "twitches at frame 30" in capsys.readouterr().out
