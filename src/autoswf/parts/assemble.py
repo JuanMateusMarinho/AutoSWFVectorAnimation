@@ -12,6 +12,7 @@ from autoswf.aqw.helm import HelmItem
 from autoswf.model.document import ColorCustom, Frame, Placement, Symbol
 from autoswf.model.geometry import Matrix
 from autoswf.model.shape import Shape, SolidFill, translated
+from autoswf.parts.detect import color_distance, same_color
 from autoswf.parts.hidden import PartLayer
 from autoswf.vectorize.art import FaceStyle, TracedLayer, VectorArt, recolored, split_tones
 from autoswf.vectorize.planar import trace_shape
@@ -19,7 +20,6 @@ from autoswf.vectorize.planar import trace_shape
 # The client's mcSkel in Idle (both genders, 2026-10-16): the head slot and the back-hair slot.
 IDLE_HEAD = Matrix(0.23516845703125, 0.025909423828125, -0.025909423828125, 0.23516845703125, 7.6, -100.25)
 IDLE_BACKHAIR = Matrix(0.89178466796875, 0.1094207763671875, -0.1094207763671875, 0.89178466796875, 4.0, -114.15)
-LOCATION_MATCH = 16                                # max channel difference between a face's flat and a region's
 UNDERLAP_UNITS = 1.5                               # head units a lower group of faces reaches under the groups above
 EDGE_MARGIN = 2                                    # px: and never closer than this to the part's edge
 
@@ -58,13 +58,12 @@ class AssembledHelm:
     colorable: list[tuple[str, str, str]]          # (layer name, location, shade) in placement order
 
 
-def _location(style: FaceStyle, layer: PartLayer) -> str | None:
-    if style.flat is None:
+def face_location(style: FaceStyle, layer: PartLayer) -> str | None:
+    """The location of the part's colorable color nearest the face's flat color, when detection calls them the same."""
+    if style.flat is None or not layer.locations:
         return None
-    for color, location in layer.locations:
-        if max(abs(int(a) - int(b)) for a, b in zip(style.flat[:3], color[:3])) <= LOCATION_MATCH:
-            return location
-    return None
+    color, location = min(layer.locations, key=lambda entry: color_distance(style.flat, entry[0]))
+    return location if same_color(style.flat, color) else None
 
 
 def _stack(traced: TracedLayer, groups: list[tuple[list[int], list[FaceStyle]]]) -> list[Shape]:
@@ -105,7 +104,7 @@ def _shape_items(traced: TracedLayer, layer: PartLayer, separate_tones: bool, co
     """The plain shape(s) of a fills layer and its colorable clips, in drawing order."""
     if traced.role != "fills":
         return [traced.shape]
-    locations = [_location(s, layer) for s in traced.styles]
+    locations = [face_location(s, layer) for s in traced.styles]
     shades = [face_shade(s, layer.soft_roles) for s in traced.styles]
     if any(locations) and traced.labels is not None and not separate_tones:
         return _layered_items(traced, layer, locations, shades, colorable)

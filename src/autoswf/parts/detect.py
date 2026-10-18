@@ -73,8 +73,13 @@ def colored(color) -> bool:
     return not (white_ish(color) or gray_ish(color) or dark(color)) and hsv(color)[1] >= 0.2
 
 
+def color_distance(a, b) -> int:
+    """The largest channel difference of two colors (alpha left out)."""
+    return max(abs(int(x) - int(y)) for x, y in zip(a[:3], b[:3]))
+
+
 def same_color(a, b) -> bool:
-    return max(abs(int(x) - int(y)) for x, y in zip(a[:3], b[:3])) <= SAME_COLOR
+    return color_distance(a, b) <= SAME_COLOR
 
 
 @dataclass
@@ -423,6 +428,8 @@ class _Detector:
             side = ("L", "R")[k] if len(eyes) == 2 else ("L" if self.region(eye[0]).center.x < 0 else "R")
             name = PartName("eye", side).name
             if name in self.eyes:
+                if band:                               # an eye folder already gave it: the heuristic adds nothing
+                    continue
                 name = PartName("eye", "R" if side == "L" else "L").name
             if self._eye_pieces(name, eye, pool):
                 self.eyes[name] = eye

@@ -240,6 +240,24 @@ def test_color_slots_never_reach_eye_whites_pupils_highlights_or_outlines(parts_
         assert pm.location_of[rid] == want, pm.piece_of[rid]
     assert any("keep their colors" in n for n in pm.notes)
 
+def test_an_eyes_folder_keeps_white_pieces_of_other_folders_out_of_its_eyes():
+    from drawings import TestDrawing, disc
+    from autoswf.aqw.template import Alignment
+    from autoswf.drawing.writers import LayerSpec
+    W = H = 200
+    white, iris, ink = (255, 255, 255, 255), (40, 120, 200, 255), (20, 20, 30, 255)
+    eyes = [LayerSpec("Flats", disc(W, H, white, 80, 120, 10)), LayerSpec("Flats 2", disc(W, H, iris, 82, 121, 5)),
+            LayerSpec("Flats 3", disc(W, H, white, 130, 120, 10)), LayerSpec("Flats 4", disc(W, H, iris, 132, 121, 5))]
+    mark = np.where(disc(W, H, ink, 105, 138, 2.5)[..., 3:4] > 0, disc(W, H, ink, 105, 138, 2.5),
+                    disc(W, H, white, 105, 138, 5))         # a white mark in the eye band, a dark dot in its middle
+    layers = [LayerSpec("Rosto", children=[LayerSpec("Flats", disc(W, H, (240, 200, 160, 255), 100, 120, 60))]),
+              LayerSpec("Olhos", children=eyes), LayerSpec("Flats", mark)]
+    _, pm = detect(TestDrawing(W, H, layers, Alignment(2, (100, 100))))
+    assert {"Eye L", "Eye R"} <= set(pm.parts)
+    for name in ("Eye L", "Eye R"):
+        assert {pm.graph.regions[r].group for r in pm.parts[name].regions} == {1}, name
+    assert not pm.part_of[pm.region_at(105, 134).id].startswith("Eye")
+
 def test_a_slot_for_the_hair_reaches_its_locks(parts_helm):
     from autoswf.parts.model import Corrections
     _, pm = detect(parts_helm, corrections=Corrections(colors={"Hair": "none"}))

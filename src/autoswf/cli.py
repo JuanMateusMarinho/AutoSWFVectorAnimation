@@ -247,6 +247,14 @@ def _cmd_convert(args) -> int:
     if out.suffix.lower() != ".swf":
         print("The output must be a .swf file (got %s)" % out.name)
         return 1
+    flags = [flag for flag, value in (("--parts", args.parts), ("--color", args.color),
+                                      ("--parts-image", args.parts_image)) if value]
+    if args.no_parts and flags:                    # options that only mean something with parts
+        one = len(flags) == 1
+        names = flags[0] if one else "%s and %s" % (", ".join(flags[:-1]), flags[-1])
+        print("%s need%s parts; %s cannot be used with --no-parts"
+              % (names, "s" if one else "", "it" if one else "they"))
+        return 1
     try:
         overrides = _parse_roles(args.role)
         override = Alignment.parse(args.align) if args.align else None
@@ -332,9 +340,12 @@ def _cmd_convert(args) -> int:
 
 
 def _corrections(args):
-    """The part corrections: --parts FILE, else DRAWING.parts.json next to the drawing when it exists, plus --color."""
+    """The part corrections: --parts FILE, else DRAWING.parts.json next to the drawing when it exists, plus --color
+    (none with --no-parts)."""
     from autoswf.parts.model import Corrections, check_color
     path = Path(args.parts) if args.parts else Path(args.drawing).with_name(Path(args.drawing).stem + ".parts.json")
+    if args.no_parts:
+        return Corrections(), None
     if args.parts or path.exists():
         corrections = Corrections.load(path)
     else:
