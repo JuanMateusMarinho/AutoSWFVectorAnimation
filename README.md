@@ -145,7 +145,9 @@ By default the eyes blink and the hair locks (and any back hair) sway; `--no-ani
   turns about its root and bends (a Flash shape tween); back hair hangs from its top edge like a curtain, which stays in
   place while the rest swings. Settings: `stiffness` (0 floppy to 1 stiff, default 0.5),
   `amplitude` (degrees at the tip, default 12), `wind` (0 to 1, default 0.3), `delay` (frames between neighbouring
-  parts, default 4) and `length` (frames per loop, default 48 = 2 seconds).
+  parts, default 4) and `length` (frames per loop, default 48 = 2 seconds). One shape tween follows a bend only so
+  far: when a floppy or wide sway would stretch a long part out of shape, its bend is cut down (it still turns as
+  set) and `convert` says how much of the bend it kept.
 - **Twitch** (ears and similar): a quick turn that settles, once per loop. Settings: `angle` (degrees, default 10),
   `every` (loop length, default 72) and `settle` (frames, default 12).
 - **Pulse** (glowing eyes, gems): brightness (and optionally alpha) goes up and down. Settings: `length` (default 48),
