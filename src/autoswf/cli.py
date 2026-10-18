@@ -247,16 +247,19 @@ def _cmd_convert(args) -> int:
     if out.suffix.lower() != ".swf":
         print("The output must be a .swf file (got %s)" % out.name)
         return 1
-    flags = [flag for flag, value in (("--parts", args.parts), ("--color", args.color),
-                                      ("--parts-image", args.parts_image), ("--anim", args.anim),
-                                      ("--animate", args.animate), ("--blink", args.blink), ("--sway", args.sway),
-                                      ("--twitch", args.twitch), ("--pulse", args.pulse)) if value]
-    if args.no_parts and flags:                    # options that only mean something with parts
-        one = len(flags) == 1
-        names = flags[0] if one else "%s and %s" % (", ".join(flags[:-1]), flags[-1])
-        print("%s need%s parts; %s cannot be used with --no-parts"
-              % (names, "s" if one else "", "it" if one else "they"))
-        return 1
+    animation_flags = [flag for flag, value in (("--anim", args.anim), ("--animate", args.animate),
+                                                ("--blink", args.blink), ("--sway", args.sway),
+                                                ("--twitch", args.twitch), ("--pulse", args.pulse)) if value]
+    part_flags = [flag for flag, value in (("--parts", args.parts), ("--color", args.color),
+                                           ("--parts-image", args.parts_image)) if value] + animation_flags
+    for off, needed, flags in (("--no-parts", "parts", part_flags if args.no_parts else []),
+                               ("--no-animate", "animation", animation_flags if args.no_animate else [])):
+        if flags:                                  # options that only mean something with parts / animation
+            one = len(flags) == 1
+            names = flags[0] if one else "%s and %s" % (", ".join(flags[:-1]), flags[-1])
+            print("%s need%s %s; %s cannot be used with %s"
+                  % (names, "s" if one else "", needed, "it" if one else "they", off))
+            return 1
     try:
         overrides = _parse_roles(args.role)
         override = Alignment.parse(args.align) if args.align else None

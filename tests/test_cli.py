@@ -219,6 +219,21 @@ def test_convert_without_animation(tmp_path, capsys, qapp):
     assert "--sway needs parts; it cannot be used with --no-parts" in capsys.readouterr().out
 
 
+def test_convert_without_animation_refuses_animation_options(tmp_path, capsys, qapp):
+    t = _parts_psd(tmp_path, 240)
+    convert = ["convert", str(tmp_path / "helm.psd"), "--align", str(t.alignment), "--no-animate"]
+    (tmp_path / "moves.json").write_text('{"parts": {}}')
+    assert main(convert + ["--anim", str(tmp_path / "moves.json"), "--blink", "double=on"]) == 1
+    assert "--anim and --blink need animation; they cannot be used with --no-animate" in capsys.readouterr().out
+    for option, value in [("--animate", "Ear L=Twitch"), ("--sway", "amplitude=20"), ("--twitch", "angle=5"),
+                          ("--pulse", "length=24")]:
+        assert main(convert + [option, value]) == 1
+        assert "%s needs animation; it cannot be used with --no-animate" % option in capsys.readouterr().out
+    assert not (tmp_path / "helm.swf").exists()
+    assert main(convert + ["--color", "Helm=Base"]) == 0                  # part options still work without animation
+    assert "Animation" not in capsys.readouterr().out
+
+
 def test_convert_refuses_bad_animation_input_before_reading_the_drawing(tmp_path, capsys, qapp):
     t = _parts_psd(tmp_path, 240)
     for args, message in [(["--anim", str(tmp_path / "missing.json")], "Could not read missing.json"),
