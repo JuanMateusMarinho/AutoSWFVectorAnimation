@@ -14,8 +14,9 @@ def eye(lid=True, drop=7.2):
 
 def test_blink_is_the_official_eye_clip():
     clip = blink_clip(eye(), BlinkParams())
-    assert clip.length == 87 and set(clip.tracks) == {"Eye L ball", "Eye L lid"}
+    assert clip.length == 87 and set(clip.tracks) == {"Eye L ball", "Eye L lid", "Eye L lash"}
     ball, lid = clip.poses("Eye L ball"), clip.poses("Eye L lid")
+    assert clip.poses("Eye L lash") == ball                   # lower lines hide and squash with the ball, as in AQW
     assert [p.alpha for p in ball[9:17]] == [1, 0, 0, 1, 1, 1, 1, 1]
     assert [(p.scale_x, p.scale_y) for p in ball[12:16]] == [
         (1.236114501953125, 0.6431884765625), (1.10491943359375, 0.841400146484375),
@@ -34,7 +35,7 @@ def test_blink_options():
     assert fast[10].alpha == 0 and fast[13] == REST
     double = blink_clip(eye(), BlinkParams(double=True)).poses("Eye L ball")
     assert [p.alpha for p in double[16:21]] == [1, 1, 0, 0, 1]             # again 2 frames after the first ends
-    assert set(blink_clip(eye(lid=False), BlinkParams()).tracks) == {"Eye L ball"}
+    assert set(blink_clip(eye(lid=False), BlinkParams()).tracks) == {"Eye L ball", "Eye L lash"}
     with pytest.raises(ValueError, match="Blink needs a loop of at least 24 frames with these settings \\(got 20\\)"):
         blink_clip(eye(), BlinkParams(interval=20, double=True))
 

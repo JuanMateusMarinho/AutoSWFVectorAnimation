@@ -138,3 +138,38 @@ def test_back_hair_sways_in_its_own_class(qapp):
     inner = out.item.backhair.frames[0].placements[0].item
     assert len(inner.frames[0].placements[0].item.frames) == 48
     assert validate_helm_swf(export_helm(out.item), "BH") == []
+
+
+def test_the_lash_hides_and_squashes_about_the_ball(qapp):
+    """An eye drawn with an outline all round: its lower half (the lash) goes with the ball, squashed about its center."""
+    from drawings import disc, drawing_from_specs, ring
+    from autoswf.anim.rig import rig_parts
+    from autoswf.aqw.template import Alignment
+    from autoswf.drawing.passes import extract_passes
+    from autoswf.drawing.roles import assign_roles
+    from autoswf.drawing.writers import LayerSpec
+    from autoswf.parts.assemble import assemble_helm
+    from autoswf.parts.detect import detect_parts
+    from autoswf.parts.hidden import layered_passes, split_passes
+    from autoswf.vectorize.art import vectorize
+    W = H = 240
+    flats = disc(W, H, (242, 201, 160, 255), 120, 130, 90)
+    for layer in (disc(W, H, (10, 10, 10, 255), 100, 140, 28), disc(W, H, (255, 255, 255, 255), 100, 140, 24),
+                  disc(W, H, (40, 120, 220, 255), 100, 136, 12)):
+        flats = np.where(layer[..., 3:4] > 0, layer, flats)
+    d = drawing_from_specs(W, H, [LayerSpec("Flats", flats)])
+    passes = extract_passes(d, assign_roles(d))
+    alignment = Alignment(4.0, (120, 120))
+    pm = detect_parts(passes, alignment)
+    layers = split_passes(passes, pm)
+    helm = assemble_helm(vectorize(layered_passes(passes, layers), alignment), layers, "E")
+    rigs = rig_parts(pm, helm, layers)
+    assert rigs["Eye L"].eye.lash == "Eye L lash"
+    timeline = Timeline()
+    timeline.put(blink_clip(rigs["Eye L"], BlinkParams()))
+    eye = bake(helm, timeline, rigs).wrappers["Eye L"]
+    lash = lambda f: next(p for p in eye.frames[f].placements if p.name == "eyeLLash")
+    assert lash(10).color.mult[3] == 0 and lash(12).color is None
+    m = lash(12).matrix                                       # squashed about the ball's center (the clip's origin)
+    center = m.apply(Point(-lash(0).matrix.tx, -lash(0).matrix.ty))
+    assert abs(center.x) < 1e-6 and abs(center.y) < 1e-6 and m.d == pytest.approx(0.6431884765625)

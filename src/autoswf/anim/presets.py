@@ -156,6 +156,8 @@ def blink_clip(rig, params: BlinkParams) -> object:
     tracks = {rig.eye.ball: Track(rig.eye.ball, ball)}
     if rig.eye.lid:
         tracks[rig.eye.lid] = Track(rig.eye.lid, lid)
+    if rig.eye.lash:                               # AQW keeps the lower lines in the ball and iris clips:
+        tracks[rig.eye.lash] = Track(rig.eye.lash, dict(ball))      # they hide and squash with the ball
     return Clip(rig.name, params, params.interval, tracks)
 
 

@@ -113,3 +113,85 @@ def test_a_face_folder_painted_under_the_hair_keeps_its_own_painting():
     face = of(layers["Face"], "flats", t)
     folder = canvas(passes.parts[0].origin, passes.parts[0].flats, t)
     assert np.allclose(face[100:130, 60:180], folder[100:130, 60:180])
+
+
+@pytest.mark.parametrize("ring_in", ["flats", "line"])
+def test_outlines_inside_the_eye_go_with_the_ball(ring_in):
+    """The dark ring around the iris moves with the ball (hidden when the eye closes); the eye's own outline below its
+    center stays with the lash, whether the ring is painted in the flats (joined to the outline) or in the line art."""
+    from drawings import disc, ring
+    from autoswf.aqw.template import Alignment
+    from autoswf.drawing.writers import LayerSpec
+    W = H = 240
+    black, white, blue = (10, 10, 10, 255), (255, 255, 255, 255), (40, 120, 220, 255)
+    flats = disc(W, H, (242, 201, 160, 255), 120, 130, 90)
+    for layer in (disc(W, H, black, 100, 140, 28), disc(W, H, white, 100, 140, 24)):
+        flats = np.where(layer[..., 3:4] > 0, layer, flats)
+    iris_ring = ring(W, H, black, 100, 128, 16, 13)
+    for layer in ([iris_ring] if ring_in == "flats" else []) + [disc(W, H, blue, 100, 128, 13),
+                                                              disc(W, H, (5, 5, 20, 255), 100, 128, 5)]:
+        flats = np.where(layer[..., 3:4] > 0, layer, flats)
+    specs = [LayerSpec("Flats", flats)] + ([LayerSpec("Line", iris_ring)] if ring_in == "line" else [])
+    d = drawing_from_specs(W, H, specs)
+    passes = extract_passes(d, assign_roles(d))
+    pm = detect_parts(passes, Alignment(4.0, (120, 120)))
+    layers = {l.name: l for l in split_passes(passes, pm)}
+    t = type("Canvas", (), {"width": W, "height": H})
+
+    def dark(name, x, y):                          # the layer draws black there (in its line art or its fills)
+        if name not in layers:
+            return False
+        f, line = of(layers[name], "fills", t)[int(y), int(x)], of(layers[name], "lines", t)[int(y), int(x)]
+        return bool(line[3] > 0.9 or (f[3] > 0.9 and f[:3].max() / f[3] < 0.2))
+    for x, y in ((100 - 14.5, 128), (100 + 14.5, 128), (100, 142.5)):         # left, right and bottom of the ring
+        assert dark("Eye L ball", x, y) and not dark("Eye L lash", x, y) and not dark("Eye L lid", x, y), (x, y)
+    assert dark("Eye L lash", 100, 166) and not dark("Eye L ball", 100, 166)  # the outline below the eye
+
+
+def _stray_under_eyes(passes, pm, layers, t, skin):
+    """Face pixels inside the eyes (shown when an eye closes) whose color is not the skin's."""
+    face = layers["Face"]
+    eyes = np.zeros((t.height, t.width), bool)
+    for name in pm.parts:
+        if name.startswith("Eye"):
+            eyes |= pm.part_mask(name)
+    for layer in layers.values():
+        if layer.parent and layer.parent.startswith("Eye"):
+            eyes |= of(layer, "lines", t)[..., 3] > 0.5
+    flats = of(face, "flats", t)
+    a = flats[..., 3]
+    rgb = flats[..., :3] / np.maximum(a[..., None], 1e-6) * 255
+    return eyes & (a > 0.5) & (np.abs(rgb - np.array(skin)).max(axis=2) > 40)
+
+
+def test_slivers_under_an_eyes_line_art_are_not_left_in_the_face():
+    """A thin band of iris color painted under the lid's line art must not stay in the face, where a blink shows it."""
+    from drawings import disc, rect, ring
+    from autoswf.aqw.template import Alignment
+    from autoswf.drawing.writers import LayerSpec
+    W = H = 240
+    skin = (242, 201, 160)
+    flats = disc(W, H, skin + (255,), 120, 130, 90)
+    for layer in (ring(W, H, (10, 10, 10, 255), 100, 140, 28, 24), disc(W, H, (255, 255, 255, 255), 100, 140, 24),
+                  disc(W, H, (40, 120, 220, 255), 100, 136, 12), rect(W, H, (40, 120, 220, 255), 84, 105, 116, 108)):
+        flats = np.where(layer[..., 3:4] > 0, layer, flats)
+    line = rect(W, H, (10, 10, 10, 255), 80, 103, 120, 110)                # the lid's line over the band
+    d = drawing_from_specs(W, H, [LayerSpec("Flats", flats), LayerSpec("Line", line)])
+    passes = extract_passes(d, assign_roles(d))
+    pm = detect_parts(passes, Alignment(4.0, (120, 120)))
+    layers = {l.name: l for l in split_passes(passes, pm)}
+    t = type("Canvas", (), {"width": W, "height": H})
+    assert _stray_under_eyes(passes, pm, layers, t, skin).sum() == 0
+
+
+@pytest.mark.aqw
+def test_the_default_heads_face_is_skin_under_its_eyes(qapp, aqw_cache):
+    from official_drawings import official_drawing
+    from autoswf.swf.decode import MovieData
+    t = official_drawing(MovieData(aqw_cache.client_path()), "mcHeadM")
+    d = drawing_from_specs(t.width, t.height, t.layers)
+    passes = extract_passes(d, assign_roles(d))
+    pm = detect_parts(passes, t.alignment)
+    layers = {l.name: l for l in split_passes(passes, pm)}
+    skin = pm.graph.regions[pm.parts["Face"].regions[0]].flat[:3]
+    assert _stray_under_eyes(passes, pm, layers, t, skin).sum() <= 20

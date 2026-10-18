@@ -22,8 +22,9 @@ def _bake_eye(helm, clip, rig) -> None:
             if target is None:
                 placements.append(replace(p))
                 continue
-            pose = clip.pose(target, f)
-            placements.append(replace(p, matrix=pose_matrix(p.matrix, pose), color=pose_color(pose)))
+            pose = clip.pose(target, f)                    # scaled about the clip's origin, the ball's center
+            origin = Point(-p.matrix.tx, -p.matrix.ty)
+            placements.append(replace(p, matrix=pose_matrix(p.matrix, pose, origin), color=pose_color(pose)))
         frames.append(Frame(placements))
     container.frames = frames
 

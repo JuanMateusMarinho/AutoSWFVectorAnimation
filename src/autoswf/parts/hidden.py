@@ -20,6 +20,10 @@ SILHOUETTE_MARGIN = 2                              # px: underlaps stay this far
 BALL_PIECES = ("white", "iris", "pupil", "highlight")
 SOLID = 0.99                                       # flats alpha of the pixels hidden fills copy from
 CORE_DEPTH = 2                                     # px inside a part's edge where those pixels start
+STRAY_COLOR = 40                                   # a part's own pixel this far from its region's flat color is a
+                                                   # sliver merged into it (under line art): refilled inside holes
+EYE_RING_UNITS = 1.5                               # head units: outlines inside the eye opening closer than this to
+                                                   # the ball on both sides (the ring around an iris) go with the ball
 
 
 @dataclass(eq=False)
@@ -140,18 +144,61 @@ class _Splitter:
                     rows = np.arange(group.labels.shape[0])[:, None] + group.origin[1]
                     self.group_units[g][lids & (rows < row)] = lid
                     self.group_units[g][lids & (rows >= row)] = lash
+        self.eye_inside = {part_name: self._eye_opening(idx[0]) for part_name, idx in self.eyes.items()}
+        for part_name, (ball, lash, lid) in self.eyes.items():
+            inside = self.eye_inside[part_name]
+            for g, group in enumerate(self.graph.groups):
+                x0, y0 = group.origin
+                hh, ww = group.labels.shape
+                units = self.group_units[g]
+                units[np.isin(units, (lash, lid)) & inside[y0:y0 + hh, x0:x0 + ww]] = ball
         for g, part in enumerate(self.passes.parts):                  # fill pixels outside every region
             units = self.group_units[g]
             orphan = (part.fills[..., 3] > 0.02) & (units < 0)
             if orphan.any() and (units >= 0).any():
                 _, (iy, ix) = ndimage.distance_transform_edt(units < 0, return_indices=True)
                 units[orphan] = units[iy[orphan], ix[orphan]]
+        self.stray = self._stray()
         self.top = np.full((self.h, self.w), -1, np.int32)
         for g, group in enumerate(self.graph.groups):
             x0, y0 = group.origin
             hh, ww = group.labels.shape
             view = self.top[y0:y0 + hh, x0:x0 + ww]
             np.maximum(view, self.group_units[g], out=view)
+
+    def _stray(self) -> np.ndarray:
+        """Canvas mask of pixels whose drawn flat color is not their region's: small slivers of another color (often
+        under line art) merged into a neighboring region. Inside a moving part's hole they are refilled, so a blink or
+        a swaying lock never shows them."""
+        out = np.zeros((self.h, self.w), bool)
+        flat = np.array([r.flat[:3] for r in self.graph.regions] + [(0, 0, 0)], np.float32)
+        for g, group in enumerate(self.graph.groups):
+            part = self.passes.parts[g]
+            labels = group.labels
+            a = part.flats[..., 3]
+            rgb = part.flats[..., :3] / np.maximum(a[..., None], 1e-6) * 255
+            far = np.abs(rgb - flat[labels]).max(axis=2) > STRAY_COLOR
+            x0, y0 = group.origin
+            hh, ww = labels.shape
+            out[y0:y0 + hh, x0:x0 + ww] |= (labels >= 0) & (a > 0.5) & far
+        return out
+
+    def _eye_opening(self, ball: int) -> np.ndarray:
+        """Canvas mask of the eye's opening: the ball's pixels with the gaps between its pieces closed (the dark ring
+        drawn between an iris and the white), so outlines there move with the ball, not with the lid or lash."""
+        mask = self.own(ball)
+        out = np.zeros_like(mask)
+        r = max(2, int(np.ceil(EYE_RING_UNITS * self.graph.scale)))
+        box = _box(mask, pad=2 * r + 1, shape=(self.h, self.w))
+        if box is None:
+            return out
+        x0, y0, x1, y1 = box
+        yy, xx = np.mgrid[-r:r + 1, -r:r + 1]
+        disk = xx * xx + yy * yy <= r * r
+        local = np.pad(mask[y0:y1, x0:x1], r + 1)
+        closed = ndimage.binary_fill_holes(ndimage.binary_closing(local, structure=disk))[r + 1:-r - 1, r + 1:-r - 1]
+        out[y0:y1, x0:x1] = closed
+        return out
 
     def own(self, i: int, box=None) -> np.ndarray:
         """Canvas (or box) mask of unit i's own pixels in any group."""
@@ -215,6 +262,7 @@ class _Splitter:
                 row = self.center_row[self.units[ball].parent]
                 self.line_unit[mine & (rows < row)] = lid
                 self.line_unit[mine & (rows >= row)] = lash
+                self.line_unit[mine & self.eye_inside[self.units[ball].parent]] = ball
                 self.detail_unit[mine_d] = ball
             else:
                 self.line_unit[mine] = units[0]
@@ -229,6 +277,9 @@ class _Splitter:
         part = self.passes.parts[u.group]
         own = self.group_units[u.group] == i
         clear = (part.flats[..., 3] >= SOLID) & (part.lines[..., 3] <= 0.02)        # not under the line art
+        x0, y0 = group.origin
+        hh, ww = own.shape
+        clear &= ~self.stray[y0:y0 + hh, x0:x0 + ww]                               # never copy a merged sliver
         core = ndimage.binary_erosion(own, iterations=CORE_DEPTH) & clear          # away from blended edges
         if not core.any():
             core = own & clear if (own & clear).any() else own
@@ -283,7 +334,7 @@ class _Splitter:
                 if take.any() and higher.any():                    # reach under the next provider's fill too
                     take |= higher & (ndimage.distance_transform_edt(~take) <= self.reach) \
                         & self.inside[y0:y1, x0:x1]
-                take &= ~self.own(unit, (x0, y0, x1, y1))
+                take &= ~self.own(unit, (x0, y0, x1, y1)) | self.stray[y0:y1, x0:x1]     # slivers get refilled
                 if take.any():
                     ys, xs = np.nonzero(take)
                     self._extend(unit, ys + y0, xs + x0)
