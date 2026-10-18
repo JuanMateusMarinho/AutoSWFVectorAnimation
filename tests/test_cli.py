@@ -120,6 +120,19 @@ def test_convert_without_parts_keeps_the_static_output(tmp_path, capsys, qapp):
     out = capsys.readouterr().out
     assert "Parts (" not in out and "Fills:" in out and "— valid" in out
 
+def test_convert_without_parts_refuses_part_options(tmp_path, capsys, qapp):
+    t = _parts_psd(tmp_path, 240)
+    convert = ["convert", str(tmp_path / "helm.psd"), "--align", str(t.alignment), "--no-parts"]
+    (tmp_path / "fix.json").write_text('{"assign": []}')
+    assert main(convert + ["--color", "Helm=Base", "--parts-image", str(tmp_path / "parts.png")]) == 1
+    assert "--color and --parts-image need parts; they cannot be used with --no-parts" in capsys.readouterr().out
+    assert main(convert + ["--parts", str(tmp_path / "fix.json")]) == 1
+    assert "--parts needs parts; it cannot be used with --no-parts" in capsys.readouterr().out
+    assert not (tmp_path / "helm.swf").exists() and not (tmp_path / "parts.png").exists()
+    (tmp_path / "helm.parts.json").write_text('{"assign": []}')       # found next to the drawing: not used
+    assert main(convert) == 0
+    assert "Using part corrections" not in capsys.readouterr().out
+
 def test_convert_morph_check_needs_the_aqw_files(tmp_path, capsys, monkeypatch, qapp):
     monkeypatch.setenv("AUTOSWF_CACHE", str(tmp_path / "empty"))
     t = _parts_psd(tmp_path, 240)

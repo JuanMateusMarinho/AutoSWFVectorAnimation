@@ -45,6 +45,22 @@ def test_shades_names_and_the_back_hair_matrix():
     m = head_to_backhair()
     assert abs(m.a - 0.2633) < 1e-3 and abs(m.b + 0.0033) < 1e-3 and abs(m.tx - 5.86) < 0.02 and abs(m.ty - 14.87) < 0.02
 
+def test_a_face_takes_the_location_of_its_nearest_colorable_color():
+    from autoswf.model.geometry import Point
+    from autoswf.parts.assemble import face_location
+    from autoswf.parts.detect import SAME_COLOR, same_color
+    from autoswf.parts.hidden import PartLayer
+    skin, hair = (200, 160, 120, 255), (212, 172, 132, 255)
+    layer = lambda *locations: PartLayer("Ear L", None, "ear", None, list(locations), frozenset(), Point(0, 0), False)
+    face = lambda color: FaceStyle(color, color)
+    both = layer((skin, "Skin"), (hair, "Hair"))
+    assert face_location(face((210, 170, 130, 255)), both) == "Hair"          # 10 from the skin, 2 from the hair
+    assert face_location(face((203, 163, 123, 255)), both) == "Skin"
+    for step in (SAME_COLOR, SAME_COLOR + 1):                # what detect calls the same color gets its location
+        color = (skin[0] - step, skin[1], skin[2], 255)
+        assert (face_location(face(color), layer((skin, "Skin"))) == "Skin") == same_color(color, skin), step
+    assert face_location(FaceStyle((1, 2, 3, 255), None), both) is None
+
 def test_structure_and_validity(converted_parts_helm):
     c = converted_parts_helm
     assert validate_helm_swf(c.swf, "PartsHelm") == []
@@ -102,8 +118,42 @@ def test_wrappers_sit_at_their_pivots(converted_parts_helm):
     rx, ry = c.t.roots["Lock 3"]
     assert (m.a, m.b, m.c, m.d) == (1, 0, 0, 1) and np.hypot(m.tx - rx, m.ty - ry) <= 1.5
 
-def test_parts_that_trace_to_nothing_are_left_out(converted_parts_helm):
-    c = converted_parts_helm
+def test_specks_never_leave_empty_wrappers_or_clips(qapp):
+    from drawings import drawing_from_specs, synthetic_parts_helm
+    from autoswf.drawing.passes import extract_passes
+    from autoswf.drawing.roles import assign_roles
+    from autoswf.drawing.writers import LayerSpec
+    from autoswf.model.shape import Shape
+    from autoswf.parts.detect import detect_parts
+    from autoswf.parts.hidden import layered_passes, split_passes
+    from autoswf.vectorize.art import vectorize
+    t = synthetic_parts_helm(240)
+    s, (ox, oy) = t.alignment.scale, t.alignment.origin
+    flats = t.layers[0].pixels.copy()
+    box = lambda x, y, n: (slice(int(oy + y * s), int(oy + y * s) + n), slice(int(ox + x * s), int(ox + x * s) + n))
+    kept, lost = box(-55, 40, 4), box(40, 40, 3)    # 16 px (the default detail keeps 12) and 9 px, on the background
+    assert flats[kept][..., 3].max() == flats[lost][..., 3].max() == 0
+    flats[kept] = flats[lost] = (200, 40, 160, 255)
+    d = drawing_from_specs(t.width, t.height, [LayerSpec("Flats", flats)] + t.layers[1:])
+    passes = extract_passes(d, assign_roles(d))
+    pm = detect_parts(passes, t.alignment)
+    layers = split_passes(passes, pm)
+    helm = assemble_helm(vectorize(layered_passes(passes, layers), t.alignment), layers, "PartsHelm")
+    assert validate_helm_swf(export_helm(helm.item), "PartsHelm") == []
+    assert pm.region_at(lost[1].start + 1, lost[0].start + 1) is None
+    speck = pm.part_of[pm.region_at(kept[1].start + 2, kept[0].start + 2).id]
+    assert speck.startswith("Accessory") and len(pm.parts) == 18 and speck in helm.wrappers
+    assert helm.placements[speck] in helm.item.root.frames[0].placements
+    for name, wrapper in helm.wrappers.items():
+        assert wrapper.frames[0].placements, name
+        for p in wrapper.frames[0].placements:
+            if isinstance(p.item, Shape):
+                assert p.item.paths, name
+            elif p.item.color_custom is not None:                    # a colorable clip: one shape with paths
+                assert p.item.frames[0].placements[0].item.paths, (name, p.item.name)
+
+def test_a_part_with_no_traced_art_gets_no_wrapper(converted_parts_helm):
+    c = converted_parts_helm                        # real specks always trace (see above): the art is left out by hand
     art = dataclasses.replace(c.art, layers=[l for l in c.art.layers if l.part != "Accessory 1"])
     helm = assemble_helm(art, c.layers, "PartsHelm")
     assert "Accessory 1" not in helm.wrappers
