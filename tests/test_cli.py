@@ -204,6 +204,17 @@ def test_convert_rejects_bad_animation_options(tmp_path, capsys, qapp):
     assert not (tmp_path / "helm.swf").exists()
 
 
+def test_convert_says_when_every_animation_is_switched_off(tmp_path, capsys, qapp):
+    import json
+    t = _parts_psd(tmp_path, 240)
+    parts = ["Eye L", "Eye R"] + ["Lock %d" % k for k in range(1, 7)]
+    (tmp_path / "helm.anim.json").write_text(json.dumps({"parts": {name: "none" for name in parts}}))
+    assert main(["convert", str(tmp_path / "helm.psd"), "--align", str(t.alignment)]) == 0
+    out = capsys.readouterr().out
+    assert "Animation: none (every part that would animate is set to none)" in out and "no eyes or locks" not in out
+    assert set(_sprite_frame_counts(tmp_path / "helm.swf")) == {1}
+
+
 def test_convert_refuses_to_sway_the_hair_base(tmp_path, capsys, qapp):
     t = _parts_psd(tmp_path)
     assert main(["convert", str(tmp_path / "helm.psd"), "--align", str(t.alignment), "--animate", "Hair=Sway"]) == 1

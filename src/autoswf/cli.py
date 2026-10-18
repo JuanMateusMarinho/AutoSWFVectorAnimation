@@ -409,13 +409,16 @@ def _animate(parts, helm, layers, settings) -> bytes:
     """The helm with its suggested and chosen animations baked in; prints the clips."""
     from autoswf.anim.bake import bake
     from autoswf.anim.rig import rig_parts
-    from autoswf.anim.settings import build_timeline, clip_summary
+    from autoswf.anim.settings import build_timeline, clip_summary, suggest_presets
     rigs = rig_parts(parts, helm, layers)
     timeline, notes = build_timeline(rigs, settings)
     for note in notes:
         print(note)
     if not timeline.clips:
-        print("Animation: none (no eyes or locks found; add one with --animate PART=PRESET)")
+        if suggest_presets(rigs):                  # there were eyes or locks, and the settings switched them off
+            print("Animation: none (every part that would animate is set to none)")
+        else:
+            print("Animation: none (no eyes or locks found; add one with --animate PART=PRESET)")
         return export_helm(helm.item)
     print("Animation (%d clip%s):" % (len(timeline.clips), "" if len(timeline.clips) == 1 else "s"))
     for clip in timeline.clips.values():
