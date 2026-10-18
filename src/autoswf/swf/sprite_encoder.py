@@ -64,7 +64,7 @@ def encode_define_sprite(symbol: Symbol, char_ids: dict[int, int]) -> bytes:
                     # Players only swap the innards of shapes in place; clips must be removed and placed fresh
                     # so the new clip's class and frame scripts run.
                     out += tag(REMOVE_OBJECT2, struct.pack("<H", depth))
-                    out += _place(depth, char_ids[id(p.item)], p.matrix, p.color, p.name)
+                    out += _place(depth, char_ids[id(p.item)], p.matrix, p.color, p.name, ratio=p.ratio)
                 else:
                     out += _move(depth, old, p)
             elif old.item is not p.item:

@@ -47,6 +47,18 @@ def test_a_morph_renders_between_its_shapes(qapp):
     assert (xs.min(), xs.max(), ys.max()) == (0, 19, 19)
 
 
+def test_a_morph_that_replaces_a_clip_keeps_its_ratio():
+    morph = MorphShape(square(10, True), square(30, True))
+    dot = Symbol("Dot", [Frame([Placement(square(4), 1)])])
+    clip = Symbol("Swap", [Frame([Placement(dot, 1)]), Frame([Placement(morph, 1, ratio=0.5)])])
+    data = export_helm(HelmItem("S", Symbol("S", [Frame([Placement(clip, 1)])])))
+    movie = MovieData(data)
+    swap = movie.character(movie.character(movie.classes["S"]).frames[0][0].char_id)
+    remove, place = swap.frames[1]
+    assert isinstance(movie.character(place.char_id), MorphShapeDef) and place.ratio == 32768
+    assert validate_helm_swf(data, "S") == []
+
+
 def test_mismatched_morphs_and_stray_ratios_are_errors():
     bad = MorphShape(square(10), Shape([SolidFill((0, 0, 0, 255))], []))
     with pytest.raises(ValueError, match="same fills, paths and segment kinds"):
