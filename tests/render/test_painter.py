@@ -91,43 +91,51 @@ def test_raster_cache_reuses_shapes_and_matches_direct_drawing(qapp):
     assert cached.cache_hits >= 2 and direct.cache_hits == 0
     assert all(abs(a - b) <= 2 for y in range(40) for x in range(40) for a, b in zip(rgba(again, x, y), rgba(plain, x, y)))
 
-def test_fills_sharing_an_edge_leave_no_seam(qapp):
-    # one shape: red upper-right triangle and blue lower-left triangle share the diagonal (0,0)-(20,20)
-    paths = [{"fill1": 1, "start": (0, 0), "edges": [(20, 0), (20, 20)]},
+# one shape: fill 1 is the upper-right triangle and fill 2 the lower-left one; they share the diagonal (0,0)-(20,20)
+TRIANGLES = [{"fill1": 1, "start": (0, 0), "edges": [(20, 0), (20, 20)]},
              {"fill1": 2, "start": (20, 20), "edges": [(0, 20), (0, 0)]},
              {"fill0": 1, "fill1": 2, "start": (0, 0), "edges": [(20, 20)]}]
-    tags = [shape_tag(1, 3, fills=[("solid", RED), ("solid", BLUE)], lines=[], paths=paths)]
+
+def test_fills_sharing_an_edge_leave_no_seam(qapp):
+    tags = [shape_tag(1, 3, fills=[("solid", RED), ("solid", BLUE)], lines=[], paths=TRIANGLES)]
     for renderer in (Renderer(), Renderer(cache_bytes=0)):
         obj = instantiate(MovieData(swf(tags)), 1)
         img = renderer.render_image(obj, 30, 30, Matrix.scale(1.0, 1.0), None)
         assert min(rgba(img, x, y)[3] for x in range(1, 19) for y in range(1, 19)) >= 254
         assert rgba(img, 15, 3) == RED and rgba(img, 3, 15) == BLUE
 
+def test_seam_free_fills_add_each_fill_once(qapp):
+    # the triangles' boxes overlap, so the second fill's box holds the first one's pixels, and the renderer keeps the
+    # layers' memory from shape to shape; colors that do not saturate would show pixels added twice
+    dark_red, dark_blue = (120, 0, 0, 255), (0, 0, 120, 255)
+    tags = [shape_tag(1, 3, fills=[("solid", dark_red), ("solid", dark_blue)], lines=[], paths=TRIANGLES)]
+    renderer = Renderer(cache_bytes=0)
+    for _ in range(2):
+        img = renderer.render_image(instantiate(MovieData(swf(tags)), 1), 30, 30, Matrix(), None)
+        assert rgba(img, 15, 3) == dark_red and rgba(img, 3, 15) == dark_blue
+
 def test_seam_free_fills_cost_little_more_than_drawing_them_one_by_one(qapp, monkeypatch):
     import time
-    from autoswf.render import painter
     colors = [((37 * i) % 256, (91 * i) % 256, (151 * i) % 256, 255) for i in range(36)]
     paths = [sq(10 * c, 10 * r, 10 * c + 10, 10 * r + 10, fill=6 * r + c + 1) for r in range(6) for c in range(6)]
     obj = instantiate(MovieData(swf([shape_tag(1, 3, fills=[("solid", c) for c in colors], lines=[], paths=paths)])), 1)
+    renderer, view = Renderer(cache_bytes=0), Matrix(4.1, 0.3, -0.3, 4.1, 20.3, 5.7)
 
-    def frame_seconds():                          # best of 5 runs of 10 frames, with no raster cache
-        renderer, view = Renderer(cache_bytes=0), Matrix(4.1, 0.3, -0.3, 4.1, 20.3, 5.7)
-        renderer.render_image(obj, 280, 280, view, None)
-        runs = []
-        for _ in range(5):
-            start = time.perf_counter()
-            for _ in range(10):
-                renderer.render_image(obj, 280, 280, view, None)
-            runs.append(time.perf_counter() - start)
-        return min(runs)
-
-    def one_by_one(p, transform, fills):          # source-over, fill after fill: the way that leaves seams
+    def one_by_one(self, p, transform, fills):    # source-over, fill after fill: the way that leaves seams
         p.setTransform(transform)
         for path, brush in fills:
             p.setBrush(brush)
             p.drawPath(path)
 
-    seam_free = frame_seconds()
-    monkeypatch.setattr(painter, "_paint_fills_seamless", one_by_one)
-    plain = frame_seconds()
+    def run_seconds(paint_fills):                 # 10 frames with no raster cache
+        monkeypatch.setattr(Renderer, "_paint_fills_seamless", paint_fills)
+        start = time.perf_counter()
+        for _ in range(10):
+            renderer.render_image(obj, 280, 280, view, None)
+        return time.perf_counter() - start
+
+    seamless = Renderer._paint_fills_seamless
+    run_seconds(seamless), run_seconds(one_by_one)                    # warm-up
+    runs = [(run_seconds(seamless), run_seconds(one_by_one)) for _ in range(7)]  # interleaved: load changes hit both
+    seam_free, plain = min(s for s, _ in runs), min(p for _, p in runs)
     assert seam_free < 3 * plain, (seam_free, plain)
