@@ -65,6 +65,7 @@ class Clip:
     length: int                  # frames in the loop
     tracks: dict[str, Track]
     bends: dict[str, object] = field(default_factory=dict)      # target -> sway.Bend
+    details: dict[str, object] = field(default_factory=dict)    # what the preset found ({"links": 6} for Sway)
 
     def pose(self, target: str, frame: int) -> Pose:
         return self.tracks[target].pose(frame)

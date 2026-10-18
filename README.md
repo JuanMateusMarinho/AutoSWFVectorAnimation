@@ -10,7 +10,8 @@ color customization, shows the item on the AQW body, and exports a SWF ready for
 
 > **Status: early development.** Phase 1 (helms and morph helms) is being built. Done so far: the SWF engine
 > (AQW-valid helm export), the preview of a helm on the AQW male and female bodies, and the conversion of a layered
-> drawing (`.clip`, `.psd`, `.png`) into a vector helm split into parts, with AQW color custom.
+> drawing (`.clip`, `.psd`, `.png`) into an animated vector helm split into parts (blinking eyes, swaying hair),
+> with AQW color custom.
 
 ## Why
 
@@ -128,6 +129,43 @@ outlines always keep their colors). More options: `--color "Helm=Base"` (same as
 image of the parts found), `--morph` (warn when the male or female base head shows around a morph helm) and
 `--no-parts` (one static shape set, no color custom). To see the result with other player colors:
 `preview my-helm.swf --player-color Hair=C02030 --player-color Skin=80C0FF`.
+
+### Animation
+
+`convert` animates the helm the way Flash items in AQW are animated: every moving part becomes its own looping clip.
+By default the eyes blink and the hair locks (and any back hair) sway; `--no-animate` writes a still helm.
+
+- **Blink** (eyes) repeats AQW's own eye clip frame for frame: an 87-frame loop where, on frames 11-12, the eye white and
+  iris disappear and the upper lid line comes down over the skin, then on frames 13-16 the eye comes back squashed while
+  the lid goes up. Settings: `interval` (loop length, default 87 frames), `speed` (1 = AQW's speed; 0.5 to 2) and
+  `double` (blink twice).
+- **Sway** (hair locks, ears, ribbons, feathers, soft cloth, back hair) runs a chain of springs from the part's root to
+  its tip, solved into a seamless loop; neighbouring locks follow each other a few frames apart, like a wave. Each part
+  turns about its root and bends (a Flash shape tween). Settings: `stiffness` (0 floppy to 1 stiff, default 0.5),
+  `amplitude` (degrees at the tip, default 12), `wind` (0 to 1, default 0.3), `delay` (frames between neighbouring
+  parts, default 4) and `length` (frames per loop, default 48 = 2 seconds).
+- **Twitch** (ears and similar): a quick turn that settles, once per loop. Settings: `angle` (degrees, default 10),
+  `every` (loop length, default 72) and `settle` (frames, default 12).
+- **Pulse** (glowing eyes, gems): brightness (and optionally alpha) goes up and down. Settings: `length` (default 48),
+  `brightness` (-1 to 1, default 0.35) and `alpha` (the lowest alpha, default 1).
+
+Only parts with their hidden area filled can move (eyes, locks, ears, accessories, back hair), so nothing opens up
+behind them; Pulse works on any part. Options: `--animate "Ear L=Twitch"` (a preset for a part, or `none`), and
+`--blink`, `--sway`, `--twitch`, `--pulse KEY=VALUE` (a setting for every part that uses that preset), e.g.
+`--sway amplitude=20 --blink double=on`. The same choices, and keyframes you edit by hand, go in `my-helm.anim.json`
+next to the drawing (or `--anim FILE`); frames count from 1, as in Animate:
+
+```json
+{
+  "presets": {"Sway": {"amplitude": 15, "length": 72}},
+  "parts": {"Ear L": "Twitch", "Lock 2": "none", "Accessory 1": {"preset": "Pulse", "brightness": 0.5}},
+  "keys": [{"part": "Lock 3", "frame": 12, "rotation": 6}]
+}
+```
+
+A keyframe sets any of `x`, `y` (head units), `rotation` (degrees), `scale_x`, `scale_y`, `alpha`, `brightness` and
+`bend` (0 to 1) of one frame, on top of what the preset made; `"tween": true` blends it into the next keyframe. AQW
+plays items at 24 frames per second, and so does `preview`.
 
 `download-aqw` fetches the current AQW game client and one armor (for the preview body) from AQW's public server.
 AQW files are only downloaded when you ask, stay on your computer (in `cache/`), and are never committed or shared.

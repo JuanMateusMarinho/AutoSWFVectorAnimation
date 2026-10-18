@@ -248,7 +248,9 @@ def _cmd_convert(args) -> int:
         print("The output must be a .swf file (got %s)" % out.name)
         return 1
     flags = [flag for flag, value in (("--parts", args.parts), ("--color", args.color),
-                                      ("--parts-image", args.parts_image)) if value]
+                                      ("--parts-image", args.parts_image), ("--anim", args.anim),
+                                      ("--animate", args.animate), ("--blink", args.blink), ("--sway", args.sway),
+                                      ("--twitch", args.twitch), ("--pulse", args.pulse)) if value]
     if args.no_parts and flags:                    # options that only mean something with parts
         one = len(flags) == 1
         names = flags[0] if one else "%s and %s" % (", ".join(flags[:-1]), flags[-1])
@@ -260,6 +262,7 @@ def _cmd_convert(args) -> int:
         override = Alignment.parse(args.align) if args.align else None
         link = sanitize_link(args.link or out.stem)
         corrections, corrections_file = _corrections(args)
+        animation, animation_file = _animation_settings(args)
         drawing = read_drawing(args.drawing)
         roles = assign_roles(drawing, overrides)
     except (DrawingError, ValueError) as e:
@@ -277,6 +280,8 @@ def _cmd_convert(args) -> int:
         return 0
     if corrections_file is not None:
         print("Using part corrections from %s" % corrections_file.name)
+    if animation_file is not None:
+        print("Using animation settings from %s" % animation_file.name)
     try:
         passes = extract_passes(drawing, roles, gradient_layers=frozenset(args.gradient))
         ys, xs = np.nonzero(passes.full[..., 3] > 0)
@@ -307,7 +312,7 @@ def _cmd_convert(args) -> int:
             segments = sum(len(p.segments) for p in layer.shape.paths)
             print("%s: %d region%s, %d segments" % (layer.name, len(layer.styles), "" if len(layer.styles) == 1 else "s",
                                                    segments))
-        data = export_helm(helm_from_art(art, link, separate_tones=args.separate_tones))
+        data = still = export_helm(helm_from_art(art, link, separate_tones=args.separate_tones))
     else:
         from autoswf.parts.assemble import assemble_helm, colorable_summary
         helm = assemble_helm(art, layers, link, separate_tones=args.separate_tones)
@@ -321,7 +326,13 @@ def _cmd_convert(args) -> int:
             Path(args.parts_image).parent.mkdir(parents=True, exist_ok=True)
             parts_image(passes, parts).save(args.parts_image)
             print("Wrote %s (the parts found; drawing pixels, for corrections)" % args.parts_image)
-        data = export_helm(helm.item)
+        data = still = export_helm(helm.item)
+        if not args.no_animate:
+            try:
+                data = _animate(parts, helm, layers, animation)
+            except ValueError as e:
+                print(e)
+                return 1
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_bytes(data)
     if len(data) > SIZE_WARNING_BYTES:
@@ -332,8 +343,8 @@ def _cmd_convert(args) -> int:
     if problems:
         return 1
     print("Wrote %s (%.1f KB, class %s) — valid" % (out, len(data) / 1024, link))
-    if args.report:
-        print(quality_report(passes, art, data, link).format())
+    if args.report:                                # the drawing's rest pose: the helm before animation
+        print(quality_report(passes, art, still, link).format())
     if args.morph:
         _morph_check(out, link)
     return 0
@@ -357,6 +368,55 @@ def _corrections(args):
         name, location = check_color(part, location)
         corrections.colors[name] = location
     return corrections, path
+
+
+PRESET_OPTIONS = (("blink", "Blink"), ("sway", "Sway"), ("twitch", "Twitch"), ("pulse", "Pulse"))
+
+
+def _animation_settings(args):
+    """The animation settings: --anim FILE, else DRAWING.anim.json next to the drawing when it exists, plus --animate and
+    the preset options (none with --no-parts or --no-animate)."""
+    from autoswf.anim.presets import parse_params, preset_name
+    from autoswf.anim.settings import AnimationSettings
+    path = Path(args.anim) if args.anim else Path(args.drawing).with_name(Path(args.drawing).stem + ".anim.json")
+    if args.no_parts or args.no_animate:
+        return AnimationSettings(), None
+    if args.anim or path.exists():
+        settings = AnimationSettings.load(path)
+    else:
+        settings, path = AnimationSettings(), None
+    for item in args.animate:
+        part, sep, preset = item.rpartition("=")
+        if not sep or not part.strip():
+            raise ValueError('Animations look like "PART=PRESET", for example --animate "Ear L=Twitch"')
+        settings.parts[part.strip()] = (preset_name(preset), {})
+    for option, name in PRESET_OPTIONS:
+        for item in getattr(args, option):
+            key, sep, value = item.partition("=")
+            if not sep or not key.strip():
+                raise ValueError("Preset settings look like KEY=VALUE, for example --sway amplitude=20")
+            values = {**settings.presets.get(name, {}), key.strip(): value.strip()}
+            parse_params(name, values)
+            settings.presets[name] = values
+    return settings, path
+
+
+def _animate(parts, helm, layers, settings) -> bytes:
+    """The helm with its suggested and chosen animations baked in; prints the clips."""
+    from autoswf.anim.bake import bake
+    from autoswf.anim.rig import rig_parts
+    from autoswf.anim.settings import build_timeline, clip_summary
+    rigs = rig_parts(parts, helm, layers)
+    timeline, notes = build_timeline(rigs, settings)
+    for note in notes:
+        print(note)
+    if not timeline.clips:
+        print("Animation: none (no eyes or locks found; add one with --animate PART=PRESET)")
+        return export_helm(helm.item)
+    print("Animation (%d clip%s):" % (len(timeline.clips), "" if len(timeline.clips) == 1 else "s"))
+    for clip in timeline.clips.values():
+        print("  " + clip_summary(clip))
+    return export_helm(bake(helm, timeline, rigs).item)
 
 
 def _print_parts(parts) -> None:
@@ -482,6 +542,16 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--parts-image", metavar="FILE.png", help="write an image of the parts found")
     p.add_argument("--morph", action="store_true",
                    help="check that the helm covers the male and female base heads (needs the AQW files)")
+    p.add_argument("--no-animate", action="store_true",
+                   help="a still helm: no blinking, swaying or other animation")
+    p.add_argument("--anim", metavar="FILE",
+                   help="animation settings (default: DRAWING.anim.json next to the drawing, when it exists)")
+    p.add_argument("--animate", action="append", default=[], metavar="PART=PRESET",
+                   help="animate a part: Blink, Sway, Twitch, Pulse or none (repeatable; eyes blink and locks sway "
+                        "by default)")
+    for option, name in PRESET_OPTIONS:
+        p.add_argument("--" + option, action="append", default=[], metavar="KEY=VALUE",
+                       help="a %s setting for every part that uses it (repeatable)" % name)
     p.set_defaults(run=_cmd_convert)
     p = sub.add_parser("template", help="write a drawing template with the AQW heads as guide layers")
     p.add_argument("out", help="PSD file to write")

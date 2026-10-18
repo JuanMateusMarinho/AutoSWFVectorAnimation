@@ -261,4 +261,5 @@ def sway_clip(rig, params, rank: int) -> Clip:
     keys = {f: Key(Pose(rotation=math.degrees(theta[f, 0]), bend=bend.ratios[f] if bend else None))
             for f in range(params.length)}
     tracks = {layer: Track(layer, dict(keys)) for layer in rig.layers}
-    return Clip(rig.name, params, params.length, tracks, {layer: bend for layer in rig.layers} if bend else {})
+    return Clip(rig.name, params, params.length, tracks, {layer: bend for layer in rig.layers} if bend else {},
+                {"links": links})

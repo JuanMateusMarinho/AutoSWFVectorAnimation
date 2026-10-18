@@ -159,3 +159,61 @@ def test_convert_line_art_only_with_parts_on(tmp_path, capsys, qapp):
     assert main(["convert", str(tmp_path / "ring.psd"), "--align", "2,100,100"]) == 0
     out = capsys.readouterr().out
     assert "no flat colors to find parts in" in out and "— valid" in out
+
+
+def _sprite_frame_counts(path):
+    from autoswf.swf.decode import MovieData, SpriteDef
+    movie = MovieData(path.read_bytes())
+    return [movie.character(c).frame_count for c in movie.character_ids()
+            if isinstance(movie.character(c), SpriteDef)]
+
+
+def test_convert_animates_eyes_and_locks(tmp_path, capsys, qapp):
+    import re
+    t = _parts_psd(tmp_path)
+    assert main(["convert", str(tmp_path / "helm.psd"), "--align", str(t.alignment), "--report"]) == 0
+    out = capsys.readouterr().out
+    assert "Animation (8 clips):" in out and re.search(r"Eye L\s+Blink\s+87 frames, blinks at frame 11", out)
+    assert re.search(r"Lock 6\s+Sway\s+48 frames, 6 links", out)
+    assert "Meets the quality bar." in out and "— valid" in out
+    counts = _sprite_frame_counts(tmp_path / "helm.swf")
+    assert 87 in counts and 48 in counts
+
+
+def test_convert_animation_options_and_file(tmp_path, capsys, qapp):
+    import json
+    t = _parts_psd(tmp_path)
+    (tmp_path / "helm.anim.json").write_text(json.dumps({"parts": {"Lock 2": "none"},
+                                                         "keys": [{"part": "Lock 3", "frame": 12, "rotation": 6}]}))
+    assert main(["convert", str(tmp_path / "helm.psd"), "--align", str(t.alignment), "--animate", "Ear L=Twitch",
+                 "--sway", "amplitude=20", "--blink", "double=on"]) == 0
+    out = capsys.readouterr().out
+    assert "Using animation settings from helm.anim.json" in out and "Animation (8 clips):" in out
+    assert "twitches at frame 30" in out and "blinks at frames 11 and 19" in out
+    assert not any(line.strip().startswith("Lock 2 ") for line in out.split("Animation (")[1].splitlines())
+
+
+def test_convert_rejects_bad_animation_options(tmp_path, capsys, qapp):
+    t = _parts_psd(tmp_path, 240)
+    for args, message in [(["--sway", "amp=3"], "Unknown Sway setting 'amp'"),
+                          (["--animate", "Lock1"], 'Animations look like "PART=PRESET"'),
+                          (["--animate", "Lock 1=Wave"], "Unknown preset 'Wave'"),
+                          (["--blink", "double"], "Preset settings look like KEY=VALUE")]:
+        assert main(["convert", str(tmp_path / "helm.psd"), *args]) == 1
+        assert message in capsys.readouterr().out
+    assert not (tmp_path / "helm.swf").exists()
+
+
+def test_convert_refuses_to_sway_the_hair_base(tmp_path, capsys, qapp):
+    t = _parts_psd(tmp_path)
+    assert main(["convert", str(tmp_path / "helm.psd"), "--align", str(t.alignment), "--animate", "Hair=Sway"]) == 1
+    assert "('Hair' is not one of them)" in capsys.readouterr().out and not (tmp_path / "helm.swf").exists()
+
+
+def test_convert_without_animation(tmp_path, capsys, qapp):
+    t = _parts_psd(tmp_path, 480)
+    assert main(["convert", str(tmp_path / "helm.psd"), "--align", str(t.alignment), "--no-animate"]) == 0
+    assert "Animation" not in capsys.readouterr().out
+    assert set(_sprite_frame_counts(tmp_path / "helm.swf")) == {1}
+    assert main(["convert", str(tmp_path / "helm.psd"), "--no-parts", "--sway", "amplitude=20"]) == 1
+    assert "--sway needs parts; it cannot be used with --no-parts" in capsys.readouterr().out
