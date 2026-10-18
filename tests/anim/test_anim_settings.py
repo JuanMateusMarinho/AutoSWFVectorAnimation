@@ -101,6 +101,14 @@ def test_a_bend_on_a_target_that_does_not_bend_is_a_note(part_rigs):
     assert timeline.clips["Eye L"].pose("Eye L ball", 11).alpha == 0.5
 
 
+def test_a_cut_down_bend_is_a_note(part_rigs):
+    timeline, notes = build_timeline(part_rigs, AnimationSettings(parts={"Lock 6": ("Sway", {"amplitude": 45,
+                                                                                          "stiffness": 0})}))
+    kept = round(100 * timeline.clips["Lock 6"].details["bend kept"])
+    assert notes == ["'Lock 6' bends %d%% as much as its simulated sway: one morph shape cannot follow more of it "
+                     "closely (a lower Sway amplitude or more stiffness keeps more)" % kept]
+
+
 def test_part_names_are_read_like_part_corrections():
     s = AnimationSettings.from_dict({"parts": {"lock 1": "none", "ear l": "Twitch"},
                                      "keys": [{"part": "lock 3", "frame": 2, "rotation": 1}]})

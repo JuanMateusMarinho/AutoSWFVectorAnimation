@@ -58,6 +58,22 @@ def test_a_long_lock_turns_and_bends_like_the_simulation(part_rigs):
     assert [p.rotation for p in poses] == pytest.approx(list(np.degrees(bend.angles[:, 0])))
 
 
+def test_a_bend_one_morph_cannot_follow_is_cut_down(part_rigs):
+    """A floppy, wide sway is a travelling wave one morph shape cannot follow: the bend (what the lock does beyond its
+    turn about the root) is cut down until the morph stays within 6% of the lock's length of it; the turn is kept."""
+    params = SwayParams(amplitude=45, stiffness=0.0)
+    clip = sway_clip(part_rigs["Lock 6"], params, rank=0)
+    bend = clip.bends["Lock 6"]
+    assert bend.error <= 0.06 * bend.chain.length
+    kept = clip.details["bend kept"]
+    assert 0.05 < kept < 0.95
+    theta = solve_chain(len(bend.chain.nodes) - 1, params.length, params.stiffness, params.wind, 0.0)
+    theta *= np.radians(params.amplitude) / np.abs(theta[:, -1]).max()
+    assert [p.rotation for p in clip.poses("Lock 6")] == pytest.approx(list(np.degrees(theta[:, 0])))
+    assert bend.angles == pytest.approx(theta[:, :1] + kept * (theta - theta[:, :1]))
+    assert "bend kept" not in sway_clip(part_rigs["Lock 6"], SwayParams(), rank=0).details     # the default is whole
+
+
 def test_neighbouring_locks_lag_by_the_delay(part_rigs):
     a = np.array([p.rotation for p in sway_clip(part_rigs["Lock 3"], SwayParams(), 0).poses("Lock 3")])
     b = np.array([p.rotation for p in sway_clip(part_rigs["Lock 4"], SwayParams(), 1).poses("Lock 4")])

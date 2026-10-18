@@ -20,6 +20,9 @@ ZETA = 0.35                      # damping ratio of each link's spring
 MAX_BENT_SEGMENT = 1.0           # head units: longer segments are split before bending
 MIN_BEND = 0.05                  # head units: a bend that moves no point further is left out (the part only turns)
 MAX_BEND_SAMPLES = 4000          # points the bend mode is measured on (a wide part is subsampled)
+MAX_BEND_ERROR = 0.06            # of the chain's length: farthest the one-mode morph may stray from the simulated bend
+                                 # (up to this the morph keeps the part's shape; far beyond it stretches or crumples)
+BEND_SEARCH_STEPS = 7            # halvings when a bend must be cut down to MAX_BEND_ERROR (to 1/128 of the bend)
 SQRT2 = math.sqrt(2.0)
 
 
@@ -277,6 +280,26 @@ def _bend(chain: Chain, angles: np.ndarray) -> Bend | None:
     return Bend(chain, angles, ratios, float(np.hypot(err[..., 0], err[..., 1]).max()), a, len(rows))
 
 
+def _followed_bend(chain: Chain, angles: np.ndarray) -> tuple[Bend | None, float]:
+    """The bend of `angles` and 1, or, when one morph shape strays more than MAX_BEND_ERROR of the chain's length from
+    it (a floppy or wide sway is a travelling wave), the bend of the largest share of it the morph can follow and that
+    share. The share is of what the links do beyond the root's turn, which is kept (all of it for a hanging part)."""
+    bend = _bend(chain, angles)
+    bar = MAX_BEND_ERROR * chain.length
+    if bend is None or bend.error <= bar:
+        return bend, 1.0
+    turn = 0.0 if chain.hang else angles[:, :1]
+    lo, hi, best = 0.0, 1.0, None
+    for _ in range(BEND_SEARCH_STEPS):
+        mid = (lo + hi) / 2
+        trial = _bend(chain, turn + mid * (angles - turn))
+        if trial is None or trial.error <= bar:
+            lo, best = mid, trial
+        else:
+            hi = mid
+    return best, lo
+
+
 def sway_ranks(rigs: dict, parts: Iterable[str]) -> dict[str, int]:
     """Neighbouring order of the swaying parts: left to right by pivot."""
     return {name: k for k, name in enumerate(sorted(parts, key=lambda n: (rigs[n].pivot.x, n)))}
@@ -294,10 +317,10 @@ def sway_clip(rig, params, rank: int) -> Clip:
         theta = theta * (math.radians(params.amplitude) / peak)
     else:
         theta = np.zeros_like(theta)
-    bend = _bend(chain, theta) if links >= 2 or hang else None
+    bend, kept = _followed_bend(chain, theta) if links >= 2 or hang else (None, 1.0)
     turn = np.zeros(params.length) if hang else np.degrees(theta[:, 0])
     keys = {f: Key(Pose(rotation=float(turn[f]), bend=bend.ratios[f] if bend else None))
             for f in range(params.length)}
     tracks = {layer: Track(layer, dict(keys)) for layer in rig.layers}
     return Clip(rig.name, params, params.length, tracks, {layer: bend for layer in rig.layers} if bend else {},
-                {"links": links})
+                {"links": links, **({"bend kept": kept} if kept < 1.0 else {})})

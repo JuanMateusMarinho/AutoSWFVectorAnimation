@@ -190,6 +190,10 @@ def build_timeline(rigs: dict, settings: AnimationSettings, *, suggest: bool = T
             clip = blink_clip(rig, spec)
         elif isinstance(spec, SwayParams):
             clip = sway_clip(rig, spec, ranks[part])
+            if "bend kept" in clip.details:
+                notes.append("'%s' bends %d%% as much as its simulated sway: one morph shape cannot follow more of it "
+                             "closely (a lower Sway amplitude or more stiffness keeps more)"
+                             % (part, round(100 * clip.details["bend kept"])))
         elif isinstance(spec, TwitchParams):
             clip = twitch_clip(rig, spec)
         else:
