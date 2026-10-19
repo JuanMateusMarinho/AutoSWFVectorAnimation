@@ -102,3 +102,13 @@ def test_save_failures_are_download_errors(tmp_path, server):
     (tmp_path / "aqw" / "gamefiles" / "classes").write_text("a file where a folder should be")
     with pytest.raises(DownloadError, match="Could not save"):
         download_reference_files(AqwCache(tmp_path), armor="TestArmor", base_url=url, **QUIET)
+
+
+def test_the_packaged_app_keeps_its_cache_in_local_app_data(monkeypatch, tmp_path):
+    import sys
+    from autoswf.aqw.assets import default_cache_dir
+    monkeypatch.delenv("AUTOSWF_CACHE", raising=False)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    assert default_cache_dir().name == "cache" and default_cache_dir().parent.name != "AutoSWF"   # a source checkout
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    assert default_cache_dir() == tmp_path / "AutoSWF" / "cache"

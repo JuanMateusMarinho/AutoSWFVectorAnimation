@@ -6,6 +6,7 @@ import lzma
 import os
 import re
 import struct
+import sys
 import tempfile
 import urllib.error
 import urllib.request
@@ -31,12 +32,13 @@ class DownloadError(Exception):
 
 
 def default_cache_dir() -> Path:
-    """AUTOSWF_CACHE, else <repo>/cache in a source checkout, else %LOCALAPPDATA%/AutoSWF/cache."""
+    """AUTOSWF_CACHE, else <repo>/cache in a source checkout, else %LOCALAPPDATA%/AutoSWF/cache (always for the
+    packaged app, wherever it is installed)."""
     env = os.environ.get("AUTOSWF_CACHE")
     if env:
         return Path(env)
     repo = Path(__file__).resolve().parents[3]
-    if (repo / "pyproject.toml").exists():
+    if not getattr(sys, "frozen", False) and (repo / "pyproject.toml").exists():
         return repo / "cache"
     return Path(os.environ.get("LOCALAPPDATA", Path.home())) / "AutoSWF" / "cache"
 

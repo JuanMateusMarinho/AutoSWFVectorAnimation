@@ -61,3 +61,11 @@ def test_download_worker_always_reports_and_closing_does_not_wait(qapp, tmp_path
     while not messages and time.time() < deadline:
         qapp.processEvents(); time.sleep(0.01)
     assert elapsed < 1.0 and messages and "boom" in messages[0]
+
+
+def test_preview_takes_a_helm_from_memory(qapp, tmp_path):
+    sc = PreviewScene(MovieData(mini_client()), {g: MovieData(mini_armor(g)) for g in "MF"}, "TestArmor")
+    w = PreviewWindow(sc, cache=AqwCache(tmp_path))
+    assert w.set_helm_data(helm("Kit3"), "Kit3") is None and w.scene.helm_link == "Kit3"
+    assert "not a valid SWF file" in w.set_helm_data(b"junk", "X") and w.scene.helm_link == "Kit3"
+    w.close()

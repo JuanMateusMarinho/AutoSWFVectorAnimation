@@ -46,15 +46,17 @@ class PreviewScene:
         self._build()
 
     @classmethod
-    def from_cache(cls, cache: AqwCache, helm_path: Path | None, *, link: str | None = None,
+    def from_cache(cls, cache: AqwCache, helm_path: Path | bytes | None, *, link: str | None = None,
                    armor: str = DEFAULT_ARMOR) -> "PreviewScene":
+        """`helm_path` is a helm file or its bytes (the app's helm in memory), or None for no helm."""
         missing = cache.missing(armor)
         if missing:
             command = "python -m autoswf download-aqw" + ("" if armor == DEFAULT_ARMOR else " --armor %s" % armor)
             raise MissingReferenceFiles("AQW reference files are missing: %s. Run: %s" % (", ".join(missing), command))
         helm = MovieData(helm_path) if helm_path else None
         if helm is not None and link is None:
-            link = find_helm_link(helm, Path(helm_path).name)
+            name = "the helm" if isinstance(helm_path, (bytes, bytearray)) else Path(helm_path).name
+            link = find_helm_link(helm, name)
         armors = {g: MovieData(cache.armor_path(g, armor)) for g in GENDERS}
         return cls(MovieData(cache.client_path()), armors, armor, helm=helm, helm_link=link)
 

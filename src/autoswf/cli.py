@@ -1,4 +1,4 @@
-"""Command line: inspect, demo-helm, render, download-aqw, preview, fidelity, convert and template."""
+"""Command line: inspect, demo-helm, render, download-aqw, preview, fidelity, convert, template and app."""
 import argparse
 import sys
 from pathlib import Path
@@ -441,6 +441,11 @@ def _cmd_template(args) -> int:
     return 0
 
 
+def _cmd_app(args) -> int:
+    from autoswf.app.main import run_app
+    return run_app([args.file] if args.file else [])
+
+
 def main(argv: list[str] | None = None) -> int:
     reconfigure = getattr(sys.stdout, "reconfigure", None)
     if reconfigure:
@@ -531,5 +536,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("out", help="PSD file to write")
     p.add_argument("--clip", help="also write a Clip Studio Paint .clip (experimental)")
     p.set_defaults(run=_cmd_template)
+    p = sub.add_parser("app", help="open the AutoSWF app")
+    p.add_argument("file", nargs="?", help="a drawing, an AutoSWF project (.aswf) or a SWF to open")
+    p.set_defaults(run=_cmd_app)
     args = parser.parse_args(argv)
     return args.run(args)

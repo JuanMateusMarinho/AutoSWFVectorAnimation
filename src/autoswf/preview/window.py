@@ -45,7 +45,7 @@ class _Canvas(QWidget):
         p.end()
 
 
-class _Downloader(QObject):
+class Downloader(QObject):
     progress = Signal(str)
     finished = Signal(str)      # error message, empty on success
 
@@ -75,6 +75,7 @@ class PreviewWindow(QMainWindow):
         self.empty_message = "AQW reference files are not downloaded yet."
         self._morph_text, self._ticks_since_check = "", MORPH_CHECK_EVERY
         self._worker = None
+        self._helm_size = 0
         self._update_title()
 
         self.canvas = _Canvas(self)
@@ -148,7 +149,7 @@ class PreviewWindow(QMainWindow):
         self.download_button.clicked.connect(self._on_download)
 
     def _update_title(self) -> None:
-        name = Path(self.helm_path).name if self.helm_path else "no helm"
+        name = Path(self.helm_path).name if self.helm_path else (self.link or "no helm")
         self.setWindowTitle("AutoSWF Preview — %s" % name)
 
     def paint_options(self, height: int) -> dict:
@@ -216,9 +217,11 @@ class PreviewWindow(QMainWindow):
         if self.scene is None:
             return
         parts = []
-        if self.helm_path:
+        if self.helm_path and Path(self.helm_path).exists():
             parts.append("%s (%d KB)" % (self.scene.helm_link or Path(self.helm_path).name,
                                          max(1, Path(self.helm_path).stat().st_size // 1024)))
+        elif self._helm_size:
+            parts.append("%s (%d KB)" % (self.scene.helm_link, max(1, self._helm_size // 1024)))
         parts.append("Frame %d" % self.scene.rigs["M"].skel.frame)
         if self.morph_box.isChecked():
             if self._ticks_since_check >= MORPH_CHECK_EVERY:
@@ -288,6 +291,21 @@ class PreviewWindow(QMainWindow):
             self._set_scene(self.scene)
         return None
 
+    def set_helm_data(self, data: bytes, link: str) -> str | None:
+        """Show a helm held in memory (the app's current helm); returns an error message and keeps the current helm
+        when the data cannot be used."""
+        try:
+            helm = MovieData(data)
+            if self.scene is not None:
+                self.scene.set_helm(helm, link)
+        except (ValueError, OSError) as e:
+            return str(e)
+        self.helm_path, self.link, self._helm_size = None, link, len(data)
+        self._update_title()
+        if self.scene is not None:
+            self._set_scene(self.scene)
+        return None
+
     def _on_open(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Open helm", "", "SWF files (*.swf)")
         if path:
@@ -308,7 +326,7 @@ class PreviewWindow(QMainWindow):
             return
         self.download_button.setEnabled(False)
         # A daemon thread: closing the window never waits for (or kills) a download in progress.
-        self._worker = _Downloader(self.cache, self.armor)
+        self._worker = Downloader(self.cache, self.armor)
         self._worker.progress.connect(self.statusBar().showMessage)
         self._worker.finished.connect(self._on_downloaded)
         threading.Thread(target=self._worker.run, name="aqw-download", daemon=True).start()
