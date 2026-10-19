@@ -102,7 +102,8 @@ clockwise needs a negative DEG), `--detail 0-100` (simpler or more faithful shap
 `convert` finds the helm's parts — face, ears, eyes (white, iris, pupil, highlight, lid), brows, mouth, nose, the hair
 and each lock, horns, the helm itself and accessories — and lists them with the point (in drawing pixels) where each
 one is. Each part becomes its own symbol, ready to be animated, and what is behind the parts that move (eyes, locks,
-ears, accessories) is filled in, so nothing opens up when they move. Folders named after parts (Hair, Cabelo, Olhos,
+ears, accessories) is filled in, so nothing opens up when they move: the edges of shading, the head's silhouette and
+its outline go on under them the way they run into them. Folders named after parts (Hair, Cabelo, Olhos,
 Eyes, Chapéu, Accessories, Back hair…) are used as they are; a face folder says what the skin color is. A part painted
 in several folders (hair behind and in front of the face) keeps each folder's place: the extra pieces are named after
 their folder, like `Hair (Bangs)`.

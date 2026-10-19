@@ -24,6 +24,14 @@ STRAY_COLOR = 40                                   # a part's own pixel this far
                                                    # sliver merged into it (under line art): refilled inside holes
 EYE_RING_UNITS = 1.5                               # head units: outlines inside the eye opening closer than this to
                                                    # the ball on both sides (the ring around an iris) go with the ball
+SILHOUETTE_UNITS = 1.0                             # head units: a line at most this wide between an eye and the empty
+                                                   # canvas is the head's silhouette, the outline of the part under it
+EDGE_BAND_UNITS = 2.0                              # head units of an edge just outside a hole that give its direction
+EDGE_GAP = 2                                       # px next to a hole whose classes are redone (slivers hugging it)
+HEAD_ON = 0.42                                     # cos 65 degrees: a line meets a hole head-on (it goes on under it)
+EDGE_FACING = 0.77                                 # cos 40 degrees: line ends joined across a hole point at each other
+EDGE_MAJORITY = 0.6                                # share of a hole piece's border that gives the piece its class
+N4 = np.array([[0, 1, 0], [1, 1, 1], [0, 1, 0]], bool)
 
 
 @dataclass(eq=False)
@@ -48,6 +56,7 @@ class _Unit:
     ext: list[tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = field(default_factory=list)  # ys, xs, sy, sx
     lines: np.ndarray | None = None                # canvas bool
     details: np.ndarray | None = None
+    line_ext: list[tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = field(default_factory=list)  # hidden lines
 
 
 def _paste_over(canvas: np.ndarray, array: np.ndarray, origin) -> None:
@@ -55,6 +64,190 @@ def _paste_over(canvas: np.ndarray, array: np.ndarray, origin) -> None:
     h, w = array.shape[:2]
     view = canvas[y0:y0 + h, x0:x0 + w]
     view[:] = array + view * (1 - array[..., 3:4])
+
+
+def _continued(codes: np.ndarray, hole: np.ndarray, band: float, strokes: np.ndarray | None = None,
+               stroke_ends: tuple = ()) -> np.ndarray:
+    """Classes for a hole's pixels that continue the edges between the classes around it (a shadow's edge, the head's
+    silhouette): each edge that runs into the hole head-on is joined to the matching one across the hole by a smooth
+    curve leaving and arriving the way the edges go, and each piece of the hole between those curves takes the class
+    of the border it touches. A piece whose border stays mixed (an edge found no partner) takes each pixel's nearest
+    class, as do pixels away from every edge. Slivers hugging the hole (EDGE_GAP px) take the classes beyond them.
+    Line art continued under the hole (`strokes`, with its `stroke_ends`) splits it too, and an edge that runs in along
+    such line art (an outline on the silhouette) follows it instead of a curve of its own."""
+    known = ~hole
+    dist = ndimage.distance_transform_edt(known)                  # known pixels: how far from the hole
+    beyond = known & (dist > EDGE_GAP)
+    if beyond.any():
+        _, (iy, ix) = ndimage.distance_transform_edt(~beyond, return_indices=True)
+        codes = np.where(known & ~beyond, codes[iy, ix], codes)
+    h, w = codes.shape
+    edge = np.zeros_like(hole)
+    for dy, dx in ((0, 1), (1, 0)):
+        d = known[:h - dy, :w - dx] & known[dy:, dx:] & (codes[:h - dy, :w - dx] != codes[dy:, dx:])
+        edge[:h - dy, :w - dx] |= d
+        edge[dy:, dx:] |= d
+    _, (iy, ix) = ndimage.distance_transform_edt(hole, return_indices=True)
+    out = np.where(hole, codes[iy, ix], codes)
+    ends = []
+    for at, direction in _entries(edge, hole, band, EDGE_GAP, dist):
+        normal = np.array([direction[1], -direction[0]])          # its left on a canvas whose y grows downward
+        sides = []
+        for sign in (1.0, -1.0):
+            q = at - direction * np.linspace(EDGE_GAP + 1.0, max(EDGE_GAP + 1.0, band / 2), 6)[:, None]
+            q = (q[:, None, :] + sign * normal * np.array([2.0, 3.0, 4.0])[None, :, None]).reshape(-1, 2)
+            qx, qy = np.round(q[:, 0]).astype(int), np.round(q[:, 1]).astype(int)
+            ok = (qx >= 0) & (qx < w) & (qy >= 0) & (qy < h)
+            found = codes[qy[ok], qx[ok]][known[qy[ok], qx[ok]]]
+            sides.append(int(np.bincount(found).argmax()) if len(found) else -1)
+        if min(sides) >= 0 and sides[0] != sides[1] and not any(
+                np.hypot(*(at - e[0])) <= e[4] + EDGE_GAP + 1 for e in stroke_ends):
+            ends.append((at, direction, sides[0], sides[1]))
+    walls = np.zeros_like(hole) if strokes is None else strokes & hole
+    for a, b in _joined(ends, band, hole):
+        walls |= _curve(ends[a], ends[b], hole.shape)
+    walls &= hole
+    pieces, _ = ndimage.label(hole & ~walls, structure=N4)
+    border = known & ndimage.binary_dilation(hole, structure=N4)
+    for k, sl in enumerate(ndimage.find_objects(pieces), start=1):
+        if sl is None:
+            continue
+        sl = tuple(slice(max(0, s.start - 1), s.stop + 1) for s in sl)
+        piece = pieces[sl] == k
+        touching = codes[sl][ndimage.binary_dilation(piece, structure=N4) & border[sl]]
+        if len(touching):
+            counts = np.bincount(touching)
+            if counts.max() >= EDGE_MAJORITY * len(touching):
+                out[sl][piece] = counts.argmax()
+    filled = hole & ~walls
+    if walls.any() and filled.any():                              # the curves themselves: as the piece beside them
+        _, (iy, ix) = ndimage.distance_transform_edt(~filled, return_indices=True)
+        out[walls] = out[iy[walls], ix[walls]]
+    return out
+
+
+def _continued_strokes(strokes: np.ndarray, hole: np.ndarray, band: float) -> tuple[np.ndarray, list]:
+    """The hole's pixels where line art (`strokes`, outside the hole) goes on under it: each stroke that runs into the
+    hole head-on is joined to another one across it by a smooth curve as wide as the strokes. Also returns the joined
+    ends (point, direction, -1, -1, half width)."""
+    ys, xs = np.nonzero(strokes)
+    ends = []
+    for at, direction in _entries(strokes, hole, band):
+        near = np.count_nonzero(np.hypot(xs - at[0], ys - at[1]) <= band)   # a stroke w px wide crosses about
+        ends.append((at, direction, -1, -1, near / (2 * band)))           # w * band of these pixels
+    out = np.zeros_like(hole)
+    joined = []
+    for a, b in _joined(ends, band, hole):
+        curve = _curve(ends[a], ends[b], hole.shape)
+        half = max(0.5, (ends[a][4] + ends[b][4]) / 2)                # the strokes' half width
+        out |= ndimage.distance_transform_edt(~curve) <= half
+        joined += [ends[a], ends[b]]
+    return out & hole, joined
+
+
+def _entries(lines: np.ndarray, hole: np.ndarray, band: float, skip: int = 0, dist: np.ndarray | None = None) -> list:
+    """Where `lines` (an edge between classes, or line art) run into the hole head-on, as opposed to running along its
+    border: (the point where they meet it, unit direction into the hole) in pixel coordinates (x, y). At each pixel
+    touching the hole, the way the line goes is fitted to the same line's pixels around it and the hole's border is
+    taken smoothed, so a line ending in a corner of the hole still meets it head-on. Pixels within `skip` of the hole
+    are left out of the fit (classes redone there)."""
+    known = ~hole
+    if dist is None:
+        dist = ndimage.distance_transform_edt(known)
+    contact = lines & known & (dist <= 1.5)
+    if not contact.any():
+        return []
+    soft = ndimage.gaussian_filter(hole.astype(np.float32), EDGE_GAP + 1.0)
+    gy, gx = np.gradient(soft)                                     # uphill: toward the hole
+    pieces, _ = ndimage.label(lines & known, structure=np.ones((3, 3)))
+    h, w = lines.shape
+    r = max(3, int(np.ceil(band)))
+    entry = np.zeros_like(hole)
+    into = np.zeros(hole.shape + (2,))
+    for y, x in zip(*np.nonzero(contact)):
+        toward = np.array([gx[y, x], gy[y, x]], float)
+        length = float(np.hypot(*toward))
+        if length == 0:
+            continue
+        toward /= length
+        y0, y1, x0, x1 = max(0, y - r), min(h, y + r + 1), max(0, x - r), min(w, x + r + 1)
+        by, bx = np.nonzero((pieces[y0:y1, x0:x1] == pieces[y, x]) & (dist[y0:y1, x0:x1] > skip))
+        if len(by) < 3:
+            continue
+        points = np.stack([bx + x0, by + y0], axis=1).astype(float)
+        spread, axes = np.linalg.eigh(np.cov(points.T))
+        if spread[1] < 2 * spread[0]:                              # not a line here
+            continue
+        t = axes[:, 1]
+        along = float(np.dot(t, toward))
+        if abs(along) >= HEAD_ON:
+            entry[y, x] = True
+            into[y, x] = t if along > 0 else -t
+    labels, _ = ndimage.label(entry, structure=np.ones((3, 3)))
+    out = []
+    for k, sl in enumerate(ndimage.find_objects(labels), start=1):
+        if sl is None:
+            continue
+        py, px = np.nonzero(labels[sl] == k)
+        py, px = py + sl[0].start, px + sl[1].start
+        direction = into[py, px].mean(axis=0)
+        length = float(np.hypot(*direction))
+        if length >= 0.5:
+            out.append((np.array([px.mean(), py.mean()]), direction / length))
+    return out
+
+
+def _joined(ends: list, band: float, hole: np.ndarray) -> list[tuple[int, int]]:
+    """The line ends to join across the hole: pointing at each other, their curve mostly inside the hole and, for edges
+    between classes, the same two classes on swapped sides (one edge going on); the straightest pairs first, then the
+    closest."""
+    pairs = []
+    for i in range(len(ends)):
+        for j in range(i + 1, len(ends)):
+            pa, da, la, ra = ends[i][:4]
+            pb, db, lb, rb = ends[j][:4]
+            if la != rb or ra != lb:
+                continue
+            gap = pb - pa
+            length = float(np.hypot(*gap))
+            if length < 2:
+                continue
+            ca, cb = float(np.dot(da, gap / length)), float(np.dot(db, -gap / length))
+            if ca >= EDGE_FACING and cb >= EDGE_FACING:
+                if hole[_curve_points(ends[i], ends[j], hole.shape)].mean() >= 0.5:
+                    pairs.append((2 - ca - cb + 0.05 * length / band, i, j))
+    used, out = set(), []
+    for _, i, j in sorted(pairs):
+        if i not in used and j not in used:
+            used |= {i, j}
+            out.append((i, j))
+    return out
+
+
+def _curve_points(a, b, shape) -> tuple[np.ndarray, np.ndarray]:
+    """The pixels (ys, xs) of a cubic curve leaving end a the way its line goes and arriving at end b the way its line
+    comes."""
+    (pa, da), (pb, db) = a[:2], b[:2]
+    length = float(np.hypot(*(pb - pa)))
+    c1, c2 = pa + da * length / 3, pb + db * length / 3
+    t = np.linspace(0.0, 1.0, int(length * 4) + 2)[:, None]
+    p = (1 - t) ** 3 * pa + 3 * (1 - t) ** 2 * t * c1 + 3 * (1 - t) * t ** 2 * c2 + t ** 3 * pb
+    h, w = shape
+    return np.clip(np.round(p[:, 1]).astype(int), 0, h - 1), np.clip(np.round(p[:, 0]).astype(int), 0, w - 1)
+
+
+def _curve(a, b, shape) -> np.ndarray:
+    out = np.zeros(shape, bool)
+    out[_curve_points(a, b, shape)] = True
+    return out
+
+
+def _thick(lines: np.ndarray, width: float) -> np.ndarray:
+    """The line art wider than `width` px (what survives an opening by a disk of half that width)."""
+    r = max(1, int(round(width / 2)))
+    yy, xx = np.mgrid[-r:r + 1, -r:r + 1]
+    opened = ndimage.binary_opening(np.pad(lines, r + 1), structure=xx * xx + yy * yy <= r * r)
+    return opened[r + 1:-r - 1, r + 1:-r - 1]
 
 
 def _box(*masks, pad: int = 0, shape=None) -> tuple[int, int, int, int] | None:
@@ -116,6 +309,8 @@ class _Splitter:
                 self.owners.append([i])
             elif self.unit_of_part[u.parent][0] == i:
                 self.owners.append(list(self.unit_of_part[u.parent]))
+        self._bits: dict[int, np.ndarray] = {}
+        self.empty = np.zeros((self.h, self.w), bool)     # hole pixels past the continued edges of the parts that stay
         self._own_maps()
 
     # ------------------------------------------------------------ own pixels
@@ -241,6 +436,8 @@ class _Splitter:
             _, (iy, ix) = ndimage.distance_transform_edt(self.top < 0, return_indices=True)
             nearest = owner_of_unit[self.top[iy, ix]]
             owner = np.where(lines & (owner < 0), nearest, owner)
+        self.silhouette = self._silhouette(owner, lines, owner_of_unit)
+        self._lid_tips(owner, lines)
         detail_owner = np.full((self.h, self.w), -1, np.int32)        # each detail piece stays whole and goes to
         pieces, count = ndimage.label(details, structure=np.ones((3, 3)))   # the highest part under it (details are
         for k, box in enumerate(ndimage.find_objects(pieces), start=1):     # painted above every flat they cover)
@@ -268,10 +465,115 @@ class _Splitter:
                 self.line_unit[mine] = units[0]
                 self.detail_unit[mine_d] = units[0]
 
+    def _silhouette(self, owner: np.ndarray, lines: np.ndarray, owner_of_unit: np.ndarray) -> np.ndarray:
+        """Eyes sit inside the face, so a thin line squeezed between an eye (its ball, or the part it lies on) and the
+        empty canvas is the head's outline: it goes to the part under the eye (the nearest one that stays) and stays
+        when the eye blinks. Thick line art there (a lid poking out past the face) stays the eye's. Returns the canvas
+        mask of those lines."""
+        out = np.zeros((self.h, self.w), bool)
+        outside = self.passes.full[..., 3] <= 0.02
+        stays = np.isin(self.top, [i for i, u in enumerate(self.units) if u.part.kind in PROVIDERS])
+        if not outside.any() or not stays.any():
+            return out
+        width = SILHOUETTE_UNITS * self.graph.scale
+        nearest = None
+        for o, units in enumerate(self.owners):
+            if len(units) != 3:
+                continue
+            mine = (owner == o) & lines
+            box = _box(mine, pad=int(np.ceil(width)) + 2, shape=(self.h, self.w))
+            if box is None:
+                continue
+            x0, y0, x1, y1 = box
+            d_out = ndimage.distance_transform_edt(~outside[y0:y1, x0:x1])
+            d_in = np.minimum(ndimage.distance_transform_edt(~self.own(units[0], box)),
+                              ndimage.distance_transform_edt(~stays[y0:y1, x0:x1]))
+            thin = mine[y0:y1, x0:x1] & ~_thick(lines[y0:y1, x0:x1], width) & (d_out + d_in <= width + 1)
+            if not thin.any():
+                continue
+            if nearest is None:
+                nearest = ndimage.distance_transform_edt(~stays, return_distances=False, return_indices=True)
+            ys, xs = np.nonzero(thin)
+            ys, xs = ys + y0, xs + x0
+            owner[ys, xs] = owner_of_unit[self.top[nearest[0][ys, xs], nearest[1][ys, xs]]]
+            out[ys, xs] = True
+        return out
+
+    def _lid_tips(self, owner: np.ndarray, lines: np.ndarray) -> None:
+        """A thick stroke is one piece: where an eye owns most of a stroke thicker than SILHOUETTE_UNITS (a lid and its
+        tip poking out past the face, farther from the eye's pixels than line ownership reaches), the rest of it is
+        the eye's too, so it moves with the lid instead of staying behind with the part under the eye."""
+        width = SILHOUETTE_UNITS * self.graph.scale
+        stay = [k for k, units in enumerate(self.owners) if self.units[units[0]].part.kind in PROVIDERS]
+        lower = None
+        for o, units in enumerate(self.owners):
+            if len(units) != 3:
+                continue
+            mine = (owner == o) & lines
+            box = _box(mine, pad=int(np.ceil(self.reach)) * 2, shape=(self.h, self.w))
+            if box is None:
+                continue
+            if lower is None:
+                lower = np.isin(owner, stay)
+            x0, y0, x1, y1 = box
+            strokes, count = ndimage.label(_thick(lines[y0:y1, x0:x1], width), structure=np.ones((3, 3)))
+            if not count:
+                continue
+            ours = np.bincount(strokes[mine[y0:y1, x0:x1]], minlength=count + 1)
+            theirs = np.bincount(strokes[lower[y0:y1, x0:x1]], minlength=count + 1)
+            ours[0] = 0
+            taken = np.nonzero((ours > 0) & (ours >= theirs))[0]
+            take = np.isin(strokes, taken) & lower[y0:y1, x0:x1]
+            owner[y0:y1, x0:x1][take] = o
+
     # ------------------------------------------------------------ hidden fills and underlap
 
-    def _sources(self, i: int, ys: np.ndarray, xs: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """For canvas pixels (ys, xs): the nearest solid pixel unit i owns in its own group."""
+    def _tone_bits(self, g: int) -> np.ndarray:
+        """Per pixel of group g: which of its tones cover it (bit t for tone t, at half coverage or more)."""
+        if g not in self._bits:
+            bits = np.zeros(self.graph.groups[g].labels.shape, np.int64)
+            for t, tone in enumerate(self.passes.parts[g].tones):
+                bits |= (tone.alpha >= 0.5).astype(np.int64) << t
+            self._bits[g] = bits
+        return self._bits[g]
+
+    def _classes(self, box, providers: list[int], hole: np.ndarray) -> tuple[np.ndarray | None, list]:
+        """Per pixel of the box, an index into the returned keys: the empty canvas ("empty", -1, -1, 0) or a fill of a
+        part that stays ("fill", unit, flat region, tone bits). The hole's pixels are -1; other pixels (other parts,
+        line art over the canvas, blended edges outside every region) take their nearest neighbour's. None when no part
+        that stays is around."""
+        x0, y0, x1, y1 = box
+        top, line = self.top[y0:y1, x0:x1], self.line_unit[y0:y1, x0:x1]
+        codes = np.full(top.shape, -1, np.int64)
+        keys = [("empty", -1, -1, 0)]
+        codes[(top < 0) & (line < 0) & (self.detail_unit[y0:y1, x0:x1] < 0) & ~hole] = 0
+        for unit in providers:
+            mine = (top == unit) & ~hole
+            if mine.any():
+                group = self.units[unit].group
+                gx, gy = self.graph.groups[group].origin
+                ys, xs = np.nonzero(mine)
+                ly, lx = ys + y0 - gy, xs + x0 - gx
+                region = self.graph.groups[group].labels[ly, lx]
+                inner = region >= 0                                   # blended edge pixels take their neighbour's
+                ys, xs, ly, lx = ys[inner], xs[inner], ly[inner], lx[inner]
+                if not len(ys):
+                    continue
+                found, inverse = np.unique(np.stack([region[inner], self._tone_bits(group)[ly, lx]], axis=1),
+                                           axis=0, return_inverse=True)
+                codes[ys, xs] = len(keys) + inverse.ravel()
+                keys += [("fill", unit, int(r), int(b)) for r, b in found]
+        if not (codes > 0).any():
+            return None, keys
+        loose = (codes < 0) & ~hole
+        if loose.any():
+            _, (iy, ix) = ndimage.distance_transform_edt(codes < 0, return_indices=True)
+            codes[loose] = codes[iy[loose], ix[loose]]
+        return codes, keys
+
+    def _sources(self, i: int, ys: np.ndarray, xs: np.ndarray, key=None) -> tuple[np.ndarray, np.ndarray]:
+        """For canvas pixels (ys, xs): the nearest solid pixel unit i owns in its own group (of the flat region and
+        tones of `key`, a "fill" class, when it has such pixels)."""
         u = self.units[i]
         group = self.graph.groups[u.group]
         part = self.passes.parts[u.group]
@@ -283,6 +585,10 @@ class _Splitter:
         core = ndimage.binary_erosion(own, iterations=CORE_DEPTH) & clear          # away from blended edges
         if not core.any():
             core = own & clear if (own & clear).any() else own
+        if key is not None:
+            same = core & (group.labels == key[2]) & (self._tone_bits(u.group) == key[3])
+            if same.any():
+                core = same
         x0, y0 = group.origin
         hh, ww = core.shape
         qx0, qy0, qx1, qy1 = int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1
@@ -309,39 +615,63 @@ class _Splitter:
             if self.units[units[0]].part.kind not in MOVING:
                 continue
             hole = np.isin(self.top, units) | np.isin(self.line_unit, units) | np.isin(self.detail_unit, units)
-            box = _box(hole, shape=(self.h, self.w))
+            band = EDGE_BAND_UNITS * self.graph.scale                  # the hole and the edges running into it
+            box = _box(hole, pad=int(np.ceil(max(band, self.reach))) + EDGE_GAP + 2, shape=(self.h, self.w))
             if box is None:
                 continue
             x0, y0, x1, y1 = box
-            grow = max(x1 - x0, y1 - y0) // 2 + 2
-            x0, y0, x1, y1 = max(0, x0 - grow), max(0, y0 - grow), min(self.w, x1 + grow), min(self.h, y1 + grow)
             providers = [p for p in provider_units if p < units[0]]          # the parts that stay, below it
-            seeds = np.full((y1 - y0, x1 - x0), -1, np.int32)
-            top = self.top[y0:y1, x0:x1]
-            background = (top < 0) & (self.line_unit[y0:y1, x0:x1] < 0) & (self.detail_unit[y0:y1, x0:x1] < 0)
-            empty = len(self.units)
-            seeds[background] = empty
-            for unit in providers:
-                seeds[top == unit] = unit
-            if not (seeds >= 0).any():
-                continue
-            _, (iy, ix) = ndimage.distance_transform_edt(seeds < 0, return_indices=True)
-            nearest = seeds[iy, ix]
             local_hole = hole[y0:y1, x0:x1]
+            codes, keys = self._classes((x0, y0, x1, y1), providers, local_hole)
+            if codes is None:
+                continue
+            strokes_of, stroke_ends = {}, []                         # their outlines going on under the moving part
             for unit in providers:
-                take = local_hole & (nearest == unit)
-                higher = local_hole & np.isin(nearest, [u for u in providers if u > unit])
+                strokes = (self.line_unit[y0:y1, x0:x1] == unit) & ~local_hole
+                if strokes.any():
+                    strokes_of[unit], ends = _continued_strokes(strokes, local_hole, band)
+                    stroke_ends += ends
+            barrier = np.zeros_like(local_hole)
+            for lines in strokes_of.values():
+                barrier |= lines
+            codes = _continued(codes, local_hole, band, barrier, tuple(stroke_ends))
+            unit_of = np.array([k[1] for k in keys])[codes]           # the part that stays each pixel continues
+            self.empty[y0:y1, x0:x1] |= local_hole & (unit_of < 0)
+            for unit in providers:
+                take = local_hole & (unit_of == unit)
+                higher = local_hole & np.isin(unit_of, [u for u in providers if u > unit])
                 if take.any() and higher.any():                    # reach under the next provider's fill too
                     take |= higher & (ndimage.distance_transform_edt(~take) <= self.reach) \
                         & self.inside[y0:y1, x0:x1]
                 take &= ~self.own(unit, (x0, y0, x1, y1)) | self.stray[y0:y1, x0:x1]     # slivers get refilled
-                if take.any():
-                    ys, xs = np.nonzero(take)
-                    self._extend(unit, ys + y0, xs + x0)
+                for code in np.unique(codes[take]):                # copies from the class each piece continues
+                    ys, xs = np.nonzero(take & (codes == code))
+                    key = keys[code] if keys[code][0] == "fill" and keys[code][1] == unit else None
+                    self._extend(unit, ys + y0, xs + x0, key)
+                lines = strokes_of.get(unit)
+                if lines is not None and lines.any():
+                    ys, xs = np.nonzero(lines)
+                    self._extend_lines(unit, ys + y0, xs + x0)
 
-    def _extend(self, i: int, ys: np.ndarray, xs: np.ndarray) -> None:
-        sy, sx = self._sources(i, ys, xs)
+    def _extend(self, i: int, ys: np.ndarray, xs: np.ndarray, key=None) -> None:
+        sy, sx = self._sources(i, ys, xs, key)
         self.units[i].ext.append((ys, xs, sy, sx))
+
+    def _extend_lines(self, i: int, ys: np.ndarray, xs: np.ndarray) -> None:
+        """Hidden line art of unit i at canvas pixels (ys, xs), copied from its nearest line pixel as opaque as its
+        line art usually is (not from the blended edge where a moving part cuts it)."""
+        mine = self.line_unit == i
+        level = min(SOLID, float(np.percentile(self.graph.lines[mine], 90))) if mine.any() else SOLID
+        solid = mine & (self.graph.lines >= max(0.5, level))
+        qx0, qy0, qx1, qy1 = int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1
+        pad = max(qx1 - qx0, qy1 - qy0) + 2
+        bx0, by0, bx1, by1 = max(0, qx0 - pad), max(0, qy0 - pad), min(self.w, qx1 + pad), min(self.h, qy1 + pad)
+        if not solid[by0:by1, bx0:bx1].any():
+            if not solid.any():
+                return
+            bx0, by0, bx1, by1 = 0, 0, self.w, self.h
+        _, (iy, ix) = ndimage.distance_transform_edt(~solid[by0:by1, bx0:bx1], return_indices=True)
+        self.units[i].line_ext.append((ys, xs, iy[ys - by0, xs - bx0] + by0, ix[ys - by0, xs - bx0] + bx0))
 
     def underlap(self) -> None:
         for i, u in enumerate(self.units):
@@ -352,11 +682,15 @@ class _Splitter:
                 near = ndimage.distance_transform_edt(~own[y0:y1, x0:x1]) <= self.reach
                 take = (near & (self.top[y0:y1, x0:x1] > i) & ~self.own(i, (x0, y0, x1, y1))
                         & self.inside[y0:y1, x0:x1])
+                if u.part.kind in PROVIDERS:               # nothing of a part that stays past its continued edge
+                    take &= ~self.empty[y0:y1, x0:x1]
                 if take.any():
                     ys, xs = np.nonzero(take)
                     self._extend(i, ys + y0, xs + x0)
             mine = self.line_unit == i
             u.lines = mine.copy()
+            if u.parent is not None:                   # an eye's piece still draws the head's outline over its own
+                u.lines |= self.silhouette & (self.top == i)   # fill, so the rest pose keeps it on top
             lbox = _box(mine, pad=UNDERLAP + 1, shape=(self.h, self.w))
             if lbox is not None:
                 x0, y0, x1, y1 = lbox
@@ -384,7 +718,10 @@ class _Splitter:
         ext = np.zeros((self.h, self.w), bool)
         for ys, xs, _, _ in u.ext:
             ext[ys, xs] = True
-        box = _box(own, ext, u.lines, u.details, shape=(self.h, self.w))
+        line_ext = np.zeros((self.h, self.w), bool)
+        for ys, xs, _, _ in u.line_ext:
+            line_ext[ys, xs] = True
+        box = _box(own, ext, u.lines, line_ext, u.details, shape=(self.h, self.w))
         if box is None:
             return None
         x0, y0, x1, y1 = box
@@ -413,6 +750,8 @@ class _Splitter:
             for t, tone in enumerate(src.tones):
                 tone_alpha[t][ys - y0, xs - x0] = tone.alpha[ly, lx]
         line_rgba = np.where(u.lines[y0:y1, x0:x1, None], lines[y0:y1, x0:x1], 0).astype(np.float32)
+        for ys, xs, sy, sx in u.line_ext:                                # hidden line art: copies
+            line_rgba[ys - y0, xs - x0] = lines[sy, sx]
         detail_rgba = np.where(u.details[y0:y1, x0:x1, None], details[y0:y1, x0:x1], 0).astype(np.float32)
         tones = [ToneCoverage(t.role, a, t.soft, t.layers, t.blends, t.color, t.gradient)
                  for t, a in zip(src.tones, tone_alpha) if a.any()]
