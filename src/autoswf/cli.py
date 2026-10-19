@@ -3,7 +3,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from autoswf.aqw.contract import sanitize_link
+from autoswf.aqw.contract import SIZE_WARNING_BYTES, sanitize_link
 from autoswf.aqw.helm import HelmItem, export_helm
 from autoswf.aqw.validate import validate_helm_swf
 from autoswf.model.document import ColorCustom, Frame, Placement, Symbol
@@ -12,7 +12,6 @@ from autoswf.model.shape import Shape, SolidFill, ellipse
 from autoswf.swf.inspect_format import format_report
 from autoswf.swf.reader import SWF
 
-SIZE_WARNING_BYTES = 200 * 1024
 BLACK, WHITE, SKIN, HAIR, IRIS = (17, 17, 17, 255), (255, 255, 255, 255), (242, 201, 160, 255), (123, 75, 214, 255), (36, 179, 194, 255)
 
 

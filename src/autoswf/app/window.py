@@ -52,6 +52,7 @@ class MainWindow(QMainWindow):
         controller.built.connect(self._on_built)
         controller.progress.connect(self._on_progress)
         controller.settings_changed.connect(self._refresh)
+        controller.exported.connect(lambda results: self._refresh())
         self._refresh()
 
     # ------------------------------------------------------------ actions and menus
