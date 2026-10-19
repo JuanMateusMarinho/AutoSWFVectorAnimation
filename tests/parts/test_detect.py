@@ -274,3 +274,14 @@ def test_color_slots_match_a_fresh_detection(converted_parts_helm):
     fast = apply_color_slots(c.parts, colors)
     assert fast.location_of == fresh.location_of and fast.notes == fresh.notes
     assert apply_color_slots(fast, {}).location_of == c.parts.location_of
+
+
+def test_a_lock_marked_as_another_part_leaves_the_other_locks(parts_helm):
+    from autoswf.parts.model import Assign, Corrections
+    _, pm = detect(parts_helm)
+    x, y = pm.label_point("Lock 2")
+    locks = sorted(n for n in pm.parts if n.startswith("Lock"))
+    _, fixed = detect(parts_helm, corrections=Corrections([Assign((x, y), "Accessory 3")]))
+    assert fixed.part_of[fixed.region_at(x, y).id] == "Accessory 3"
+    assert "Hair" in fixed.parts and len([n for n in fixed.parts if n.startswith("Lock")]) == len(locks) - 1
+    assert fixed.parts["Accessory 3"].regions == [fixed.region_at(x, y).id]

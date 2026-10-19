@@ -10,8 +10,24 @@ from PySide6.QtWidgets import (QCheckBox, QDoubleSpinBox, QFormLayout, QGroupBox
 from autoswf.aqw.template import Alignment
 from autoswf.parts.assemble import colorable_summary
 
-STAGE_GROUPS = {"Import": ("Alignment",), "Vectorize": ("Vectorize",), "Parts": (), "Animate": (), "Colors": (),
-                "Export": ("Export",)}
+STAGE_GROUPS = {"Import": ("Alignment",), "Vectorize": ("Vectorize",), "Parts": ("Fixes",), "Animate": (),
+                "Colors": (), "Export": ("Export",)}
+
+
+class FixRow(QWidget):
+    """One part fix in the list, with its remove button."""
+
+    def __init__(self, text: str, on_remove):
+        super().__init__()
+        self.text = text
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        label = QLabel(text)
+        label.setWordWrap(True)
+        self.remove_button = QPushButton("Remove")
+        self.remove_button.clicked.connect(on_remove)
+        row.addWidget(label, 1)
+        row.addWidget(self.remove_button)
 
 
 def _spin(low: float, high: float, decimals: int, step: float) -> QDoubleSpinBox:
@@ -39,6 +55,7 @@ class PropertiesPanel(QScrollArea):
         self._make_alignment()
         self._make_vectorize()
         self._make_export()
+        self._make_fixes()
         self._layout.addStretch(1)
         self._last_report = ""
         controller.built.connect(lambda build: self.refresh())
@@ -110,6 +127,30 @@ class PropertiesPanel(QScrollArea):
         form.addRow(button)
         form.addRow(self.export_report)
 
+    def _make_fixes(self) -> None:
+        form = self._group("Fixes", "Part fixes")
+        hint = QLabel("Click a region on the canvas and pick its part. Press C (or the Cut button) and drag a line to "
+                      "split a region.")
+        hint.setWordWrap(True)
+        form.addRow(hint)
+        self._fix_box = QVBoxLayout()
+        form.addRow(self._fix_box)
+        self.fix_rows: list[FixRow] = []
+
+    def _refresh_fixes(self, settings) -> None:
+        for row in self.fix_rows:
+            self._fix_box.removeWidget(row)
+            row.deleteLater()
+        self.fix_rows = []
+        c = settings.corrections
+        entries = [("assign", k, "%s%s at %d, %d" % (a.part, " " + a.piece if a.piece else "", a.at[0], a.at[1]))
+                   for k, a in enumerate(c.assign)]
+        entries += [("cut", k, "Cut, %d points" % len(cut)) for k, cut in enumerate(c.cuts)]
+        for kind, index, text in entries:
+            row = FixRow(text, lambda _=False, kind=kind, index=index: self.controller.remove_fix(kind, index))
+            self._fix_box.addWidget(row)
+            self.fix_rows.append(row)
+
     # ------------------------------------------------------------ state
 
     def show_stage(self, stage: str, build=None, settings=None) -> None:
@@ -149,6 +190,7 @@ class PropertiesPanel(QScrollArea):
         self.export_summary.setText(colorable_summary(helm.helm) if helm is not None and helm.helm is not None
                                     else "The helm is not built yet.")
         self.export_report.setText(self._last_report)
+        self._refresh_fixes(settings)
 
     # ------------------------------------------------------------ edits
 

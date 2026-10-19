@@ -35,6 +35,7 @@ class ProjectController(QObject):
     progress = Signal(str)              # the stage being built
     settings_changed = Signal()
     exported = Signal(object)           # list of ExportResult
+    selection_changed = Signal(object)  # the selected part's name or None
 
     def __init__(self, cache: AqwCache, *, threaded: bool = True, builder: HelmBuilder | None = None):
         super().__init__()
@@ -46,6 +47,7 @@ class ProjectController(QObject):
         self.undo_stack = QUndoStack(self)
         self.busy = False
         self.exported_settings: dict | None = None     # the settings of the last successful export
+        self.selected_part: str | None = None
         self._latest = 0
         self._jobs: dict[int, Callable[[object], None]] = {}
         self._count = 0
@@ -107,6 +109,26 @@ class ProjectController(QObject):
 
     def set_separate_tones(self, on: bool) -> None:
         self.change("Separate tones", lambda s: setattr(s, "separate_tones", bool(on)))
+
+    # ------------------------------------------------------------ Parts
+
+    def select_part(self, name: str | None) -> None:
+        if name != self.selected_part:
+            self.selected_part = name
+            self.selection_changed.emit(name)
+
+    def assign_region(self, at: tuple[float, float], part: str, piece: str | None = None) -> None:
+        """The region under a drawing pixel belongs to `part` (and `piece` for eyes): one click-to-fix."""
+        from autoswf.parts.model import Assign
+        self.change("Fix part", lambda s: s.corrections.assign.append(Assign((float(at[0]), float(at[1])), part, piece)))
+
+    def add_cut(self, points: list[tuple[float, float]]) -> None:
+        """Split regions along a line of drawing pixels."""
+        self.change("Cut region", lambda s: s.corrections.cuts.append([(float(x), float(y)) for x, y in points]))
+
+    def remove_fix(self, kind: str, index: int) -> None:
+        """Remove one part fix: kind "assign" or "cut"."""
+        self.change("Remove fix", lambda s: (s.corrections.assign if kind == "assign" else s.corrections.cuts).pop(index))
 
     def set_settings(self, settings: HelmSettings) -> None:
         self.settings = settings

@@ -11,7 +11,8 @@ BACKGROUND = (40, 40, 40)
 DRAWING_WEIGHT = 0.35
 
 
-def _tint(k: int) -> tuple[int, int, int]:
+def part_tint(k: int) -> tuple[int, int, int]:
+    """The k-th part's color in overviews (golden-ratio hues)."""
     r, g, b = colorsys.hsv_to_rgb((k * 0.618034) % 1.0, 0.65, 1.0)
     return int(r * 255), int(g * 255), int(b * 255)
 
@@ -25,7 +26,7 @@ def parts_image(passes: Passes, parts: PartMap) -> Image.Image:
     out = base * DRAWING_WEIGHT + np.asarray(BACKGROUND, np.float32) * (1 - DRAWING_WEIGHT)
     for k, name in enumerate(parts.parts):
         mask = parts.part_mask(name)
-        out[mask] = out[mask] * 0.45 + np.asarray(_tint(k), np.float32) * 0.55
+        out[mask] = out[mask] * 0.45 + np.asarray(part_tint(k), np.float32) * 0.55
     image = Image.fromarray(np.clip(out, 0, 255).astype(np.uint8), "RGB").convert("RGBA")
     draw = ImageDraw.Draw(image)
     font = ImageFont.load_default()

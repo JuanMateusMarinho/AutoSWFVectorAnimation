@@ -59,3 +59,62 @@ def test_fit_to_head_returns_to_automatic_alignment(qapp, helm_psd, app_cache, t
     w.properties.fit_button.click()
     assert w.controller.settings.align is None and "fitted to the AQW head" in w.controller.build.alignment_reason
     w.close()
+
+
+def parts_window(helm_psd, app_cache, tmp_path, threaded=False):
+    w = window(app_cache, tmp_path, threaded=threaded)
+    w.controller.import_drawing(helm_psd.path, align=helm_psd.align)
+    w.controller.wait(240)
+    w.canvas.resize(700, 700)
+    w.canvas.set_stage("Parts")
+    return w
+
+
+def pick(monkeypatch, label, picked):
+    def fake_exec(canvas, menu, pos):
+        action = find_action(menu, label)
+        picked.append(action.text())
+        return action
+    monkeypatch.setattr("autoswf.app.canvas.HelmCanvas.exec_menu", fake_exec)
+
+
+def test_a_wrong_part_is_fixed_with_a_click_and_a_pick(qapp, helm_psd, app_cache, tmp_path, monkeypatch):
+    w = parts_window(helm_psd, app_cache, tmp_path)
+    parts = w.controller.build.parts
+    x, y = parts.label_point("Lock 2")
+    picked = []
+    pick(monkeypatch, "Accessory 1", picked)
+    QTest.mouseClick(w.canvas, Qt.MouseButton.LeftButton, pos=w.canvas.widget_point_of_drawing(x, y).toPoint())
+    assert picked == ["Accessory 1"]                                         # action 1: click, action 2: pick
+    [fix] = w.controller.settings.corrections.assign
+    assert fix.part == "Accessory 1" and abs(fix.at[0] - x) <= 1 and abs(fix.at[1] - y) <= 1
+    rid = parts.region_at(x, y).id
+    assert w.controller.build.parts.part_of[rid] == "Accessory 1"
+    w.close()
+
+
+def test_the_fix_shows_at_once_while_the_build_runs(qapp, helm_psd, app_cache, tmp_path, monkeypatch):
+    w = parts_window(helm_psd, app_cache, tmp_path, threaded=True)
+    x, y = w.controller.build.parts.label_point("Lock 2")
+    pick(monkeypatch, "Helm", [])
+    QTest.mouseClick(w.canvas, Qt.MouseButton.LeftButton, pos=w.canvas.widget_point_of_drawing(x, y).toPoint())
+    assert w.canvas.pending is not None and w.controller.busy
+    w.controller.wait(240)
+    assert w.canvas.pending is None
+    w.close()
+
+
+def test_cut_tool_adds_one_cut(qapp, helm_psd, app_cache, tmp_path):
+    w = parts_window(helm_psd, app_cache, tmp_path)
+    w.canvas.set_tool("cut")
+    x, y = w.controller.build.parts.label_point("Face")
+    points = [w.canvas.widget_point_of_drawing(x + dx, y).toPoint() for dx in (-30, 0, 30)]
+    QTest.mousePress(w.canvas, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, points[0])
+    for p in points[1:]:
+        QTest.mouseMove(w.canvas, p)
+    QTest.mouseRelease(w.canvas, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, points[-1])
+    [cut] = w.controller.settings.corrections.cuts
+    assert len(cut) >= 3 and abs(cut[0][0] - (x - 30)) <= 1 and w.controller.undo_stack.undoText() == "Cut region"
+    w.controller.undo_stack.undo()
+    assert w.controller.settings.corrections.cuts == []
+    w.close()

@@ -3,12 +3,15 @@ aligns it, and the overlays of the current stage. Coordinates: head units (helm 
 import math
 
 from PySide6.QtCore import QPointF, Qt, Signal
-from PySide6.QtGui import QColor, QImage, QPainter
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QWidget
+import numpy as np
+from PySide6.QtGui import QAction, QColor, QImage, QPainter, QPainterPath, QPen
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QMenu, QPushButton, QWidget
 
 from autoswf.aqw.assets import DEFAULT_ARMOR, AqwCache
 from autoswf.model.geometry import Matrix, Point
 from autoswf.parts.assemble import head_to_backhair
+from autoswf.parts.overview import part_tint
+from autoswf.project.fixes import part_choices, region_mask
 from autoswf.project.player import HelmPlayer
 from autoswf.render.colors import PlayerColors
 from autoswf.render.display import ScriptContext, instantiate, run_pending_actions
@@ -20,6 +23,9 @@ BACKGROUND = QColor(58, 58, 62)
 HEAD_CENTER = Point(-8.75, -1.45)        # middle of the male and female base heads (head units)
 FIT_SIZE = (130.0, 140.0)                # head units shown when fitted
 MIN_ZOOM, MAX_ZOOM = 0.5, 80.0
+PART_ALPHA, SELECTED_ALPHA, PENDING_ALPHA = 0.35, 0.6, 0.7
+CLICK_SLOP = 4                           # px a click may move and stay a click
+MIN_CUT = 3.0                            # drawing px a cut line must span
 MISSING_TEXT = "AQW reference files are not downloaded: the head guide and the body preview need them."
 
 
@@ -46,6 +52,10 @@ class HelmCanvas(QWidget):
         self._drawing_key, self._drawing_image = None, None
         self._drag = None
         self._align_preview: Matrix | None = None
+        self.tool = "select"
+        self.pending = None                      # (mask, rgb) of a fix not built yet
+        self._cut: list[tuple[float, float]] = []
+        self._overlay_key, self._overlay_image = None, None
         self._banner = QWidget(self)
         row = QHBoxLayout(self._banner)
         row.setContentsMargins(8, 4, 8, 4)
@@ -58,6 +68,7 @@ class HelmCanvas(QWidget):
         self._banner.setStyleSheet("background: #4a3a1c; color: #f3d9a4;")
         controller.built.connect(self._on_built)
         controller.settings_changed.connect(self._on_settings)
+        controller.selection_changed.connect(self._on_selection)
         self.reload_client()
 
     # ------------------------------------------------------------ state
@@ -120,7 +131,18 @@ class HelmCanvas(QWidget):
             self.view_changed.emit()
         self.update()
 
+    def set_tool(self, tool: str) -> None:
+        """"select" (click a region to fix its part) or "cut" (drag a line to split regions)."""
+        self.tool = tool
+        self.setCursor(Qt.CursorShape.CrossCursor if tool == "cut" else Qt.CursorShape.ArrowCursor)
+        self.update()
+
+    def _on_selection(self, name) -> None:
+        self.selected = name
+        self.update()
+
     def _on_built(self, build) -> None:
+        self.pending = None
         helm = self.controller.helm_build
         if helm is not None and helm is not self._player_build:
             self._player_build = helm
@@ -241,7 +263,60 @@ class HelmCanvas(QWidget):
         return self.player.at(frame)
 
     def paint_overlays(self, p: QPainter, view: Matrix) -> None:
-        """Stage overlays (parts, pending fixes, cut line, pivot); later stages add theirs."""
+        """Stage overlays: the parts, a fix not built yet and the cut being drawn (Parts)."""
+        matrix = self.drawing_matrix()
+        if self.stage != "Parts" or matrix is None:
+            return
+        transform = qt_transform(view @ matrix)
+        overlay = self.parts_overlay()
+        if overlay is not None:
+            p.save()
+            p.setTransform(transform)
+            p.drawImage(0, 0, overlay)
+            p.restore()
+        if self.pending is not None:
+            mask, rgb = self.pending
+            image = np.zeros(mask.shape + (4,), np.float32)
+            image[mask] = (rgb[0] / 255 * PENDING_ALPHA, rgb[1] / 255 * PENDING_ALPHA, rgb[2] / 255 * PENDING_ALPHA,
+                           PENDING_ALPHA)
+            p.save()
+            p.setTransform(transform)
+            p.drawImage(0, 0, array_to_qimage(image))
+            p.restore()
+        if len(self._cut) >= 2:
+            path = QPainterPath()
+            for k, (x, y) in enumerate(self._cut):
+                q = (view @ matrix).apply(Point(x, y))
+                (path.moveTo if k == 0 else path.lineTo)(q.x, q.y)
+            p.setPen(QPen(QColor(255, 80, 80), 2, Qt.PenStyle.DashLine))
+            p.drawPath(path)
+
+    def _parts(self):
+        for build in (self.controller.build, self.controller.helm_build):
+            if build is not None and build.parts is not None:
+                return build.parts
+        return None
+
+    def part_color(self, name: str) -> tuple[int, int, int]:
+        parts = self._parts()
+        names = list(parts.parts) if parts is not None else []
+        return part_tint(names.index(name) if name in names else len(names))
+
+    def parts_overlay(self) -> QImage | None:
+        """Every part tinted at PART_ALPHA, the selected one at SELECTED_ALPHA (drawing pixels)."""
+        parts = self._parts()
+        if parts is None:
+            return None
+        key = (id(parts), self.selected)
+        if self._overlay_key != key:
+            image = np.zeros((parts.graph.height, parts.graph.width, 4), np.float32)
+            for k, name in enumerate(parts.parts):
+                mask = parts.part_mask(name)
+                a = SELECTED_ALPHA if name == self.selected else PART_ALPHA
+                r, g, b = part_tint(k)
+                image[mask] = (r / 255 * a, g / 255 * a, b / 255 * a, a)
+            self._overlay_key, self._overlay_image = key, array_to_qimage(image)
+        return self._overlay_image
 
     # ------------------------------------------------------------ mouse
 
@@ -292,12 +367,86 @@ class HelmCanvas(QWidget):
     def left_press(self, event) -> None:
         if self.stage == "Import" and self.drawing_matrix() is not None:
             self._drag = ("align", event.position(), event.modifiers(), self.drawing_matrix())
+        elif self.stage == "Parts" and self.tool == "cut":
+            point = self.drawing_point(event.position())
+            if point is not None:
+                self._drag, self._cut = ("cut", event.position()), [point]
+        elif self.stage == "Parts":
+            self._drag = ("click", event.position())
 
     def left_move(self, event) -> None:
-        pass
+        if self._drag[0] == "cut":
+            point = self.drawing_point(event.position())
+            if point is not None:
+                self._cut.append(point)
+                self.update()
 
     def left_release(self, event) -> None:
+        kind, start = self._drag[0], self._drag[1]
         self._drag = None
+        if kind == "cut":
+            point = self.drawing_point(event.position())
+            if point is not None and point != self._cut[-1]:
+                self._cut.append(point)
+            cut, self._cut = self._cut, []
+            span = max((np.hypot(x - cut[0][0], y - cut[0][1]) for x, y in cut), default=0.0)
+            if len(cut) >= 2 and span >= MIN_CUT:
+                self.controller.add_cut(cut)
+            self.update()
+        elif kind == "click":
+            moved = event.position() - start
+            if abs(moved.x()) + abs(moved.y()) <= CLICK_SLOP:
+                self.click_part(event.position())
+
+    def click_part(self, pos: QPointF) -> None:
+        """Click a region, then pick its part from the menu: one fix in two actions (spec §9.2)."""
+        parts, point = self._parts(), self.drawing_point(pos)
+        if parts is None or point is None:
+            return
+        found = region_mask(parts, *point)
+        if found is None:
+            self.controller.select_part(None)
+            return
+        rid, mask = found
+        current = parts.part_of.get(rid)
+        current_piece = parts.piece_of.get(rid)
+        menu = QMenu(self)
+        title = menu.addAction("This is: %s" % (current or "nothing") + (" (%s)" % current_piece if current_piece else ""))
+        title.setEnabled(False)
+        menu.addSeparator()
+        groups: dict[str, QMenu] = {}
+        actions: dict[QAction, object] = {}
+        for choice in part_choices(parts):
+            target = menu
+            if choice.group is not None:
+                if choice.group not in groups:
+                    groups[choice.group] = menu.addMenu(choice.group)
+                target = groups[choice.group]
+            action = target.addAction(choice.label)
+            action.setCheckable(True)
+            action.setChecked(choice.part == current and choice.piece in (None, current_piece))
+            actions[action] = choice
+        picked = self.exec_menu(menu, pos)
+        choice = actions.get(picked)
+        if choice is None:
+            self.controller.select_part(current)
+            return
+        self.pending = (mask, self.part_color(choice.part))
+        self.update()
+        self.controller.assign_region(point, choice.part, choice.piece)
+        self.controller.select_part(choice.part)
+
+    def exec_menu(self, menu: QMenu, pos: QPointF) -> QAction | None:
+        """Show a menu at a canvas point and return the action picked (tests replace this)."""
+        return menu.exec(self.mapToGlobal(pos.toPoint()))
+
+    def keyPressEvent(self, event) -> None:
+        if event.key() == Qt.Key.Key_C and self.stage == "Parts":
+            self.set_tool("select" if self.tool == "cut" else "cut")
+        elif event.key() == Qt.Key.Key_Escape:
+            self.set_tool("select")
+        else:
+            super().keyPressEvent(event)
 
     def _align_transform(self, pos: QPointF) -> Matrix:
         """The head-space transform a drag gives the drawing: move; Alt = scale about the head origin (down =

@@ -15,6 +15,7 @@ from autoswf import __version__
 from autoswf.anim.settings import suggest_presets
 from autoswf.app.canvas import HelmCanvas
 from autoswf.app.layers_panel import LayerList
+from autoswf.app.parts_panel import PartTree
 from autoswf.app.properties import PropertiesPanel
 from autoswf.app.stagebar import BUSY_STAGE, STAGES, StageBar, stage_states
 from autoswf.aqw.assets import DEFAULT_ARMOR, AqwCache
@@ -127,7 +128,7 @@ class MainWindow(QMainWindow):
         self.canvas = HelmCanvas(self.controller, self.cache)
         self.canvas.download_requested.connect(self.download_reference_files)
         self.layers = LayerList(self.controller)
-        self.parts_tree = QWidget()
+        self.parts_tree = PartTree(self.controller)
         self.left_tabs = QTabWidget()
         self.left_tabs.addTab(self.parts_tree, "Parts")
         self.left_tabs.addTab(self.layers, "Layers")
@@ -170,8 +171,13 @@ class MainWindow(QMainWindow):
         self.gender_button.clicked.connect(self._on_toggle_gender)
         fit = QPushButton("Fit")
         fit.clicked.connect(self.canvas.fit)
+        self.cut_button = QPushButton("Cut")
+        self.cut_button.setCheckable(True)
+        self.cut_button.setToolTip("Drag a line on the canvas to split a region (C)")
+        self.cut_button.toggled.connect(lambda on: self.canvas.set_tool("cut" if on else "select"))
         row.addWidget(self.gender_button)
         row.addWidget(fit)
+        row.addWidget(self.cut_button)
         for label, attr, value in (("Drawing", "drawing_opacity", 0), ("Guide", "guide_opacity", 100)):
             row.addWidget(QLabel(label))
             slider = QSlider(Qt.Orientation.Horizontal)

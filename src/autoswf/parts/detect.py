@@ -138,6 +138,7 @@ class _Detector:
         self.name_of: dict[int, str] = {}
         self.piece_of: dict[int, str] = {}
         self.forced: dict[int, tuple[str, str | None]] = {}
+        self.deferred: set[str] = set()                # part names of corrections applied after lock splitting
         self.outlines: list[int] = []
         self.locks: list[list[int]] = []               # automatic locks (their regions), numbered at the end
         self.skin: RGBA | None = None
@@ -548,14 +549,19 @@ class _Detector:
                 self.name_of[rid] = "Nose"
 
     def force_assignments(self) -> None:
-        """Corrections, before lock splitting: a region marked Hair is split into locks like detected hair; any other
-        name is final."""
+        """Corrections, before lock splitting: a region marked Hair is split into locks like detected hair; a hair
+        region marked as anything else waits for the split, so only the lock under the click gets the name (the user
+        clicks the locks they see; final_assignments names it); any other name is final."""
         for n, a in enumerate(self.corrections.assign, start=1):
             region = self.graph.region_at(*a.at)
             if region is None:
                 continue
-            self.forced[region.id] = (a.part, a.piece)
             kind = PartName.parse(a.part).kind
+            if kind not in ("hair", "lock", "back_hair") and (region.id in self.hair_pool
+                                                             or self.is_hair_color(region.flat)):
+                self.deferred.add(a.part)
+                continue
+            self.forced[region.id] = (a.part, a.piece)
             if kind in ("hair", "lock", "back_hair") and not self.is_hair_color(region.flat):
                 self.hair.append(region.flat)            # the user says this color is hair
             if kind in ("face", "ear", "nose") and not self.is_skin_color(region.flat):
@@ -688,7 +694,7 @@ class _Detector:
             self.notes.append("%d small pieces were left over; they stay together in Helm (a correction can make any "
                               "of them an accessory)" % len(loose))
         used = {PartName.parse(n).index for n in set(self.name_of.values()) | {f[0] for f in self.forced.values()}
-                if n.startswith("Accessory")}
+                | self.deferred if n.startswith("Accessory")}
         k = 0
         for comp in sorted(groups, key=lambda c: min(self.region(r).center.x for r in c)):
             k += 1
