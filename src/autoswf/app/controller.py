@@ -241,6 +241,65 @@ class ProjectController(QObject):
                 variant.parts[part] = adjust
         self.change("Adjust", edit)
 
+    # ------------------------------------------------------------ timeline
+
+    def _clip(self, part: str):
+        build = self.helm_build
+        clip = build.timeline.clips.get(part) if build is not None and build.timeline is not None else None
+        if clip is None:
+            raise ValueError("'%s' is not animated; pick a preset first" % part)
+        return clip
+
+    def add_key(self, part: str, target: str, frame: int) -> None:
+        """A hand-made keyframe equal to the current pose (Animate's F6); `frame` is 0-based."""
+        from autoswf.anim.settings import ManualKey
+        from autoswf.anim.timeline import POSE_FIELDS
+        clip = self._clip(part)
+        pose = clip.pose(target, frame)
+        fields = {f: float(getattr(pose, f)) for f in POSE_FIELDS if f != "bend"}
+        if target in clip.bends and pose.bend is not None:
+            fields["bend"] = float(pose.bend)
+        self._put_key(ManualKey(part, target, frame + 1, fields, False), "Insert keyframe")
+
+    def set_key(self, part: str, target: str, frame: int, fields: dict, tween: bool = False) -> None:
+        """Edit a hand-made keyframe's fields (merged over the ones it has); values are range-checked."""
+        from autoswf.anim.settings import FIELD_RANGES, ManualKey
+        for key, value in fields.items():
+            low, high = FIELD_RANGES[key]
+            if not low <= value <= high:
+                raise ValueError("%s must be a number from %g to %g" % (key, low, high))
+        old = next((k for k in self.settings.animation.keys
+                    if (k.part, k.target, k.frame) == (part, target, frame + 1)), None)
+        merged = {**(old.fields if old else {}), **{k: float(v) for k, v in fields.items()}}
+        self._put_key(ManualKey(part, target, frame + 1, merged, tween), "Edit keyframe")
+
+    def _put_key(self, key, label: str) -> None:
+        def edit(s):
+            s.animation.keys = [k for k in s.animation.keys
+                                if (k.part, k.target, k.frame) != (key.part, key.target, key.frame)] + [key]
+        self.change(label, edit)
+
+    def delete_key(self, part: str, target: str, frame: int) -> None:
+        def edit(s):
+            s.animation.keys = [k for k in s.animation.keys if (k.part, k.target, k.frame) != (part, target, frame + 1)]
+        self.change("Clear keyframe", edit)
+
+    def change_loop(self, part: str, delta: int) -> None:
+        """Lengthen or shorten a part's loop (F5 / Shift+F5), within its preset's range."""
+        from dataclasses import fields as dataclass_fields
+        from autoswf.anim.presets import PRESETS, RANGES
+        from autoswf.project.timeline_rows import LOOP_PARAM
+        preset, values = self.settings.animation.parts.get(part, (None, {}))
+        if preset is None:
+            return
+        key = LOOP_PARAM[preset]
+        default = next(f.default for f in dataclass_fields(PRESETS[preset]) if f.name == key)
+        current = int(float(values.get(key, self.settings.animation.presets.get(preset, {}).get(key, default))))
+        low, high = RANGES[(preset, key)]
+        new = int(min(high, max(low, current + delta)))
+        if new != current:
+            self.set_preset_value(part, key, new, edits="keep")
+
     def set_settings(self, settings: HelmSettings) -> None:
         self.settings = settings
         self.settings_changed.emit()

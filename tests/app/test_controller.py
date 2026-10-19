@@ -65,7 +65,7 @@ def test_rerunning_a_preset_asks_before_replacing_hand_made_keys(qapp, helm_psd,
     c = ProjectController(app_cache, threaded=False)
     c.import_drawing(helm_psd.path, align=helm_psd.align)
     c.set_animation("Lock 2", "Sway")
-    c.change("Key", lambda s: s.animation.keys.append(ManualKey("Lock 2", "Lock 2", 6, {"rotation": 5.0})))
+    c.add_key("Lock 2", "Lock 2", 5)
     with pytest.raises(ManualEditsError):
         c.set_preset_value("Lock 2", "amplitude", 20)
     c.set_preset_value("Lock 2", "amplitude", 20, edits="keep")

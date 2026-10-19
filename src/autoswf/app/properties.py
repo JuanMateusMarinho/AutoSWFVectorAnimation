@@ -12,7 +12,8 @@ from autoswf.aqw.template import Alignment
 from dataclasses import fields as dataclass_fields
 
 from autoswf.anim.presets import MOVES, PRESETS, RANGES
-from autoswf.anim.timeline import ManualEditsError
+from autoswf.anim.settings import FIELD_RANGES
+from autoswf.anim.timeline import POSE_FIELDS, ManualEditsError
 from autoswf.parts.assemble import colorable_summary
 from autoswf.project.settings import Adjust
 from autoswf.render.colors import PlayerColors
@@ -108,12 +109,14 @@ class PropertiesPanel(QScrollArea):
         self._make_alignment()
         self._make_vectorize()
         self._make_export()
+        self.key = None
         self._make_part()
         self._make_animation()
         self._make_pivot()
         self._make_adjust()
         self._make_colors()
         self._make_fixes()
+        self._make_keyframe()
         self._layout.addStretch(1)
         self.gender = "M"
         self._last_report = ""
@@ -255,6 +258,62 @@ class PropertiesPanel(QScrollArea):
         self.slots_label.setWordWrap(True)
         form.addRow(self.slots_label)
 
+    def _make_keyframe(self) -> None:
+        form = self._group("Keyframe", "Keyframe")
+        self.key_label = QLabel()
+        form.addRow(self.key_label)
+        self.key_widgets: dict[str, QDoubleSpinBox] = {}
+        for name in POSE_FIELDS:
+            low, high = FIELD_RANGES[name]
+            box = _spin(low, high, 3, 0.1 if high - low <= 4 else 1)
+            box.editingFinished.connect(lambda n=name: self._key_edited(n))
+            form.addRow(name.replace("_", " ").capitalize(), box)
+            self.key_widgets[name] = box
+        self.tween_box = QCheckBox("Tween to the next keyframe")
+        self.tween_box.toggled.connect(lambda on: self._key_edited(None))
+        form.addRow(self.tween_box)
+        delete = QPushButton("Delete keyframe")
+        delete.clicked.connect(lambda: self.key and self.controller.delete_key(*self.key))
+        form.addRow(delete)
+        self.key = None
+
+    def show_key(self, key) -> None:
+        """The hand-made keyframe (part, target, 0-based frame) to edit, or None."""
+        self.key = key
+        self.refresh()
+
+    def _refresh_key(self, settings) -> None:
+        if self.key is None:
+            return
+        part, target, frame = self.key
+        self.key_label.setText("%s, frame %d" % (target, frame + 1))
+        manual = next((k for k in settings.animation.keys if (k.part, k.target, k.frame) == (part, target, frame + 1)),
+                      None)
+        build = self.controller.helm_build
+        clip = build.timeline.clips.get(part) if build is not None and build.timeline is not None else None
+        pose = clip.pose(target, frame) if clip is not None and target in clip.tracks else None
+        bends = clip is not None and target in clip.bends
+        for name, box in self.key_widgets.items():
+            value = manual.fields.get(name) if manual is not None and name in manual.fields else (
+                getattr(pose, name) if pose is not None else None)
+            box.blockSignals(True)
+            box.setValue(float(value) if value is not None else 0.0)
+            box.blockSignals(False)
+        self.key_widgets["bend"].setEnabled(bends)
+        self.tween_box.blockSignals(True)
+        self.tween_box.setChecked(bool(manual.tween) if manual is not None else False)
+        self.tween_box.blockSignals(False)
+
+    def _key_edited(self, name: str | None) -> None:
+        if self.key is None:
+            return
+        part, target, frame = self.key
+        fields = {name: self.key_widgets[name].value()} if name is not None else {}
+        try:
+            self.controller.set_key(part, target, frame, fields, self.tween_box.isChecked())
+        except ValueError as e:
+            QMessageBox.warning(self, "Keyframe", str(e))
+
     def _make_fixes(self) -> None:
         form = self._group("Fixes", "Part fixes")
         hint = QLabel("Click a region on the canvas and pick its part. Press C (or the Cut button) and drag a line to "
@@ -299,12 +358,15 @@ class PropertiesPanel(QScrollArea):
             wanted -= set(PART_GROUPS)
         if settings is None or not settings.export.variants:
             wanted.discard("Adjust")
+        if self.key is not None:
+            wanted.add("Keyframe")
         for name, box in self.groups.items():
             box.setHidden(name not in wanted)
         build = self._build()
         if settings is None:
             return
         self._refresh_part(settings)
+        self._refresh_key(settings)
         self._refresh_adjust(settings)
         self._refresh_colors(settings)
         if build is not None and build.alignment is not None:

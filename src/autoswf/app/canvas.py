@@ -26,6 +26,7 @@ MIN_ZOOM, MAX_ZOOM = 0.5, 80.0
 PART_ALPHA, SELECTED_ALPHA, PENDING_ALPHA = 0.35, 0.6, 0.7
 CLICK_SLOP = 4                           # px a click may move and stay a click
 MIN_CUT = 3.0                            # drawing px a cut line must span
+ONION_OPACITY = 0.3
 PIVOT_RADIUS = 7                         # px: the pivot circle (and how near a press grabs it)
 MISSING_TEXT = "AQW reference files are not downloaded: the head guide and the body preview need them."
 
@@ -58,6 +59,8 @@ class HelmCanvas(QWidget):
         self._cut: list[tuple[float, float]] = []
         self._overlay_key, self._overlay_image = None, None
         self._pivot_preview: Point | None = None
+        self.onion = False
+        self._onion_players: list[HelmPlayer] = []
         self._banner = QWidget(self)
         row = QHBoxLayout(self._banner)
         row.setContentsMargins(8, 4, 8, 4)
@@ -110,6 +113,15 @@ class HelmCanvas(QWidget):
         self.frame = max(0, frame)
         self.update()
 
+    @staticmethod
+    def onion_frames(frame: int, length: int) -> tuple[int, int]:
+        """The frames onion skin shows around `frame` (the loop wraps)."""
+        return (frame - 1) % length, (frame + 1) % length
+
+    def set_onion(self, on: bool) -> None:
+        self.onion = on
+        self.update()
+
     def set_stage(self, stage: str) -> None:
         self.stage = stage
         self.update()
@@ -149,6 +161,7 @@ class HelmCanvas(QWidget):
         if helm is not None and helm is not self._player_build:
             self._player_build = helm
             self.player = HelmPlayer(helm.swf, helm.link, self.colors)
+            self._onion_players = []
         self.update()
 
     def _on_settings(self) -> None:
@@ -259,6 +272,14 @@ class HelmCanvas(QWidget):
             p.drawImage(0, 0, image)
             p.restore()
         if self.player is not None and self.stage != "Import":
+            if self.onion and self.player.length > 1:
+                if not self._onion_players:
+                    build = self._player_build
+                    self._onion_players = [HelmPlayer(build.swf, build.link, self.colors) for _ in range(2)]
+                p.setOpacity(ONION_OPACITY)
+                for player, frame in zip(self._onion_players, self.onion_frames(self.frame, self.player.length)):
+                    self.renderer.draw(p, player.at(frame), view @ whole, self.colors, filter_scale=zoom)
+                p.setOpacity(1.0)
             self.renderer.draw(p, self.helm_at(self.frame), view @ whole, self.colors, filter_scale=zoom)
         self.paint_overlays(p, view)
 

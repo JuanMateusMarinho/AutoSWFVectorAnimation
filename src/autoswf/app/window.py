@@ -16,6 +16,7 @@ from autoswf.app.layers_panel import LayerList
 from autoswf.app.parts_panel import PartTree
 from autoswf.app.properties import PropertiesPanel
 from autoswf.app.suggestions_panel import SuggestionsPanel
+from autoswf.app.timeline_view import TimelineView
 from autoswf.app.stagebar import BUSY_STAGE, STAGES, StageBar, stage_states
 from autoswf.aqw.assets import DEFAULT_ARMOR, AqwCache
 from autoswf.preview.window import Downloader, PreviewWindow, download_question
@@ -85,8 +86,11 @@ class MainWindow(QMainWindow):
                     "download": self.download_reference_files, "about": self._on_about}
         for name, handler in handlers.items():
             self.actions[name].triggered.connect(lambda _=False, h=handler: h())
-        for action in self.actions.values():
-            self.addAction(action)
+        for name, action in self.actions.items():
+            if name != "play":
+                self.addAction(action)
+        # Enter plays only where it cannot mean "commit this field": the canvas and the timeline
+        self.actions["play"].setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
 
     def _make_menus(self) -> None:
         bar = self.menuBar()
@@ -154,11 +158,15 @@ class MainWindow(QMainWindow):
         self.swf_editor = QWidget()
         self.stack.addWidget(self.swf_editor)
         self.setCentralWidget(self.stack)
-        self.timeline = QWidget()
+        self.timeline = TimelineView(self.controller)
+        self.timeline.frame_changed.connect(self._on_frame)
+        self.timeline.key_selected.connect(self.properties.show_key)
         self.timeline_dock = QDockWidget("Timeline", self)
         self.timeline_dock.setObjectName("timeline")
         self.timeline_dock.setWidget(self.timeline)
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.timeline_dock)
+        self.canvas.addAction(self.actions["play"])
+        self.timeline.addAction(self.actions["play"])
         self.timeline_dock.hide()
         self.timeline_dock.visibilityChanged.connect(self.actions["timeline"].setChecked)
 
@@ -270,8 +278,9 @@ class MainWindow(QMainWindow):
         self.canvas.set_stage(stage)
         self.properties.show_stage(stage)
         self.left_tabs.setCurrentWidget(self.layers if stage in ("Import", "Vectorize") else self.parts_tree)
-        if stage == "Animate":
+        if stage == "Animate" and not self.timeline_dock.isVisible():
             self.timeline_dock.show()
+            self.resizeDocks([self.timeline_dock], [240], Qt.Orientation.Vertical)
 
     # ------------------------------------------------------------ opening
 
@@ -325,19 +334,46 @@ class MainWindow(QMainWindow):
         pass
 
     def _on_play(self) -> None:
-        pass
+        self.timeline.toggle_play()
+
+    def _on_frame(self, frame: int) -> None:
+        self.canvas.onion = self.timeline.onion and not self.timeline.playing
+        self.canvas.set_frame(frame)
+
+    def _track(self) -> tuple[str, str] | None:
+        """The timeline row picked (part, target), else the selected part's own layer."""
+        if self.timeline.selected is not None:
+            return self.timeline.selected
+        part = self.controller.selected_part
+        return (part, part) if part else None
+
+    def _timeline_action(self, action) -> None:
+        track = self._track()
+        if track is None:
+            self.statusBar().showMessage("Pick a row of the timeline (or a part) first")
+            return
+        try:
+            action(*track)
+        except (ValueError, KeyError) as e:
+            QMessageBox.warning(self, "Timeline", str(e).strip("'\""))
 
     def _on_insert_frame(self) -> None:
-        pass
+        self._timeline_action(lambda part, target: self.controller.change_loop(part, 1))
 
     def _on_remove_frame(self) -> None:
-        pass
+        self._timeline_action(lambda part, target: self.controller.change_loop(part, -1))
 
     def _on_insert_keyframe(self) -> None:
-        pass
+        def insert(part, target):
+            frame = self.timeline.playhead
+            self.controller.add_key(part, target, frame)
+            self.set_stage("Animate")
+            self.timeline.refresh()
+            self.timeline.select_key((part, target, frame))
+        self._timeline_action(insert)
 
     def _on_clear_keyframe(self) -> None:
-        pass
+        self._timeline_action(lambda part, target: self.controller.delete_key(part, target, self.timeline.playhead))
 
     def _on_timeline(self) -> None:
         self.timeline_dock.setVisible(not self.timeline_dock.isVisible())
