@@ -36,6 +36,7 @@ class ProjectController(QObject):
     settings_changed = Signal()
     exported = Signal(object)           # list of ExportResult
     selection_changed = Signal(object)  # the selected part's name or None
+    stage_requested = Signal(str)       # a suggestion's Fix asks the window to show a stage
 
     def __init__(self, cache: AqwCache, *, threaded: bool = True, builder: HelmBuilder | None = None):
         super().__init__()
@@ -129,6 +130,116 @@ class ProjectController(QObject):
     def remove_fix(self, kind: str, index: int) -> None:
         """Remove one part fix: kind "assign" or "cut"."""
         self.change("Remove fix", lambda s: (s.corrections.assign if kind == "assign" else s.corrections.cuts).pop(index))
+
+    # ------------------------------------------------------------ suggestions, animation, colors, adjustments
+
+    def accept(self, suggestion) -> None:
+        if suggestion.preset is None or not suggestion.parts:
+            return
+
+        def edit(s):
+            for part in suggestion.parts:
+                s.animation.parts[part] = (suggestion.preset, {})
+        self.change("Accept suggestion", edit)
+
+    def skip(self, suggestion) -> None:
+        def edit(s):
+            if suggestion.parts:
+                for part in suggestion.parts:
+                    s.animation.parts[part] = (None, {})
+            elif suggestion.key not in s.dismissed:
+                s.dismissed.append(suggestion.key)
+        self.change("Skip suggestion", edit)
+
+    def fix(self, suggestion) -> None:
+        """Go where the suggestion can be fixed by hand, its first part selected."""
+        self.stage_requested.emit(suggestion.stage)
+        if suggestion.parts:
+            self.select_part(suggestion.parts[0])
+
+    def _part_kind(self, part: str) -> str | None:
+        build = self.helm_build or self.build
+        if build is not None and build.parts is not None and part in build.parts.parts:
+            return build.parts.parts[part].kind
+        from autoswf.parts.model import PartName
+        return PartName.parse(part).kind
+
+    def set_animation(self, part: str, preset: str | None, values: dict | None = None, *, edits: str = "ask") -> None:
+        """A part's preset (None = not animated) and its own settings. With hand-made keyframes on the part, "ask"
+        raises ManualEditsError; "replace" drops them, "keep" keeps them on top of the new motion."""
+        from autoswf.anim.presets import check_preset, parse_params
+        from autoswf.anim.timeline import ManualEditsError
+        values = dict(values or {})
+        if preset is not None:
+            check_preset(preset, part, self._part_kind(part))
+            parse_params(preset, {**self.settings.animation.presets.get(preset, {}), **values})
+        keys = [k for k in self.settings.animation.keys if k.part == part]
+        if keys and edits == "ask" and self.settings.animation.parts.get(part) != (preset, values):
+            raise ManualEditsError(part, [(k.target, k.frame - 1) for k in keys])
+
+        def edit(s):
+            s.animation.parts[part] = (preset, values)
+            if edits == "replace":
+                s.animation.keys = [k for k in s.animation.keys if k.part != part]
+        self.change("Animation", edit)
+
+    def set_preset_value(self, part: str, key: str, value, *, edits: str = "ask") -> None:
+        preset, values = self.settings.animation.parts.get(part, (None, {}))
+        if preset is None:
+            raise ValueError("'%s' has no animation; pick a preset first" % part)
+        self.set_animation(part, preset, {**values, key: value}, edits=edits)
+
+    def apply_to_all(self, part: str) -> None:
+        """The part's own preset settings become the settings of every part with that preset."""
+        preset, values = self.settings.animation.parts.get(part, (None, {}))
+        if preset is None:
+            return
+
+        def edit(s):
+            s.animation.presets[preset] = {**s.animation.presets.get(preset, {}), **values}
+            for name, (p, _) in list(s.animation.parts.items()):
+                if p == preset:
+                    s.animation.parts[name] = (p, {})
+        self.change("Use for every part", edit)
+
+    def set_pivot(self, part: str, point: tuple[float, float] | None) -> None:
+        def edit(s):
+            if point is None:
+                s.pivots.pop(part, None)
+            else:
+                s.pivots[part] = (float(point[0]), float(point[1]))
+        self.change("Pivot", edit)
+
+    def set_color_slot(self, part: str, location: str | None) -> None:
+        """The AQW color a part follows: Skin … Accessory, "none" (its drawn colors), or None (automatic)."""
+        def edit(s):
+            if location is None:
+                s.corrections.colors.pop(part, None)
+            else:
+                s.corrections.colors[part] = location
+        self.change("Color slot", edit)
+
+    def set_player_color(self, location: str, rgb: int) -> None:
+        self.change("Player color", lambda s: s.colors.__setitem__(location, int(rgb)))
+
+    def reset_player_colors(self) -> None:
+        self.change("Player colors", lambda s: s.colors.clear())
+
+    def set_adjust(self, gender: str, part: str | None, adjust) -> None:
+        """A male or female version's adjustment of the whole helm (part None) or of a part; turns versions on."""
+        from autoswf.project.export import default_variant
+
+        def edit(s):
+            s.export.variants = True
+            for g in ("M", "F"):
+                if g not in s.export.genders:
+                    s.export.genders[g] = default_variant(s, g)
+            variant = s.export.genders[gender]
+            if part is None:
+                variant.helm = adjust
+            else:
+                variant.parts[part] = adjust
+        self.change("Adjust", edit)
 
     def set_settings(self, settings: HelmSettings) -> None:
         self.settings = settings

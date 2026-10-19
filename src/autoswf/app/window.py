@@ -3,7 +3,6 @@ source layers on the left, AI suggestions and Properties on the right and the ti
 Animate-like shortcuts; the welcome page; the first-run download of the AQW reference files."""
 import threading
 from pathlib import Path
-from types import SimpleNamespace
 
 from PySide6.QtCore import QSettings, Qt
 from PySide6.QtGui import QAction, QKeySequence, QUndoGroup
@@ -12,11 +11,11 @@ from PySide6.QtWidgets import (QDockWidget, QFileDialog, QGroupBox, QHBoxLayout,
                                QWidget)
 
 from autoswf import __version__
-from autoswf.anim.settings import suggest_presets
 from autoswf.app.canvas import HelmCanvas
 from autoswf.app.layers_panel import LayerList
 from autoswf.app.parts_panel import PartTree
 from autoswf.app.properties import PropertiesPanel
+from autoswf.app.suggestions_panel import SuggestionsPanel
 from autoswf.app.stagebar import BUSY_STAGE, STAGES, StageBar, stage_states
 from autoswf.aqw.assets import DEFAULT_ARMOR, AqwCache
 from autoswf.preview.window import Downloader, PreviewWindow, download_question
@@ -132,13 +131,14 @@ class MainWindow(QMainWindow):
         self.left_tabs = QTabWidget()
         self.left_tabs.addTab(self.parts_tree, "Parts")
         self.left_tabs.addTab(self.layers, "Layers")
-        self.suggestions_panel = QGroupBox("AI suggestions")
-        self.suggestions_panel.setLayout(QVBoxLayout())
+        self.suggestions_panel = SuggestionsPanel(self.controller)
+        self.controller.stage_requested.connect(self.set_stage)
         self.properties = PropertiesPanel(self.controller)
         self.properties.export_requested.connect(self._on_export)
         self.right_panel = QSplitter(Qt.Orientation.Vertical)
         self.right_panel.addWidget(self.suggestions_panel)
         self.right_panel.addWidget(self.properties)
+        self.right_panel.setSizes([240, 620])
         center = QWidget()
         column = QVBoxLayout(center)
         column.setContentsMargins(0, 0, 0, 0)
@@ -228,13 +228,7 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------ state
 
     def pending_suggestions(self) -> list:
-        """Undecided animation suggestions (Task 6 replaces this with the full suggestion engine)."""
-        build, settings = self.controller.helm_build, self.controller.settings
-        if build is None or settings is None or not build.rigs:
-            return []
-        parts = [p for p in suggest_presets(build.rigs) if p not in settings.animation.parts]
-        return [SimpleNamespace(preset="suggested", stage="Animate", parts=parts, text="Animations are suggested")] \
-            if parts else []
+        return self.suggestions_panel.current()
 
     def _refresh(self) -> None:
         c = self.controller
@@ -350,6 +344,8 @@ class MainWindow(QMainWindow):
 
     def _on_toggle_gender(self) -> None:
         self.canvas.set_gender("F" if self.canvas.gender == "M" else "M")
+        self.properties.gender = self.canvas.gender
+        self.properties.refresh()
         self.gender_button.setText("Head: %s" % ("Male" if self.canvas.gender == "M" else "Female"))
 
     def _on_export(self) -> None:

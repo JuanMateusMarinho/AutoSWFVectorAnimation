@@ -4,14 +4,67 @@ colors and keyframes. Every edit is one undo step through the controller."""
 import math
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import (QCheckBox, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QPushButton,
-                               QScrollArea, QSlider, QVBoxLayout, QWidget)
+from PySide6.QtGui import QColor
+from PySide6.QtWidgets import (QCheckBox, QColorDialog, QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout,
+                               QLabel, QMessageBox, QPushButton, QScrollArea, QSlider, QSpinBox, QVBoxLayout, QWidget)
 
 from autoswf.aqw.template import Alignment
-from autoswf.parts.assemble import colorable_summary
+from dataclasses import fields as dataclass_fields
 
-STAGE_GROUPS = {"Import": ("Alignment",), "Vectorize": ("Vectorize",), "Parts": ("Fixes",), "Animate": (),
-                "Colors": (), "Export": ("Export",)}
+from autoswf.anim.presets import MOVES, PRESETS, RANGES
+from autoswf.anim.timeline import ManualEditsError
+from autoswf.parts.assemble import colorable_summary
+from autoswf.project.settings import Adjust
+from autoswf.render.colors import PlayerColors
+
+STAGE_GROUPS = {"Import": ("Alignment",), "Vectorize": ("Vectorize",), "Parts": ("Part", "Fixes", "Adjust"),
+                "Animate": ("Part", "Animation", "Pivot", "Adjust"), "Colors": ("Player colors", "Part", "Adjust"),
+                "Export": ("Export", "Adjust")}
+PART_GROUPS = ("Part", "Animation", "Pivot")          # shown only with a part selected
+SLOT_CHOICES = ("Automatic", "Skin", "Hair", "Eye", "Base", "Trim", "Accessory", "None")
+COLOR_ORDER = ("Hair", "Skin", "Eye", "Base", "Trim", "Accessory")
+TONES_NOTE = ("In colorable areas the game draws shadows and lights with its own fixed tones (Dark, Darker, Light), "
+              "not the colors you painted.")
+
+
+class ParamWidget(QWidget):
+    """One preset setting: a slider and a spin box with the preset's range (spec §11 sliders)."""
+
+    def __init__(self, low: float, high: float, whole: bool, on_commit):
+        super().__init__()
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        self.whole, self.low, self.high = whole, low, high
+        self.slider = QSlider(Qt.Orientation.Horizontal)
+        self.slider.setRange(0, 1000)
+        self.spin = QSpinBox() if whole else QDoubleSpinBox()
+        self.spin.setRange(int(low) if whole else low, int(high) if whole else high)
+        if not whole:
+            self.spin.setDecimals(2)
+            self.spin.setSingleStep((high - low) / 100)
+        self.spin.setKeyboardTracking(False)
+        row.addWidget(self.slider, 1)
+        row.addWidget(self.spin)
+        self.slider.valueChanged.connect(self._slid)
+        self.slider.sliderReleased.connect(lambda: on_commit(self.value()))
+        self.spin.editingFinished.connect(lambda: on_commit(self.value()))
+
+    def value(self):
+        return int(self.spin.value()) if self.whole else float(self.spin.value())
+
+    def set_value(self, value) -> None:
+        for w in (self.spin, self.slider):
+            w.blockSignals(True)
+        self.spin.setValue(value)
+        self.slider.setValue(round((value - self.low) / (self.high - self.low) * 1000) if self.high > self.low else 0)
+        for w in (self.spin, self.slider):
+            w.blockSignals(False)
+
+    def _slid(self, position: int) -> None:
+        value = self.low + (self.high - self.low) * position / 1000
+        self.spin.blockSignals(True)
+        self.spin.setValue(round(value) if self.whole else value)
+        self.spin.blockSignals(False)
 
 
 class FixRow(QWidget):
@@ -55,12 +108,19 @@ class PropertiesPanel(QScrollArea):
         self._make_alignment()
         self._make_vectorize()
         self._make_export()
+        self._make_part()
+        self._make_animation()
+        self._make_pivot()
+        self._make_adjust()
+        self._make_colors()
         self._make_fixes()
         self._layout.addStretch(1)
+        self.gender = "M"
         self._last_report = ""
         controller.built.connect(lambda build: self.refresh())
         controller.settings_changed.connect(self.refresh)
         controller.exported.connect(self._on_exported)
+        controller.selection_changed.connect(lambda name: self.refresh())
         self.refresh()
 
     def _group(self, name: str, title: str) -> QFormLayout:
@@ -127,6 +187,74 @@ class PropertiesPanel(QScrollArea):
         form.addRow(button)
         form.addRow(self.export_report)
 
+    def _make_part(self) -> None:
+        form = self._group("Part", "Part")
+        self.part_label = QLabel()
+        form.addRow(self.part_label)
+        self.color_box = QComboBox()
+        self.color_box.addItems(SLOT_CHOICES)
+        self.color_box.setToolTip("The AQW color this part follows; None keeps the colors you painted")
+        self.color_box.currentTextChanged.connect(self._slot_picked)
+        form.addRow("Color slot", self.color_box)
+
+    def _make_animation(self) -> None:
+        form = self._group("Animation", "Animation")
+        self.preset_box = QComboBox()
+        self.preset_box.currentTextChanged.connect(self._preset_picked)
+        form.addRow("Preset", self.preset_box)
+        self._params_box = QFormLayout()
+        form.addRow(self._params_box)
+        self.param_widgets: dict[str, QWidget] = {}
+        self.apply_all_button = QPushButton("Use for every part with this preset")
+        self.apply_all_button.clicked.connect(lambda: self._part() and self.controller.apply_to_all(self._part()))
+        form.addRow(self.apply_all_button)
+        self._shown_params = None
+
+    def _make_pivot(self) -> None:
+        form = self._group("Pivot", "Pivot (registration point)")
+        self.pivot_x, self.pivot_y = _spin(-500, 500, 2, 0.5), _spin(-500, 500, 2, 0.5)
+        form.addRow("x (head units)", self.pivot_x)
+        form.addRow("y (head units)", self.pivot_y)
+        for box in (self.pivot_x, self.pivot_y):
+            box.editingFinished.connect(self._pivot_edited)
+        reset = QPushButton("Reset pivot")
+        reset.clicked.connect(lambda: self._part() and self.controller.set_pivot(self._part(), None))
+        form.addRow(reset)
+        hint = QLabel("You can also drag the pivot circle on the canvas.")
+        hint.setWordWrap(True)
+        form.addRow(hint)
+
+    def _make_adjust(self) -> None:
+        form = self._group("Adjust", "Adjust for male/female")
+        self.adjust_title = QLabel()
+        self.adjust_title.setWordWrap(True)
+        form.addRow(self.adjust_title)
+        self.adjust_x, self.adjust_y = _spin(-500, 500, 2, 0.5), _spin(-500, 500, 2, 0.5)
+        self.adjust_scale = _spin(0.1, 10, 3, 0.01)
+        form.addRow("Move x", self.adjust_x)
+        form.addRow("Move y", self.adjust_y)
+        form.addRow("Scale", self.adjust_scale)
+        for box in (self.adjust_x, self.adjust_y, self.adjust_scale):
+            box.editingFinished.connect(self._adjust_edited)
+
+    def _make_colors(self) -> None:
+        form = self._group("Player colors", "Player colors")
+        self.color_buttons: dict[str, QPushButton] = {}
+        for location in COLOR_ORDER:
+            button = QPushButton(location)
+            button.clicked.connect(lambda _=False, loc=location: self._pick_color(loc))
+            form.addRow(button)
+            self.color_buttons[location] = button
+        reset = QPushButton("Reset colors")
+        reset.clicked.connect(lambda: self.controller.reset_player_colors())
+        form.addRow(reset)
+        note = QLabel(TONES_NOTE)
+        note.setWordWrap(True)
+        form.addRow(note)
+        self.slots_label = QLabel()
+        self.slots_label.setWordWrap(True)
+        form.addRow(self.slots_label)
+
     def _make_fixes(self) -> None:
         form = self._group("Fixes", "Part fixes")
         hint = QLabel("Click a region on the canvas and pick its part. Press C (or the Cut button) and drag a line to "
@@ -161,13 +289,24 @@ class PropertiesPanel(QScrollArea):
         c = self.controller
         return c.build if c.build is not None and c.build.drawing is not None else c.helm_build
 
+    def _part(self) -> str | None:
+        return self.controller.selected_part
+
     def refresh(self) -> None:
-        wanted = STAGE_GROUPS.get(self.stage, ())
+        wanted = set(STAGE_GROUPS.get(self.stage, ()))
+        settings = self.controller.settings
+        if self._part() is None:
+            wanted -= set(PART_GROUPS)
+        if settings is None or not settings.export.variants:
+            wanted.discard("Adjust")
         for name, box in self.groups.items():
             box.setHidden(name not in wanted)
-        build, settings = self._build(), self.controller.settings
+        build = self._build()
         if settings is None:
             return
+        self._refresh_part(settings)
+        self._refresh_adjust(settings)
+        self._refresh_colors(settings)
         if build is not None and build.alignment is not None:
             a = build.alignment
             self._shown_alignment = a
@@ -193,6 +332,150 @@ class PropertiesPanel(QScrollArea):
         self._refresh_fixes(settings)
 
     # ------------------------------------------------------------ edits
+
+    def _refresh_part(self, settings) -> None:
+        part = self._part()
+        if part is None:
+            return
+        kind = self.controller._part_kind(part)
+        self.part_label.setText("%s (%s)" % (part, kind.replace("_", " ")))
+        slot = settings.corrections.colors.get(part)
+        self.color_box.blockSignals(True)
+        self.color_box.setCurrentText("Automatic" if slot is None else "None" if slot == "none" else slot)
+        self.color_box.blockSignals(False)
+        allowed = ["None"] + [name for name in PRESETS if kind in MOVES[name]]
+        preset, values = settings.animation.parts.get(part, (None, {}))
+        self.preset_box.blockSignals(True)
+        self.preset_box.clear()
+        self.preset_box.addItems(allowed)
+        self.preset_box.setCurrentText(preset or "None")
+        self.preset_box.blockSignals(False)
+        self._refresh_params(preset, {**settings.animation.presets.get(preset, {}), **values} if preset else {})
+        build = self.controller.helm_build or self.controller.build
+        rig = build.rigs.get(part) if build is not None and build.rigs else None
+        self.groups["Pivot"].setHidden(self.groups["Pivot"].isHidden() or rig is None)
+        if rig is not None:
+            for box, value in ((self.pivot_x, rig.pivot.x), (self.pivot_y, rig.pivot.y)):
+                box.blockSignals(True)
+                box.setValue(value)
+                box.blockSignals(False)
+
+    def _refresh_params(self, preset: str | None, values: dict) -> None:
+        if self._shown_params != preset:
+            while self._params_box.rowCount():
+                self._params_box.removeRow(0)
+            self.param_widgets = {}
+            if preset is not None:
+                for f in dataclass_fields(PRESETS[preset]):
+                    if f.type in ("bool", bool):
+                        box = QCheckBox()
+                        box.toggled.connect(lambda on, key=f.name: self._param_committed(key, on))
+                        self.param_widgets[f.name] = box
+                    else:
+                        low, high = RANGES[(preset, f.name)]
+                        widget = ParamWidget(low, high, f.type in ("int", int),
+                                             lambda value, key=f.name: self._param_committed(key, value))
+                        self.param_widgets[f.name] = widget
+                    self._params_box.addRow(f.name.replace("_", " ").capitalize(), self.param_widgets[f.name])
+            self._shown_params = preset
+        if preset is None:
+            return
+        defaults = {f.name: f.default for f in dataclass_fields(PRESETS[preset])}
+        for key, widget in self.param_widgets.items():
+            value = values.get(key, defaults[key])
+            if isinstance(widget, QCheckBox):
+                widget.blockSignals(True)
+                widget.setChecked(bool(value) if not isinstance(value, str) else value.lower() in ("on", "true", "yes", "1"))
+                widget.blockSignals(False)
+            else:
+                widget.set_value(float(value))
+        self.apply_all_button.setEnabled(bool(values))
+
+    def _refresh_adjust(self, settings) -> None:
+        if not settings.export.variants:
+            return
+        part = self._part()
+        variant = settings.export.genders.get(self.gender)
+        adjust = (variant.parts.get(part) if part else variant.helm) if variant is not None else None
+        adjust = adjust or Adjust()
+        who = {"M": "male", "F": "female"}[self.gender]
+        self.adjust_title.setText("%s in the %s version (pick the version with the Male/Female button)"
+                                  % (part or "The whole helm", who))
+        for box, value in ((self.adjust_x, adjust.x), (self.adjust_y, adjust.y), (self.adjust_scale, adjust.scale)):
+            box.blockSignals(True)
+            box.setValue(value)
+            box.blockSignals(False)
+
+    def _refresh_colors(self, settings) -> None:
+        colors = PlayerColors()
+        for location, rgb in settings.colors.items():
+            colors = colors.replace(location, rgb)
+        for location, button in self.color_buttons.items():
+            rgb = colors.get(location)
+            light = ((rgb >> 16) & 255) * 0.3 + ((rgb >> 8) & 255) * 0.59 + (rgb & 255) * 0.11 > 140
+            button.setStyleSheet("background-color: #%06x; color: %s;" % (rgb, "black" if light else "white"))
+        slots = settings.corrections.colors
+        self.slots_label.setText("Color slots set by hand: " + (", ".join("%s → %s" % kv for kv in slots.items())
+                                                                 if slots else "none (automatic)"))
+
+    # ------------------------------------------------------------ part edits
+
+    def ask_edits(self, error: ManualEditsError) -> str | None:
+        """Re-running a preset over hand-made keyframes (spec §11): "replace", "keep" or None (cancel)."""
+        box = QMessageBox(QMessageBox.Icon.Question, "Hand-made keyframes", str(error) + ".", parent=self)
+        replace = box.addButton("Replace them", QMessageBox.ButtonRole.DestructiveRole)
+        keep = box.addButton("Keep them", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.exec()
+        return "replace" if box.clickedButton() is replace else "keep" if box.clickedButton() is keep else None
+
+    def _with_edits(self, action) -> None:
+        try:
+            action("ask")
+        except ManualEditsError as e:
+            choice = self.ask_edits(e)
+            if choice is not None:
+                action(choice)
+        except ValueError as e:
+            QMessageBox.warning(self, "Animation", str(e))
+        self.refresh()
+
+    def _preset_picked(self, text: str) -> None:
+        part = self._part()
+        if part is None:
+            return
+        preset = None if text == "None" else text
+        self._with_edits(lambda edits: self.controller.set_animation(part, preset, {}, edits=edits))
+
+    def _param_committed(self, key: str, value) -> None:
+        part = self._part()
+        if part is None:
+            return
+        self._with_edits(lambda edits: self.controller.set_preset_value(part, key, value, edits=edits))
+
+    def _slot_picked(self, text: str) -> None:
+        part = self._part()
+        if part is not None:
+            self.controller.set_color_slot(part, None if text == "Automatic" else "none" if text == "None" else text)
+
+    def _pivot_edited(self) -> None:
+        part = self._part()
+        if part is not None:
+            self.controller.set_pivot(part, (self.pivot_x.value(), self.pivot_y.value()))
+
+    def _adjust_edited(self) -> None:
+        self.controller.set_adjust(self.gender, self._part(), Adjust(self.adjust_x.value(), self.adjust_y.value(),
+                                                                     self.adjust_scale.value()))
+
+    def set_player_color(self, location: str, rgb: int) -> None:
+        self.controller.set_player_color(location, rgb)
+
+    def _pick_color(self, location: str) -> None:
+        settings = self.controller.settings
+        current = settings.colors.get(location, PlayerColors().get(location)) if settings is not None else 0
+        color = QColorDialog.getColor(QColor(current | 0xFF000000), self, "%s color" % location)
+        if color.isValid():
+            self.set_player_color(location, color.rgb() & 0xFFFFFF)
 
     def _alignment_edited(self) -> None:
         shown = self._shown_alignment

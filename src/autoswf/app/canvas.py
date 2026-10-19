@@ -26,6 +26,7 @@ MIN_ZOOM, MAX_ZOOM = 0.5, 80.0
 PART_ALPHA, SELECTED_ALPHA, PENDING_ALPHA = 0.35, 0.6, 0.7
 CLICK_SLOP = 4                           # px a click may move and stay a click
 MIN_CUT = 3.0                            # drawing px a cut line must span
+PIVOT_RADIUS = 7                         # px: the pivot circle (and how near a press grabs it)
 MISSING_TEXT = "AQW reference files are not downloaded: the head guide and the body preview need them."
 
 
@@ -56,6 +57,7 @@ class HelmCanvas(QWidget):
         self.pending = None                      # (mask, rgb) of a fix not built yet
         self._cut: list[tuple[float, float]] = []
         self._overlay_key, self._overlay_image = None, None
+        self._pivot_preview: Point | None = None
         self._banner = QWidget(self)
         row = QHBoxLayout(self._banner)
         row.setContentsMargins(8, 4, 8, 4)
@@ -237,10 +239,11 @@ class HelmCanvas(QWidget):
         p.fillRect(0, 0, width, height, BACKGROUND)
         view = self.view(width, height)
         zoom = self.current_zoom(width, height)
+        whole = self.whole_adjust()
         if self.player is not None and self.stage != "Import":
             back = self.player.back_at(self.frame)
             if back is not None:
-                self.renderer.draw(p, back, view @ head_to_backhair().inverse(), self.colors, filter_scale=zoom)
+                self.renderer.draw(p, back, view @ whole @ head_to_backhair().inverse(), self.colors, filter_scale=zoom)
         guide = self._guides.get(self.gender)
         if guide is not None and self.guide_opacity > 0:
             p.setOpacity(self.guide_opacity)
@@ -256,14 +259,57 @@ class HelmCanvas(QWidget):
             p.drawImage(0, 0, image)
             p.restore()
         if self.player is not None and self.stage != "Import":
-            self.renderer.draw(p, self.helm_at(self.frame), view, self.colors, filter_scale=zoom)
+            self.renderer.draw(p, self.helm_at(self.frame), view @ whole, self.colors, filter_scale=zoom)
         self.paint_overlays(p, view)
 
+    def _variant(self):
+        settings = self.controller.settings
+        if settings is None or not settings.export.variants:
+            return None
+        return settings.export.genders.get(self.gender)
+
+    def whole_adjust(self) -> Matrix:
+        """The male or female version's adjustment of the whole helm, as the canvas shows that gender."""
+        from autoswf.project.export import adjust_matrix
+        variant = self._variant()
+        return adjust_matrix(variant.helm, Point(0, 0)) if variant is not None else Matrix()
+
     def helm_at(self, frame: int):
-        return self.player.at(frame)
+        """The helm at a frame, with the shown version's part adjustments on its top-level clips."""
+        from autoswf.project.export import adjust_matrix, adjust_targets
+        obj = self.player.at(frame)
+        build = self._player_build
+        if build is None or build.helm is None:
+            return obj
+        variant = self._variant()
+        back = self.player.back_at(frame)
+        inner = back.children[0] if back is not None and back.children else None
+        for part, placements in adjust_targets(build.helm, build.layers).items():
+            adjust = variant.parts.get(part) if variant is not None else None
+            rig = build.rigs.get(part)
+            for placement in placements:
+                child = obj.child_by_name(placement.name) or (inner.child_by_name(placement.name)
+                                                              if inner is not None else None)
+                if child is None:
+                    continue
+                if adjust is None:
+                    child.matrix = placement.matrix
+                else:
+                    pivot = rig.pivot if rig is not None else Point(placement.matrix.tx, placement.matrix.ty)
+                    child.matrix = adjust_matrix(adjust, pivot) @ placement.matrix
+        return obj
 
     def paint_overlays(self, p: QPainter, view: Matrix) -> None:
         """Stage overlays: the parts, a fix not built yet and the cut being drawn (Parts)."""
+        if self.stage == "Animate":
+            pivot = self.pivot_point()
+            if pivot is not None:
+                q = (view @ self.whole_adjust()).apply(pivot)
+                p.setPen(QPen(QColor(20, 20, 20), 3))
+                p.drawEllipse(QPointF(q.x, q.y), PIVOT_RADIUS, PIVOT_RADIUS)
+                p.setPen(QPen(QColor(255, 255, 255), 1.5))
+                p.drawEllipse(QPointF(q.x, q.y), PIVOT_RADIUS, PIVOT_RADIUS)
+                p.drawPoint(QPointF(q.x, q.y))
         matrix = self.drawing_matrix()
         if self.stage != "Parts" or matrix is None:
             return
@@ -290,6 +336,14 @@ class HelmCanvas(QWidget):
                 (path.moveTo if k == 0 else path.lineTo)(q.x, q.y)
             p.setPen(QPen(QColor(255, 80, 80), 2, Qt.PenStyle.DashLine))
             p.drawPath(path)
+
+    def pivot_point(self) -> Point | None:
+        """The selected part's pivot (head units), or the one being dragged."""
+        if self._pivot_preview is not None:
+            return self._pivot_preview
+        build = self.controller.helm_build
+        rig = build.rigs.get(self.selected) if build is not None and build.rigs and self.selected else None
+        return rig.pivot if rig is not None else None
 
     def _parts(self):
         for build in (self.controller.build, self.controller.helm_build):
@@ -373,8 +427,21 @@ class HelmCanvas(QWidget):
                 self._drag, self._cut = ("cut", event.position()), [point]
         elif self.stage == "Parts":
             self._drag = ("click", event.position())
+        elif self.stage == "Animate" and self.pivot_point() is not None:
+            q = self.widget_point(self.whole_adjust().apply(self.pivot_point()))
+            if abs(q.x() - event.position().x()) <= PIVOT_RADIUS + 3 and abs(q.y() - event.position().y()) <= PIVOT_RADIUS + 3:
+                self._drag = ("pivot", event.position(), self.pivot_point())
+
+    def _dragged_pivot(self, pos: QPointF) -> Point:
+        _, start, pivot = self._drag
+        a, b = self.head_point(start), self.head_point(pos)
+        return Point(pivot.x + b.x - a.x, pivot.y + b.y - a.y)
 
     def left_move(self, event) -> None:
+        if self._drag[0] == "pivot":
+            self._pivot_preview = self._dragged_pivot(event.position())
+            self.update()
+            return
         if self._drag[0] == "cut":
             point = self.drawing_point(event.position())
             if point is not None:
@@ -383,6 +450,13 @@ class HelmCanvas(QWidget):
 
     def left_release(self, event) -> None:
         kind, start = self._drag[0], self._drag[1]
+        if kind == "pivot":
+            point = self._dragged_pivot(event.position())
+            self._drag, self._pivot_preview = None, None
+            if self.selected is not None:
+                self.controller.set_pivot(self.selected, (point.x, point.y))
+            self.update()
+            return
         self._drag = None
         if kind == "cut":
             point = self.drawing_point(event.position())
