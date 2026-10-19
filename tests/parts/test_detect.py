@@ -263,3 +263,14 @@ def test_a_slot_for_the_hair_reaches_its_locks(parts_helm):
     _, pm = detect(parts_helm, corrections=Corrections(colors={"Hair": "none"}))
     locks = [r for n, p in pm.parts.items() if n.startswith("Lock") for r in p.regions]
     assert locks and {pm.location_of[r] for r in locks} == {None}
+
+
+def test_color_slots_match_a_fresh_detection(converted_parts_helm):
+    from autoswf.parts.detect import apply_color_slots
+    from autoswf.parts.model import Corrections
+    c = converted_parts_helm
+    colors = {"Helm": "Base", "Brow L": "none", "Hair": "Trim", "Eye L": "Accessory"}
+    fresh = detect_parts(c.passes, c.t.alignment, Corrections(colors=colors))
+    fast = apply_color_slots(c.parts, colors)
+    assert fast.location_of == fresh.location_of and fast.notes == fresh.notes
+    assert apply_color_slots(fast, {}).location_of == c.parts.location_of

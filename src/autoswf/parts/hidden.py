@@ -3,7 +3,7 @@ hair base, helm) continue under the parts that move (eyes, locks, ears, accessor
 the parts above it, copying its own nearest pixels so the hidden fill is already on the palette. Eyes become three
 layers (ball, lash, lid) so Blink can fade the ball and move the lid; any other part painted in several folders becomes
 one layer per folder, each in its folder's place (the largest keeps the part's name, the others add the folder's)."""
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 from scipy import ndimage
@@ -48,6 +48,7 @@ class PartLayer:
     soft_roles: frozenset[str]
     pivot: Point                                   # head-local px
     back_hair: bool
+    regions: tuple[int, ...] = ()                  # the part's regions this layer holds (for new color slots)
 
 
 @dataclass(eq=False)
@@ -829,12 +830,7 @@ class _Splitter:
             return None
         passes = PartPasses(u.name, (x0, y0), flats, tones, fills, detail_rgba, line_rgba, order, src.tone_above_lines,
                             ext[y0:y1, x0:x1] & ~own[y0:y1, x0:x1])
-        locations = []
-        for rid in u.regions:
-            location = self.parts.location_of.get(rid)
-            entry = (self.graph.regions[rid].flat, location)
-            if location is not None and entry not in locations:
-                locations.append(entry)
+        locations = _locations(u.regions, self.graph, self.parts.location_of)
         if u.parent is None or u.name.endswith(" ball"):
             pivot = u.part.pivot
         else:
@@ -842,7 +838,22 @@ class _Splitter:
             hx, hy = self.graph.head(np.array([xs.mean()]), np.array([ys.mean()])) if len(xs) else ([0.0], [0.0])
             pivot = Point(float(hx[0]), float(hy[0]))
         return PartLayer(u.name, u.parent, u.part.kind, passes, locations,
-                         frozenset(t.role for t in tones if t.soft), pivot, u.part.kind == "back_hair")
+                         frozenset(t.role for t in tones if t.soft), pivot, u.part.kind == "back_hair", tuple(u.regions))
+
+
+def _locations(regions, graph, location_of: dict) -> list[tuple[RGBA, str]]:
+    out = []
+    for rid in regions:
+        location = location_of.get(rid)
+        entry = (graph.regions[rid].flat, location)
+        if location is not None and entry not in out:
+            out.append(entry)
+    return out
+
+
+def with_locations(layers: list[PartLayer], parts: PartMap) -> list[PartLayer]:
+    """The layers with their colorable colors taken again from `parts` (new color slots; the pixels are shared)."""
+    return [replace(layer, locations=_locations(layer.regions, parts.graph, parts.location_of)) for layer in layers]
 
 
 def split_passes(passes: Passes, parts: PartMap) -> list[PartLayer]:

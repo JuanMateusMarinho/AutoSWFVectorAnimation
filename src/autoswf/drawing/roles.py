@@ -113,3 +113,28 @@ def assign_roles(drawing: Drawing, overrides: dict[str, str] | None = None) -> d
             role = LayerRole(None, part, "name")
         roles[node] = role
     return roles
+
+
+BACKGROUND_NAMES = ("paper", "papel", "background", "bg", "fundo", "用紙")
+
+
+def role_reason(node: LayerNode, ancestors, role: LayerRole, siblings) -> str:
+    """Why a layer got its role, in the words `convert` prints and the app's layer list shows."""
+    if role.source == "hidden":
+        return "hidden"
+    if role.source == "guide":
+        return "ignored: guide"
+    if role.source == "override":
+        return "--role"
+    if role.source == "folder":
+        folder = next(a.name for a in reversed(ancestors) if detect_role(a.name))
+        return "folder '%s'" % folder
+    if role.source == "clipped":
+        base = next(s for s in reversed(siblings[:siblings.index(node)]) if not s.clipping)
+        return "clipped to '%s'" % base.name
+    if role.role == IGNORE:
+        words = node.name.casefold().split()
+        return "ignored: background" if any(w in BACKGROUND_NAMES for w in words) else "ignored: sketch or reference"
+    if role.role is None:
+        return 'no role in its name; pass --role "%s=line"' % node.name
+    return "name"

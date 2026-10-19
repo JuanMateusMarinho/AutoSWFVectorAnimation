@@ -3,7 +3,8 @@ hair by its contact with the skin and lock evidence, eyes by their white / iris 
 ears, brows, mouth, nose, locks, horns, the helm shell and accessories by position and shape; part folders and the
 user's corrections win over the heuristics. Zones are in head units, measured on the AQW default heads (numbers only)."""
 import colorsys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from typing import Mapping
 
 import numpy as np
 from scipy import ndimage
@@ -104,6 +105,9 @@ class PartMap:
     skin: RGBA | None
     hair: list[RGBA]
     notes: list[str] = field(default_factory=list)
+    default_location_of: dict[int, str | None] = field(default_factory=dict)   # before the user's color slots
+    fixed_regions: frozenset[int] = frozenset()    # never colorable: eye whites, pupils, highlights, lids, outlines
+    detection_notes: list[str] = field(default_factory=list)                   # every note but the color slots'
 
     def region_at(self, x: float, y: float):
         return self.graph.region_at(x, y)
@@ -851,33 +855,44 @@ class _Detector:
             parts[name].regions.append(rid)
         ordered = dict(sorted(parts.items(), key=lambda kv: kv[1].z))
         self.pivots(ordered)
-        location_of = self.locations()
-        colors = dict(self.corrections.colors)
-        if "Hair" in colors:                             # the hair's slot is its locks' slot too
-            for name in ordered:
-                if name.startswith("Lock "):
-                    colors.setdefault(name, colors["Hair"])
-        kept = False
-        for part_name, location in colors.items():
-            if part_name not in ordered:
-                if part_name in self.corrections.colors:
-                    self.notes.append("Color for '%s' skipped: there is no such part" % part_name)
-                continue
-            for rid in ordered[part_name].regions:
-                if location != NO_COLOR and (self.piece_of.get(rid) in NEVER_COLORED or rid in self.joined_outlines):
-                    kept = True
-                    continue
-                location_of[rid] = None if location == NO_COLOR else location
-        if kept:
-            self.notes.append("Eye whites, pupils, highlights, lids and outlines keep their colors (color slots only "
-                              "recolor the rest of a part)")
         if self.skin is None:
             self.notes.append(NO_SKIN_NOTE)
         if not self.hair:
             self.notes.append(NO_HAIR_NOTE)
         names = {rid: n for rid, n in self.name_of.items() if self.region(rid).pixels > 0}
-        return PartMap(self.graph, ordered, names, dict(self.piece_of), location_of, self.skin, list(self.hair),
-                       self.notes)
+        fixed = frozenset(rid for rid in self.name_of
+                          if self.piece_of.get(rid) in NEVER_COLORED or rid in self.joined_outlines)
+        location_of = self.locations()
+        base = PartMap(self.graph, ordered, names, dict(self.piece_of), dict(location_of), self.skin, list(self.hair),
+                       list(self.notes), location_of, fixed, list(self.notes))
+        return apply_color_slots(base, self.corrections.colors)
+
+
+def apply_color_slots(parts: PartMap, colors: Mapping[str, str]) -> PartMap:
+    """The part map with the user's color slots (part -> location or "none") on top of the detected defaults; the hair's
+    slot is its locks' slot too. Only `location_of` and the notes change, so a slot change needs no new detection."""
+    location_of = dict(parts.default_location_of)
+    notes = list(parts.detection_notes)
+    slots = dict(colors)
+    if "Hair" in slots:
+        for name in parts.parts:
+            if name.startswith("Lock "):
+                slots.setdefault(name, slots["Hair"])
+    kept = False
+    for part_name, location in slots.items():
+        if part_name not in parts.parts:
+            if part_name in colors:
+                notes.append("Color for '%s' skipped: there is no such part" % part_name)
+            continue
+        for rid in parts.parts[part_name].regions:
+            if location != NO_COLOR and rid in parts.fixed_regions:
+                kept = True
+                continue
+            location_of[rid] = None if location == NO_COLOR else location
+    if kept:
+        notes.append("Eye whites, pupils, highlights, lids and outlines keep their colors (color slots only "
+                     "recolor the rest of a part)")
+    return replace(parts, location_of=location_of, notes=notes)
 
 
 def detect_parts(passes: Passes, alignment: Alignment, corrections: Corrections = Corrections(),

@@ -3,8 +3,6 @@ import argparse
 import sys
 from pathlib import Path
 
-import numpy as np
-
 from autoswf.aqw.contract import sanitize_link
 from autoswf.aqw.helm import HelmItem, export_helm
 from autoswf.aqw.validate import validate_helm_swf
@@ -197,31 +195,6 @@ def _cmd_fidelity(args) -> int:
     return 1 if failed else 0
 
 
-BACKGROUND_NAMES = ("paper", "papel", "background", "bg", "fundo", "用紙")
-
-
-def _role_reason(node, ancestors, role, siblings) -> str:
-    from autoswf.drawing.roles import IGNORE, detect_role
-    if role.source == "hidden":
-        return "hidden"
-    if role.source == "guide":
-        return "ignored: guide"
-    if role.source == "override":
-        return "--role"
-    if role.source == "folder":
-        folder = next(a.name for a in reversed(ancestors) if detect_role(a.name))
-        return "folder '%s'" % folder
-    if role.source == "clipped":
-        base = next(s for s in reversed(siblings[:siblings.index(node)]) if not s.clipping)
-        return "clipped to '%s'" % base.name
-    if role.role == IGNORE:
-        words = node.name.casefold().split()
-        return "ignored: background" if any(w in BACKGROUND_NAMES for w in words) else "ignored: sketch or reference"
-    if role.role is None:
-        return 'no role in its name; pass --role "%s=line"' % node.name
-    return "name"
-
-
 def _parse_roles(items: list[str]) -> dict[str, str]:
     roles = {}
     for item in items:
@@ -233,12 +206,10 @@ def _parse_roles(items: list[str]) -> dict[str, str]:
 
 
 def _cmd_convert(args) -> int:
-    from autoswf.aqw.template import Alignment, choose_alignment
-    from autoswf.drawing.layers import DrawingError
-    from autoswf.drawing.passes import extract_passes
-    from autoswf.drawing.readers import read_drawing
-    from autoswf.drawing.roles import IGNORE, assign_roles
-    from autoswf.vectorize.art import VectorizeSettings, helm_from_art, vectorize
+    from autoswf.aqw.template import Alignment
+    from autoswf.drawing.roles import IGNORE, assign_roles, role_reason
+    from autoswf.project.build import HelmBuilder
+    from autoswf.project.settings import HelmSettings
     from autoswf.vectorize.metrics import quality_report
     out = Path(args.out) if args.out else Path(args.drawing).with_suffix(".swf")
     if out.resolve() == Path(args.drawing).resolve():
@@ -262,13 +233,27 @@ def _cmd_convert(args) -> int:
             return 1
     try:
         overrides = _parse_roles(args.role)
-        override = Alignment.parse(args.align) if args.align else None
+        if args.align:
+            Alignment.parse(args.align)
         link = sanitize_link(args.link or out.stem)
         corrections, corrections_file = _corrections(args)
         animation, animation_file = _animation_settings(args)
-        drawing = read_drawing(args.drawing)
+    except ValueError as e:
+        print(e)
+        return 1
+    settings = HelmSettings(source=str(args.drawing), roles=overrides, align=args.align or None, detail=args.detail,
+                            gradient=list(args.gradient), separate_tones=args.separate_tones, corrections=corrections,
+                            animation=animation)
+    settings.export.link = link
+    builder = HelmBuilder(suggest=True, use_parts=not args.no_parts, animate=not args.no_animate)
+    build = builder.build(settings, until="read")
+    if build.error:
+        print(build.error)
+        return 1
+    drawing = build.drawing
+    try:
         roles = assign_roles(drawing, overrides)
-    except (DrawingError, ValueError) as e:
+    except ValueError as e:
         print(e)
         return 1
     layers = [(n, a) for n, a in drawing.walk() if n.kind != "group"]
@@ -278,47 +263,31 @@ def _cmd_convert(args) -> int:
         siblings = ancestors[-1].children if ancestors else drawing.layers
         shown = role.role if role.role not in (None, IGNORE) else "not used"
         path = "/".join([a.name for a in ancestors] + [node.name])
-        print("  %s  %s  (%s)" % (path, shown, _role_reason(node, ancestors, role, siblings)))
+        print("  %s  %s  (%s)" % (path, shown, role_reason(node, ancestors, role, siblings)))
     if args.list:
         return 0
     if corrections_file is not None:
         print("Using part corrections from %s" % corrections_file.name)
     if animation_file is not None:
         print("Using animation settings from %s" % animation_file.name)
-    try:
-        passes = extract_passes(drawing, roles, gradient_layers=frozenset(args.gradient))
-        ys, xs = np.nonzero(passes.full[..., 3] > 0)
-        alignment, reason = choose_alignment(drawing, (xs.min(), xs.max() + 1, ys.min(), ys.max() + 1), override)
-        settings = VectorizeSettings(detail=args.detail)
-        if args.no_parts:
-            parts = None
-            art = vectorize(passes, alignment, settings)
-        else:
-            from autoswf.parts.detect import detect_parts
-            from autoswf.parts.hidden import layered_passes, split_passes
-            parts = detect_parts(passes, alignment, corrections, args.detail)
-            if parts.parts:
-                layers = split_passes(passes, parts)
-                art = vectorize(layered_passes(passes, layers), alignment, settings)
-            else:                                  # line art alone: nothing to split, one static shape set
-                parts = None
-                print("Parts: none (there are no flat colors to find parts in); writing one static shape set")
-                art = vectorize(passes, alignment, settings)
-    except (DrawingError, ValueError) as e:
-        print(e)
+    build = builder.build(settings)
+    if build.no_flats:
+        print("Parts: none (there are no flat colors to find parts in); writing one static shape set")
+    if build.failed_stage in ("read", "passes", "parts", "split", "art"):
+        print(build.error)
         return 1
+    passes, art, parts = build.passes, build.art, build.parts
     for note in art.notes + (parts.notes if parts is not None else []):
         print(note)
-    print("Alignment: %s: --align %s" % (reason, alignment))
+    print("Alignment: %s: --align %s" % (build.alignment_reason, build.alignment))
     if parts is None:
         for layer in art.layers:
             segments = sum(len(p.segments) for p in layer.shape.paths)
             print("%s: %d region%s, %d segments" % (layer.name, len(layer.styles), "" if len(layer.styles) == 1 else "s",
                                                    segments))
-        data = still = export_helm(helm_from_art(art, link, separate_tones=args.separate_tones))
     else:
-        from autoswf.parts.assemble import assemble_helm, colorable_summary
-        helm = assemble_helm(art, layers, link, separate_tones=args.separate_tones)
+        from autoswf.parts.assemble import colorable_summary
+        helm = build.helm
         _print_parts(parts)
         print(colorable_summary(helm))
         if any(shade != "None" for _, _, shade in helm.colorable):
@@ -329,13 +298,15 @@ def _cmd_convert(args) -> int:
             Path(args.parts_image).parent.mkdir(parents=True, exist_ok=True)
             parts_image(passes, parts).save(args.parts_image)
             print("Wrote %s (the parts found; drawing pixels, for corrections)" % args.parts_image)
-        data = still = export_helm(helm.item)
+        if build.error:
+            print(build.error)
+            return 1
         if not args.no_animate:
-            try:
-                data = _animate(parts, helm, layers, animation)
-            except ValueError as e:
-                print(e)
-                return 1
+            _print_animation(build)
+    if build.error:
+        print(build.error)
+        return 1
+    data, still = build.swf, build.still
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_bytes(data)
     if len(data) > SIZE_WARNING_BYTES:
@@ -405,25 +376,21 @@ def _animation_settings(args):
     return settings, path
 
 
-def _animate(parts, helm, layers, settings) -> bytes:
-    """The helm with its suggested and chosen animations baked in; prints the clips."""
-    from autoswf.anim.bake import bake
-    from autoswf.anim.rig import rig_parts
-    from autoswf.anim.settings import build_timeline, clip_summary, suggest_presets
-    rigs = rig_parts(parts, helm, layers)
-    timeline, notes = build_timeline(rigs, settings)
-    for note in notes:
+def _print_animation(build) -> None:
+    """The animation notes and clips of a build (the helm itself is baked by the builder)."""
+    from autoswf.anim.settings import clip_summary, suggest_presets
+    for note in build.animation_notes:
         print(note)
-    if not timeline.clips:
-        if suggest_presets(rigs):                  # there were eyes or locks, and the settings switched them off
+    clips = build.timeline.clips if build.timeline is not None else {}
+    if not clips:
+        if suggest_presets(build.rigs):            # there were eyes or locks, and the settings switched them off
             print("Animation: none (every part that would animate is set to none)")
         else:
             print("Animation: none (no eyes or locks found; add one with --animate PART=PRESET)")
-        return export_helm(helm.item)
-    print("Animation (%d clip%s):" % (len(timeline.clips), "" if len(timeline.clips) == 1 else "s"))
-    for clip in timeline.clips.values():
+        return
+    print("Animation (%d clip%s):" % (len(clips), "" if len(clips) == 1 else "s"))
+    for clip in clips.values():
         print("  " + clip_summary(clip))
-    return export_helm(bake(helm, timeline, rigs).item)
 
 
 def _print_parts(parts) -> None:

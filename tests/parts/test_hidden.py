@@ -384,3 +384,15 @@ def test_a_lash_poking_out_of_the_head_moves_with_the_eye():
         if name.startswith("Eye"):
             eye_lines |= of(layer, "lines", t)[..., 3] > 0.5
     assert eye_lines[tip].mean() >= 0.98
+
+
+def test_layer_locations_follow_new_color_slots(converted_parts_helm):
+    from autoswf.parts.detect import apply_color_slots
+    from autoswf.parts.hidden import with_locations
+    from autoswf.parts.model import Corrections
+    c = converted_parts_helm
+    colors = {"Helm": "Base", "Hair": "none"}
+    fresh = split_passes(c.passes, detect_parts(c.passes, c.t.alignment, Corrections(colors=colors)))
+    fast = with_locations(c.layers, apply_color_slots(c.parts, colors))
+    assert [(l.name, l.locations) for l in fast] == [(l.name, l.locations) for l in fresh]
+    assert all(a.passes is b.passes for a, b in zip(fast, c.layers))          # pixels are shared, not copied

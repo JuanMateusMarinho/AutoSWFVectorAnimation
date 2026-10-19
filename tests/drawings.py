@@ -522,3 +522,11 @@ def folder_helm(names=("Hair", "Face", "Bangs")) -> TestDrawing:
               LayerSpec(names[1], children=[LayerSpec("Flats", face)]),
               LayerSpec(names[2], children=[LayerSpec("Flats", bangs)])]
     return TestDrawing(W, H, layers, Alignment(2.0, (137, 130)))
+
+
+def back_hair_specs() -> tuple[int, int, list[LayerSpec], str]:
+    """A tiny helm with a back-hair folder: (width, height, specs, alignment text)."""
+    w = h = 240
+    specs = [LayerSpec("Back hair", children=[LayerSpec("Flats", rect(w, h, (120, 70, 40, 255), 60, 120, 180, 230))]),
+             LayerSpec("Flats", disc(w, h, (240, 200, 160, 255), 120, 110, 70))]
+    return w, h, specs, str(Alignment(2.4, (120, 120)))

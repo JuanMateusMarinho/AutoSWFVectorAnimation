@@ -78,3 +78,34 @@ def part_rigs(converted_parts_helm):
     from autoswf.anim.rig import rig_parts
     c = converted_parts_helm
     return rig_parts(c.parts, c.helm, c.layers)
+
+
+@pytest.fixture(scope="session")
+def helm_psd(tmp_path_factory, qapp):
+    """The 480 px synthetic parts helm written as a PSD (the app imports files), with its alignment text."""
+    from types import SimpleNamespace
+    from drawings import synthetic_parts_helm
+    from autoswf.drawing.writers import write_psd
+    t = synthetic_parts_helm(480)
+    path = tmp_path_factory.mktemp("helm") / "Synthetic Helm.psd"
+    write_psd(path, t.width, t.height, t.layers)
+    return SimpleNamespace(path=path, align=str(t.alignment), t=t)
+
+
+@pytest.fixture(scope="session")
+def backhair_psd(tmp_path_factory):
+    """A tiny helm with back hair, written as a PSD."""
+    from types import SimpleNamespace
+    from drawings import back_hair_specs
+    from autoswf.drawing.writers import write_psd
+    w, h, specs, align = back_hair_specs()
+    path = tmp_path_factory.mktemp("bh") / "BH.psd"
+    write_psd(path, w, h, specs)
+    return SimpleNamespace(path=path, align=align)
+
+
+@pytest.fixture
+def app_cache(tmp_path):
+    """A mini AQW cache (the fake client and armor of aqw_fakes) for app tests."""
+    from aqw_fakes import write_mini_cache
+    return write_mini_cache(tmp_path / "aqw-cache")
