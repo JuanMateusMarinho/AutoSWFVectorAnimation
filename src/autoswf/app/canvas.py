@@ -45,6 +45,7 @@ class HelmCanvas(QWidget):
         self._guides: dict[str, object] = {}
         self._drawing_key, self._drawing_image = None, None
         self._drag = None
+        self._align_preview: Matrix | None = None
         self._banner = QWidget(self)
         row = QHBoxLayout(self._banner)
         row.setContentsMargins(8, 4, 8, 4)
@@ -190,6 +191,8 @@ class HelmCanvas(QWidget):
 
     def drawing_matrix(self) -> Matrix | None:
         """Drawing pixels -> head units (the alignment, or the one being dragged)."""
+        if self._align_preview is not None:
+            return self._align_preview
         alignment = self._alignment()
         return alignment.matrix() if alignment is not None else None
 
@@ -253,12 +256,60 @@ class HelmCanvas(QWidget):
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.MiddleButton:
             self._drag = ("pan", event.position(), QPointF(self._pan))
+        elif event.button() == Qt.MouseButton.LeftButton:
+            self.left_press(event)
 
     def mouseMoveEvent(self, event) -> None:
-        if self._drag is not None and self._drag[0] == "pan":
+        if self._drag is None:
+            return
+        if self._drag[0] == "pan":
             self._pan = self._drag[2] + (event.position() - self._drag[1])
             self.update()
+        elif self._drag[0] == "align":
+            self._align_preview = self._align_transform(event.position()) @ self._drag[3]
+            self.update()
+        else:
+            self.left_move(event)
 
     def mouseReleaseEvent(self, event) -> None:
-        if self._drag is not None and self._drag[0] == "pan":
+        if self._drag is None:
+            return
+        kind = self._drag[0]
+        if kind == "align":
+            from autoswf.aqw.template import alignment_from_matrix
+            matrix = self._align_transform(event.position()) @ self._drag[3]
+            self._drag, self._align_preview = None, None
+            if matrix != self.drawing_matrix():
+                self.controller.set_alignment(alignment_from_matrix(matrix))
+            self.update()
+        elif kind == "pan":
             self._drag = None
+        else:
+            self.left_release(event)
+
+    # ------------------------------------------------------------ stage tools (left button)
+
+    def left_press(self, event) -> None:
+        if self.stage == "Import" and self.drawing_matrix() is not None:
+            self._drag = ("align", event.position(), event.modifiers(), self.drawing_matrix())
+
+    def left_move(self, event) -> None:
+        pass
+
+    def left_release(self, event) -> None:
+        self._drag = None
+
+    def _align_transform(self, pos: QPointF) -> Matrix:
+        """The head-space transform a drag gives the drawing: move; Alt = scale about the head origin (down =
+        bigger); Shift = turn about the head origin."""
+        _, start, modifiers, _ = self._drag
+        if modifiers & Qt.KeyboardModifier.AltModifier:
+            k = math.exp((pos.y() - start.y()) / 200)
+            return Matrix.scale(k, k)
+        if modifiers & Qt.KeyboardModifier.ShiftModifier:
+            origin = self.widget_point(Point(0, 0))
+            a0 = math.atan2(start.y() - origin.y(), start.x() - origin.x())
+            a1 = math.atan2(pos.y() - origin.y(), pos.x() - origin.x())
+            return Matrix.rotate(a1 - a0)
+        p0, p1 = self.head_point(start), self.head_point(pos)
+        return Matrix.translate(p1.x - p0.x, p1.y - p0.y)

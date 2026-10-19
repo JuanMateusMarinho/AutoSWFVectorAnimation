@@ -14,6 +14,8 @@ from PySide6.QtWidgets import (QDockWidget, QFileDialog, QGroupBox, QHBoxLayout,
 from autoswf import __version__
 from autoswf.anim.settings import suggest_presets
 from autoswf.app.canvas import HelmCanvas
+from autoswf.app.layers_panel import LayerList
+from autoswf.app.properties import PropertiesPanel
 from autoswf.app.stagebar import BUSY_STAGE, STAGES, StageBar, stage_states
 from autoswf.aqw.assets import DEFAULT_ARMOR, AqwCache
 from autoswf.preview.window import Downloader, PreviewWindow, download_question
@@ -124,15 +126,15 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.welcome)
         self.canvas = HelmCanvas(self.controller, self.cache)
         self.canvas.download_requested.connect(self.download_reference_files)
-        self.layers = QWidget()
+        self.layers = LayerList(self.controller)
         self.parts_tree = QWidget()
         self.left_tabs = QTabWidget()
         self.left_tabs.addTab(self.parts_tree, "Parts")
         self.left_tabs.addTab(self.layers, "Layers")
         self.suggestions_panel = QGroupBox("AI suggestions")
         self.suggestions_panel.setLayout(QVBoxLayout())
-        self.properties = QGroupBox("Properties")
-        self.properties.setLayout(QVBoxLayout())
+        self.properties = PropertiesPanel(self.controller)
+        self.properties.export_requested.connect(self._on_export)
         self.right_panel = QSplitter(Qt.Orientation.Vertical)
         self.right_panel.addWidget(self.suggestions_panel)
         self.right_panel.addWidget(self.properties)
@@ -266,6 +268,7 @@ class MainWindow(QMainWindow):
             return
         self.stage_bar.set_current(stage)
         self.canvas.set_stage(stage)
+        self.properties.show_stage(stage)
         self.left_tabs.setCurrentWidget(self.layers if stage in ("Import", "Vectorize") else self.parts_tree)
         if stage == "Animate":
             self.timeline_dock.show()

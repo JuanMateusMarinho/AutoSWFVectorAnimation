@@ -10,7 +10,7 @@ import numpy as np
 from autoswf.drawing.layers import Drawing
 from autoswf.drawing.roles import GUIDE_PREFIX
 from autoswf.drawing.writers import LayerSpec, write_clip, write_psd
-from autoswf.model.geometry import Matrix
+from autoswf.model.geometry import Matrix, Point
 
 TEMPLATE_SIZE = (2000, 2000)
 TEMPLATE_SCALE = 10.0                          # px per head unit
@@ -45,6 +45,18 @@ class Alignment:
 
     def __str__(self) -> str:
         return ",".join("%g" % v for v in (self.scale, *self.origin, self.rotation))
+
+
+def alignment_from_matrix(m: Matrix) -> Alignment:
+    """The alignment whose matrix (drawing px -> head units) is `m` (the inverse of Alignment.matrix)."""
+    scale = 1 / math.hypot(m.a, m.b)
+    origin = m.inverse().apply(Point(0, 0))
+    return Alignment(scale, (origin.x, origin.y), math.degrees(math.atan2(m.b, m.a)))
+
+
+def alignment_text(alignment: Alignment) -> str:
+    """SCALE,X,Y,DEGREES at full precision (str() rounds to 6 digits)."""
+    return ",".join(format(float(v), ".17g") for v in (alignment.scale, *alignment.origin, alignment.rotation))
 
 
 def template_alignment() -> Alignment:

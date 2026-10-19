@@ -1,4 +1,5 @@
 """The app's dark theme (spec §6): Qt's Fusion style with a dark palette, close to Animate's."""
+from PySide6.QtCore import QLocale
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication
 
@@ -8,6 +9,8 @@ ACCENT = QColor(64, 132, 214)
 
 
 def apply_dark_theme(app: QApplication) -> None:
+    """The dark Fusion palette, and English number formats (the app is in English: 1.5, not 1,5)."""
+    QLocale.setDefault(QLocale(QLocale.Language.English, QLocale.Country.UnitedStates))
     app.setStyle("Fusion")
     p = QPalette()
     for role, color in ((QPalette.ColorRole.Window, WINDOW), (QPalette.ColorRole.WindowText, TEXT),

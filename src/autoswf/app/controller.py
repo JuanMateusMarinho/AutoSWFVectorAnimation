@@ -80,6 +80,34 @@ class ProjectController(QObject):
         self.settings_changed.emit()
         self._request_build()
 
+    # ------------------------------------------------------------ Import and Vectorize
+
+    def set_role(self, layer: str, role: str | None) -> None:
+        """A layer's role by hand ("line" … "details", "ignore"), or None for the detected one."""
+        def edit(s):
+            if role is None:
+                s.roles.pop(layer, None)
+            else:
+                s.roles[layer] = role
+        self.change("Layer role", edit)
+
+    def set_gradient(self, layer: str, on: bool) -> None:
+        def edit(s):
+            s.gradient = [g for g in s.gradient if g != layer] + ([layer] if on else [])
+        self.change("Gradient", edit)
+
+    def set_alignment(self, alignment) -> None:
+        """An Alignment, or None to align automatically (template or fitted to the head)."""
+        from autoswf.aqw.template import alignment_text
+        text = alignment_text(alignment) if alignment is not None else None
+        self.change("Alignment", lambda s: setattr(s, "align", text))
+
+    def set_detail(self, value: int) -> None:
+        self.change("Detail", lambda s: setattr(s, "detail", int(value)))
+
+    def set_separate_tones(self, on: bool) -> None:
+        self.change("Separate tones", lambda s: setattr(s, "separate_tones", bool(on)))
+
     def set_settings(self, settings: HelmSettings) -> None:
         self.settings = settings
         self.settings_changed.emit()

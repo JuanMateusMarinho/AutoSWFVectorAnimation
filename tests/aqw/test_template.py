@@ -54,3 +54,13 @@ def test_template_files(tmp_path, qapp):
                      "Occlusion": "occlusion", "Light": "light", "Details": "details", "Line": "line"}
     assert clipparse.validate(str(tmp_path / "t.clip")) == []
     assert [n.name for n in read_drawing(tmp_path / "t.clip").layers] == ["Paper", "AQW Guide Head F", "AQW Guide Head M", *TEMPLATE_LAYERS]
+
+
+def test_alignment_survives_a_trip_through_its_matrix():
+    from autoswf.aqw.template import alignment_from_matrix, alignment_text
+    a = Alignment(7.5, (900.0, 1040.0), -12.0)
+    b = alignment_from_matrix(a.matrix())
+    assert b.scale == pytest.approx(7.5) and b.rotation == pytest.approx(-12.0)
+    assert b.origin == pytest.approx((900.0, 1040.0))
+    precise = Alignment(10.123456789, (1110.987654321, 1115.5), 0.25)
+    assert Alignment.parse(alignment_text(precise)) == precise
