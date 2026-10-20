@@ -310,7 +310,6 @@ class _Splitter:
             elif self.unit_of_part[u.parent][0] == i:
                 self.owners.append(list(self.unit_of_part[u.parent]))
         self._bits: dict[int, np.ndarray] = {}
-        self.empty = np.zeros((self.h, self.w), bool)     # hole pixels past the continued edges of the parts that stay
         self._own_maps()
 
     # ------------------------------------------------------------ own pixels
@@ -636,7 +635,6 @@ class _Splitter:
                 barrier |= lines
             codes = _continued(codes, local_hole, band, barrier, tuple(stroke_ends))
             unit_of = np.array([k[1] for k in keys])[codes]           # the part that stays each pixel continues
-            self.empty[y0:y1, x0:x1] |= local_hole & (unit_of < 0)
             for unit in providers:
                 take = local_hole & (unit_of == unit)
                 higher = local_hole & np.isin(unit_of, [u for u in providers if u > unit])
@@ -682,8 +680,6 @@ class _Splitter:
                 near = ndimage.distance_transform_edt(~own[y0:y1, x0:x1]) <= self.reach
                 take = (near & (self.top[y0:y1, x0:x1] > i) & ~self.own(i, (x0, y0, x1, y1))
                         & self.inside[y0:y1, x0:x1])
-                if u.part.kind in PROVIDERS:               # nothing of a part that stays past its continued edge
-                    take &= ~self.empty[y0:y1, x0:x1]
                 if take.any():
                     ys, xs = np.nonzero(take)
                     self._extend(i, ys + y0, xs + x0)

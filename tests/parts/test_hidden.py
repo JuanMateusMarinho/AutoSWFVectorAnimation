@@ -63,11 +63,12 @@ def test_hidden_fills_do_not_paint_the_background(split):
             assert of(layer, "fills", t)[..., 3][over_background].max() < 0.05, name
 
 def test_skin_stays_inside_the_head_under_an_ear(split):
-    """Under the ear the face's edge goes on where it was drawn: no skin (hidden fill or underlap) reaches out past the
-    face's outline, where a twitching ear would show it."""
+    """Under the ear the face's edge goes on where it was drawn: past its outline the face reaches no farther than the
+    underlap that keeps the rest pose seamless, instead of filling the whole ear with skin."""
     from scipy import ndimage
     t, passes, pm, layers = split
-    beyond = ndimage.distance_transform_edt(~t.truth["Face"]) > 0.8 * t.alignment.scale + 1   # past the outline
+    reach = 0.8 * t.alignment.scale + np.ceil(1.5 * t.alignment.scale) + 1        # the outline, then the underlap
+    beyond = ndimage.distance_transform_edt(~t.truth["Face"]) > reach
     out = t.truth["Ear L"] & beyond
     assert out.sum() > 200
     assert of(layers["Face"], "fills", t)[..., 3][out].max() < 0.05
