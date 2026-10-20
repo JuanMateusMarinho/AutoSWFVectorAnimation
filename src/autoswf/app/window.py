@@ -16,6 +16,7 @@ from autoswf.app.layers_panel import LayerList
 from autoswf.app.parts_panel import PartTree
 from autoswf.app.properties import PropertiesPanel
 from autoswf.app.suggestions_panel import SuggestionsPanel
+from autoswf.app.swf_editor import SwfEditor
 from autoswf.app.timeline_view import TimelineView
 from autoswf.app.stagebar import BUSY_STAGE, STAGES, StageBar, stage_states
 from autoswf.aqw.assets import DEFAULT_ARMOR, AqwCache
@@ -116,7 +117,7 @@ class MainWindow(QMainWindow):
         self.stage_bar.stage_clicked.connect(self.set_stage)
         top = QToolBar("Stages")
         top.setMovable(False)
-        top.addWidget(self.stage_bar)
+        self._stage_action = top.addWidget(self.stage_bar)        # a toolbar widget hides through its action
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         top.addWidget(spacer)
@@ -158,7 +159,8 @@ class MainWindow(QMainWindow):
         self.workspace.setStretchFactor(1, 1)
         self.workspace.setSizes([260, 840, 300])
         self.stack.addWidget(self.workspace)
-        self.swf_editor = QWidget()
+        self.swf_editor = SwfEditor(self.cache)
+        self.undo_group.addStack(self.swf_editor.undo_stack)
         self.stack.addWidget(self.swf_editor)
         self.setCentralWidget(self.stack)
         self.timeline = TimelineView(self.controller)
@@ -255,6 +257,8 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(self.title())
 
     def title(self) -> str:
+        if self.in_swf_editor() and self.swf_editor.path is not None:
+            return "AutoSWF — %s" % self.swf_editor.path.name
         c = self.controller
         if c.settings is None:
             return "AutoSWF"
@@ -292,6 +296,16 @@ class MainWindow(QMainWindow):
     def open_path(self, path) -> str | None:
         """Open a drawing (new project) or a project (.aswf); returns an error message when it cannot be opened."""
         path = Path(path)
+        if path.suffix.lower() == ".swf":
+            error = self.swf_editor.open(path)
+            if error:
+                return error
+            self._add_recent(path)
+            self.stack.setCurrentWidget(self.swf_editor)
+            self._stage_action.setVisible(False)
+            self.undo_group.setActiveStack(self.swf_editor.undo_stack)
+            self.setWindowTitle("AutoSWF — %s" % path.name)
+            return None
         if path.suffix.lower() in DRAWING_SUFFIXES + (".aswf",) and not self._may_leave():
             return None                      # the user kept the current project
         if path.suffix.lower() == ".aswf":
@@ -301,8 +315,7 @@ class MainWindow(QMainWindow):
                 return "%s was not found" % path
             self.controller.import_drawing(path)
             self._add_recent(path)
-            self.stack.setCurrentWidget(self.workspace)
-            self.stage_bar.show()
+            self._show_helm_workspace()
             self.set_stage("Import")
             return None
         return OPEN_HINT
@@ -337,15 +350,22 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------ actions (later tasks fill the empty ones)
 
+    def _show_helm_workspace(self) -> None:
+        self.stack.setCurrentWidget(self.workspace)
+        self._stage_action.setVisible(True)
+        self.undo_group.setActiveStack(self.controller.undo_stack)
+        self.set_stage("Import")
+
+    def in_swf_editor(self) -> bool:
+        return self.stack.currentWidget() is self.swf_editor
+
     def open_project(self, path: Path) -> str | None:
         try:
             loaded = self.controller.open_project(path)
         except ValueError as e:
             return str(e)
         self._add_recent(path)
-        self.stack.setCurrentWidget(self.workspace)
-        self.stage_bar.show()
-        self.set_stage("Import")
+        self._show_helm_workspace()
         for note in loaded.notes:
             self.statusBar().showMessage(note)
         if loaded.source_changed:
@@ -497,6 +517,9 @@ class MainWindow(QMainWindow):
         self.gender_button.setText("Head: %s" % ("Male" if self.canvas.gender == "M" else "Female"))
 
     def _on_export(self) -> None:
+        if self.in_swf_editor():
+            self.swf_editor.export_dialog().exec()
+            return
         if self.controller.settings is None:
             QMessageBox.information(self, "Export SWF", "Import a drawing first.")
             return
@@ -511,7 +534,9 @@ class MainWindow(QMainWindow):
                           "downloaded to this computer for the preview and are never shared." % __version__)
 
     def preview_window(self) -> PreviewWindow | None:
-        """Show the helm on the AQW male and female bodies (Ctrl+Enter)."""
+        """Show the helm on the AQW male and female bodies (Ctrl+Enter); in Open SWF, the edited item."""
+        if self.in_swf_editor():
+            return self.swf_editor.preview()
         from autoswf.preview.scene import MissingReferenceFiles, PreviewScene
         build = self.controller.helm_build
         if build is None:
