@@ -26,6 +26,8 @@ EYE_RING_UNITS = 1.5                               # head units: outlines inside
                                                    # the ball on both sides (the ring around an iris) go with the ball
 SILHOUETTE_UNITS = 1.0                             # head units: a line at most this wide between an eye and the empty
                                                    # canvas is the head's silhouette, the outline of the part under it
+OPENING_WIDTHS = 4                                 # outline widths: radius of the disk opening the silhouette, which
+                                                   # cuts off line art poking out past it (lids, lashes)
 EDGE_BAND_UNITS = 2.0                              # head units of an edge just outside a hole that give its direction
 EDGE_GAP = 2                                       # px next to a hole whose classes are redone (slivers hugging it)
 HEAD_ON = 0.42                                     # cos 65 degrees: a line meets a hole head-on (it goes on under it)
@@ -435,6 +437,7 @@ class _Splitter:
             _, (iy, ix) = ndimage.distance_transform_edt(self.top < 0, return_indices=True)
             nearest = owner_of_unit[self.top[iy, ix]]
             owner = np.where(lines & (owner < 0), nearest, owner)
+        self.outline = self._outline_width()
         self.silhouette = self._silhouette(owner, lines, owner_of_unit)
         self._lid_tips(owner, lines)
         detail_owner = np.full((self.h, self.w), -1, np.int32)        # each detail piece stays whole and goes to
@@ -464,45 +467,90 @@ class _Splitter:
                 self.line_unit[mine] = units[0]
                 self.detail_unit[mine_d] = units[0]
 
+    def _outline_width(self) -> int:
+        """How wide the drawing's outline is, in px: the depth inside the silhouette down to which most of the canvas
+        is solid line art (0 for art drawn without an outline)."""
+        depth = ndimage.distance_transform_edt(self.passes.full[..., 3] > 0.02)
+        solid = self.graph.lines >= 0.5
+        width = 0
+        for d in range(1, 64):
+            ring = (depth > d - 1) & (depth <= d)
+            n = np.count_nonzero(ring)
+            if not n:
+                break
+            if np.count_nonzero(solid & ring) >= 0.5 * n:
+                width = d
+            elif width:
+                break
+        return width
+
+    def _outline_band(self, o: int, owner: np.ndarray, lines: np.ndarray, silhouette: np.ndarray, box,
+                      r: int) -> np.ndarray:
+        """In the box, eye o's line pixels on the head's outline: inside the silhouette opened by a disk of radius r
+        (what pokes out past it cut off) and no deeper than the drawing's outline. Line art outside that opened
+        silhouette and touching eye o's lines (a lash's tip) becomes eye o's."""
+        x0, y0, x1, y1 = box
+        yy, xx = np.mgrid[-r:r + 1, -r:r + 1]
+        pad = r + 1
+        opened = ndimage.binary_opening(np.pad(silhouette[y0:y1, x0:x1], pad, mode="edge"),
+                                        structure=xx * xx + yy * yy <= r * r)
+        depth = ndimage.distance_transform_edt(opened)[pad:-pad, pad:-pad]
+        opened = opened[pad:-pad, pad:-pad]
+        local_lines, local_owner = lines[y0:y1, x0:x1], owner[y0:y1, x0:x1]
+        mine = local_lines & (local_owner == o)
+        tips, count = ndimage.label(local_lines & ~opened, structure=np.ones((3, 3)))
+        if count:
+            touching = np.unique(tips[ndimage.binary_dilation(mine, iterations=2)])
+            local_owner[np.isin(tips, touching[touching > 0])] = o
+        return mine & opened & (depth <= self.outline + 1)
+
     def _silhouette(self, owner: np.ndarray, lines: np.ndarray, owner_of_unit: np.ndarray) -> np.ndarray:
         """Eyes sit inside the face, so a thin line squeezed between an eye (its ball, or the part it lies on) and the
         empty canvas is the head's outline: it goes to the part under the eye (the nearest one that stays) and stays
-        when the eye blinks. Thick line art there (a lid poking out past the face) stays the eye's. Returns the canvas
-        mask of those lines."""
+        when the eye blinks, as does whatever line art of the eye lies in the band along the silhouette as wide as the
+        drawing's outline (an outline thicker than a head unit). Thick line art there (a lid poking out past the face)
+        stays the eye's, and line art poking out past the silhouette and touching an eye (a lash's tip) moves with that
+        eye. Returns the canvas mask of the lines that stay."""
         out = np.zeros((self.h, self.w), bool)
-        outside = self.passes.full[..., 3] <= 0.02
+        silhouette = self.passes.full[..., 3] > 0.02
+        outside = ~silhouette
         stays = np.isin(self.top, [i for i, u in enumerate(self.units) if u.part.kind in PROVIDERS])
         if not outside.any() or not stays.any():
             return out
         width = SILHOUETTE_UNITS * self.graph.scale
+        r = OPENING_WIDTHS * max(self.outline, 1) + 1
         nearest = None
         for o, units in enumerate(self.owners):
             if len(units) != 3:
                 continue
             mine = (owner == o) & lines
-            box = _box(mine, pad=int(np.ceil(width)) + 2, shape=(self.h, self.w))
+            box = _box(mine, pad=max(int(np.ceil(width)), 4 * r) + 2, shape=(self.h, self.w))
             if box is None:
                 continue
             x0, y0, x1, y1 = box
+            band = self._outline_band(o, owner, lines, silhouette, box, r)
             d_out = ndimage.distance_transform_edt(~outside[y0:y1, x0:x1])
             d_in = np.minimum(ndimage.distance_transform_edt(~self.own(units[0], box)),
                               ndimage.distance_transform_edt(~stays[y0:y1, x0:x1]))
             thin = mine[y0:y1, x0:x1] & ~_thick(lines[y0:y1, x0:x1], width) & (d_out + d_in <= width + 1)
-            if not thin.any():
+            outline = thin | band
+            if not outline.any():
                 continue
             if nearest is None:
                 nearest = ndimage.distance_transform_edt(~stays, return_distances=False, return_indices=True)
-            ys, xs = np.nonzero(thin)
+            ys, xs = np.nonzero(outline)
             ys, xs = ys + y0, xs + x0
             owner[ys, xs] = owner_of_unit[self.top[nearest[0][ys, xs], nearest[1][ys, xs]]]
             out[ys, xs] = True
         return out
 
     def _lid_tips(self, owner: np.ndarray, lines: np.ndarray) -> None:
-        """A thick stroke is one piece: where an eye owns most of a stroke thicker than SILHOUETTE_UNITS (a lid and its
-        tip poking out past the face, farther from the eye's pixels than line ownership reaches), the rest of it is
-        the eye's too, so it moves with the lid instead of staying behind with the part under the eye."""
-        width = SILHOUETTE_UNITS * self.graph.scale
+        """A thick stroke is one piece: where an eye owns most of a stroke thicker than SILHOUETTE_UNITS and than the
+        drawing's outline with its blended fringe (a lid and its tip poking out past the face, farther from the eye's
+        pixels than line ownership reaches), the rest of it is the eye's too, so it moves with the lid instead of
+        staying behind with the part under the eye. Where it crosses the head's outline it is the eye's as well (the
+        outline goes on under it in the hidden fills)."""
+        width = max(SILHOUETTE_UNITS * self.graph.scale, self.outline + 2)
         stay = [k for k, units in enumerate(self.owners) if self.units[units[0]].part.kind in PROVIDERS]
         lower = None
         for o, units in enumerate(self.owners):
@@ -524,6 +572,7 @@ class _Splitter:
             taken = np.nonzero((ours > 0) & (ours >= theirs))[0]
             take = np.isin(strokes, taken) & lower[y0:y1, x0:x1]
             owner[y0:y1, x0:x1][take] = o
+            self.silhouette[y0:y1, x0:x1][take] = False
 
     # ------------------------------------------------------------ hidden fills and underlap
 

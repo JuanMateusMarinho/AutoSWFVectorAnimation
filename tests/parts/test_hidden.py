@@ -298,3 +298,53 @@ def test_the_default_heads_face_is_skin_under_its_eyes(qapp, aqw_cache):
     layers = {l.name: l for l in split_passes(passes, pm)}
     skin = pm.graph.regions[pm.parts["Face"].regions[0]].flat[:3]
     assert _stray_under_eyes(passes, pm, layers, t, skin).sum() <= 20
+
+
+def _eye_on_the_edge():
+    """A face whose right eye touches the head's outline, with the lid's lash poking out past it far from the eye (the
+    default AQW male head's far eye is drawn like this). The outline is 5 px, more than a head unit of 4 px, and the
+    lid only a little thicker, as thick-lined art has it."""
+    from drawings import disc, rect, ring
+    from autoswf.aqw.template import Alignment
+    from autoswf.drawing.writers import LayerSpec
+    W = H = 240
+    face = disc(W, H, (242, 201, 160, 255), 120, 130, 90)
+    inside = face[..., 3:4] > 0
+    flats = face
+    for layer in (ring(W, H, (10, 10, 10, 255), 186, 134, 26, 22), disc(W, H, (255, 255, 255, 255), 186, 134, 22),
+                  disc(W, H, (40, 120, 220, 255), 184, 134, 11)):
+        flats = np.where((layer[..., 3:4] > 0) & inside, layer, flats)
+    contour = ring(W, H, (10, 10, 10, 255), 120, 130, 93, 88)
+    lid = rect(W, H, (10, 10, 10, 255), 162, 106, 214, 113)
+    spike = rect(W, H, (10, 10, 10, 255), 208, 100, 226, 108)          # the lash tip outside the head
+    line = np.maximum(np.maximum(contour, lid), spike)
+    d = drawing_from_specs(W, H, [LayerSpec("Flats", flats), LayerSpec("Line", line)])
+    passes = extract_passes(d, assign_roles(d))
+    pm = detect_parts(passes, Alignment(4.0, (120, 120)))
+    layers = {l.name: l for l in split_passes(passes, pm)}
+    return type("Canvas", (), {"width": W, "height": H}), contour, spike, pm, layers
+
+
+def test_the_heads_outline_stays_with_the_face_where_an_eye_touches_it():
+    """A blink hides or moves the eye's layers; the head's outline beside the eye must not go with them."""
+    t, contour, spike, pm, layers = _eye_on_the_edge()
+    assert any(name.startswith("Eye") for name in pm.parts)
+    face_lines = of(layers["Face"], "lines", t)[..., 3] > 0.5
+    ys, xs = np.mgrid[0:t.height, 0:t.width]
+    beside_eye = (contour[..., 3] >= 128) & (xs > 190) & (ys > 112) & (ys < 160)     # the solid line, not its fringe
+    assert beside_eye.sum() > 50
+    assert face_lines[beside_eye].mean() >= 0.98
+
+
+def test_a_lash_poking_out_of_the_head_moves_with_the_eye():
+    """All of a lash's tip past the head moves with the eye, even its corners: nothing stays floating in a blink."""
+    t, contour, spike, pm, layers = _eye_on_the_edge()
+    tip = (spike[..., 3] > 0) & (contour[..., 3] == 0)
+    ys, xs = np.mgrid[0:t.height, 0:t.width]
+    tip &= (xs - 120) ** 2 + (ys - 130) ** 2 > 96 ** 2               # clear of the outline
+    assert tip.sum() > 10
+    eye_lines = np.zeros_like(tip)
+    for name, layer in layers.items():
+        if name.startswith("Eye"):
+            eye_lines |= of(layer, "lines", t)[..., 3] > 0.5
+    assert eye_lines[tip].mean() >= 0.98
