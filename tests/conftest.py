@@ -109,3 +109,13 @@ def app_cache(tmp_path):
     """A mini AQW cache (the fake client and armor of aqw_fakes) for app tests."""
     from aqw_fakes import write_mini_cache
     return write_mini_cache(tmp_path / "aqw-cache")
+
+
+@pytest.fixture
+def kind_of_brave():
+    """The user's armor KindOfBrave.swf (AQW art, never committed): AUTOSWF_REFERENCE_ARMOR or cache/real/KindOfBrave.swf."""
+    path = Path(os.environ.get("AUTOSWF_REFERENCE_ARMOR")
+                or Path(__file__).resolve().parents[1] / "cache" / "real" / "KindOfBrave.swf")
+    if not path.exists():
+        pytest.skip("the reference armor is not in %s" % path)
+    return path

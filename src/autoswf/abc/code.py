@@ -36,6 +36,25 @@ class Code:
     def pushshort(self, v): return self._op(0x25, u30(v))
     def pushstring(self, idx): return self._op(0x2C, u30(idx))
     def getscopeobject(self, i): return self._op(0x65, bytes([i]))
+    def getlocal1(self): return self._op(0xD1)
+    def setlocal1(self): return self._op(0xD5)
+    def setlocal2(self): return self._op(0xD6)
+    def dup(self): return self._op(0x2A)
+    def swap(self): return self._op(0x2B)
+    def newactivation(self): return self._op(0x57)
+    def newcatch(self, i): return self._op(0x5A, u30(i))
+    def setslot(self, i): return self._op(0x6D, u30(i))
+    def kill(self, i): return self._op(0x08, u30(i))
+    def pushtrue(self): return self._op(0x26)
+    def pushfalse(self): return self._op(0x27)
+    def setproperty(self, mn): return self._op(0x61, u30(mn))
+
+    def jump(self, offset): return self._op(0x10, (offset & 0xFFFFFF).to_bytes(3, "little"))
+    def iftrue(self, offset): return self._op(0x11, (offset & 0xFFFFFF).to_bytes(3, "little"))
+    def iffalse(self, offset): return self._op(0x12, (offset & 0xFFFFFF).to_bytes(3, "little"))
+
+    def __len__(self) -> int:
+        return len(self._b)
     def newclass(self, i): return self._op(0x58, u30(i))
 
     def bytes(self) -> bytes:

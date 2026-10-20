@@ -96,3 +96,43 @@ def write_mini_cache(root: Path, armor: str = "TestArmor") -> AqwCache:
         cache.armor_path(g, armor).parent.mkdir(parents=True, exist_ok=True)
         cache.armor_path(g, armor).write_bytes(mini_armor(g, armor))
     return cache
+
+
+def _shape(color, rx, ry=None, cx=0.0, cy=0.0) -> Shape:
+    return _disc(color, rx, ry, cx, cy)
+
+
+def mini_armor_with_pieces(gender: str = "M", link: str = "TestArmor", setcolor_form: str = "plain") -> bytes:
+    """A small armor whose parts hold sub-pieces like official ones: Chest = a colorable skin clip, a "Vest" (a shape and
+    the shared "Stud") and a "Strap" (the "Stud"); Shoulder = a shape and the "Stud"; the "Stud" holds one "Gem" shape
+    (so that placement shows under Chest twice and Shoulder once); RobeBack = a "Quiver" (a shape and three "Arrow"
+    clips); Head = a clip named "Face" and a 3-frame "Blinker" (places, moves, then removes a shape at depth 2)."""
+    from autoswf.model.document import ColorCustom
+    stud = _holder("Stud", _shape((230, 190, 40, 255), 2))
+    skin = Symbol("Skin", [Frame([Placement(_shape((240, 200, 160, 255), 9, 12), 1)])],
+                  color_custom=ColorCustom("Skin", "None"))
+    vest = Symbol("Vest", [Frame([Placement(_shape((30, 100, 100, 255), 8, 11), 1),
+                                  Placement(stud, 2, Matrix.translate(3, 2))])])
+    strap = Symbol("Strap", [Frame([Placement(stud, 1, Matrix.translate(-2, 5))])])
+    arrow = _holder("Arrow", _shape((200, 40, 40, 255), 1, 6))
+    quiver = Symbol("Quiver", [Frame([Placement(_shape((90, 60, 30, 255), 4, 9), 1)]
+                                     + [Placement(arrow, 1 + k, Matrix.translate(-2 + 2 * k, -8)) for k in (1, 2, 3)])])
+    face = _holder("FaceArt", _shape((240, 200, 160, 255), 10, 11))
+    a, b = _shape((20, 20, 20, 255), 2), _shape((255, 255, 255, 255), 1.5)
+    blinker = Symbol("Blinker", [Frame([Placement(a, 1), Placement(b, 2)]),
+                                 Frame([Placement(a, 1), Placement(b, 2, Matrix.translate(1, 0))]),
+                                 Frame([Placement(a, 1)])])
+    parts = {
+        "Chest": Symbol("Chest", [Frame([Placement(skin, 1), Placement(vest, 3), Placement(strap, 5)])]),
+        "Shoulder": Symbol("Shoulder", [Frame([Placement(_shape((90, 110, 140, 255), 5, 8), 1),
+                                               Placement(stud, 3, Matrix.translate(0, 4))])]),
+        "RobeBack": Symbol("RobeBack", [Frame([Placement(quiver, 1)])]),
+        "Head": Symbol("Head", [Frame([Placement(face, 1, name="Face"), Placement(blinker, 3, Matrix.translate(4, 0))])]),
+    }
+    for part in ("Hip", "Hand", "Thigh", "Shin", "Foot", "FootIdle", "Robe"):
+        parts[part] = _holder(part, _shape((90, 110, 140, 255), 6, 9))
+    names = {id(s): "%s%s%s" % (link, gender, part) for part, s in parts.items()}
+    names[id(skin)] = "%s_fla.Skin_1" % link
+    specs = [ClassSpec(n) for n in names.values() if "_fla." not in n]
+    specs.append(ClassSpec(names[id(skin)], ((0, SetColorScript("Skin", "None")),)))
+    return build_swf(list(parts.values()), names, build_abc(specs, setcolor_form=setcolor_form))

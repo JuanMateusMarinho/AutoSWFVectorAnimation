@@ -73,3 +73,14 @@ def test_validator_flags_colorable_clips_moved_by_their_parent():
     for moved in (Placement(skin, 1, Matrix.rotate(0.2)), Placement(skin, 1, color=ColorTransform((1, 1, 1, 0.5)))):
         assert ("Colorable clip 'X_fla.Skin_1' is moved or recolored by its parent's timeline; AQW ignores that once "
                 "mcSetColor runs, so animate its wrapper instead.") in validate_helm_swf(helm_with(moved), "X")
+
+
+def test_our_helms_still_use_the_plain_form_only():
+    from autoswf.abc.movieclip_classes import ClassSpec, build_abc
+    from autoswf.model.document import SetColorScript
+    from autoswf.swf.movie import build_swf
+    skin = cc("Skin", "Skin", "None", 10)
+    root = Symbol("H", [Frame([Placement(skin, 1)])])
+    abc = build_abc([ClassSpec("H"), ClassSpec("H_fla.Skin_1", ((0, SetColorScript("Skin", "None")),))], setcolor_form="try")
+    data = build_swf([root], {id(root): "H", id(skin): "H_fla.Skin_1"}, abc)
+    assert any("not in the format AQW expects" in p for p in validate_helm_swf(data, "H"))

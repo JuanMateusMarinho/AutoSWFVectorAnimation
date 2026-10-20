@@ -78,3 +78,28 @@ def test_setcolor_call_is_a_flash_style_multiname():
     assert raw[-2] == ("callpropvoid", (SETCOLOR_MULTINAME, "3"))
     assert raw == expected_setcolor_ops("Demo_fla.Skin_1", "Skin", "None", raw=True)
     assert raw[4] == ("getproperty", ("QName(Package:'',stage)",))
+
+
+import pytest
+
+
+@pytest.mark.parametrize("form, header", [("plain", (4, 1, 10, 11)), ("try", (4, 2, 10, 13)), ("activation", (4, 3, 11, 16))])
+def test_every_official_setcolor_form_is_recognized(form, header):
+    from autoswf.aqw.validate import setcolor_form
+    abc = ABC(build_abc([ClassSpec("P_fla.Skin_1", ((0, SetColorScript("Skin", "Dark")),))], setcolor_form=form))
+    method = next(t["method"] for t in abc.instances[0]["traits"] if "method" in t)
+    assert abc.body_info[method] == header
+    assert setcolor_form(abc, method, "P_fla.Skin_1") == (form, "Skin", "Dark")
+
+
+def test_a_changed_call_is_not_an_official_form():
+    from autoswf.aqw.validate import setcolor_form
+    data = bytearray(build_abc([ClassSpec("P_fla.Skin_1", ((0, SetColorScript("Skin", "Dark")),))], setcolor_form="try"))
+    abc = ABC(bytes(data))
+    method = next(t["method"] for t in abc.instances[0]["traits"] if "method" in t)
+    code = abc.bodies[method]
+    start = bytes(data).index(code)
+    k = code.index(b"\x24\x00")                    # pushbyte 0 (the stage's first child)
+    data[start + k + 1] = 1
+    abc = ABC(bytes(data))
+    assert setcolor_form(abc, method, "P_fla.Skin_1") is None

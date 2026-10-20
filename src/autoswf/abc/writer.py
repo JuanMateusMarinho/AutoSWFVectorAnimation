@@ -21,13 +21,23 @@ class MethodTrait:
     method: int
 
 
+@dataclass(frozen=True)
+class SlotTrait:
+    name_mn: int
+    slot_id: int
+    type_mn: int
+
+
+NEED_ACTIVATION = 0x02
+
+
 class AbcBuilder:
     def __init__(self):
         self._strings: dict[str, int] = {}
         self._namespaces: dict[tuple[int, int], int] = {}
         self._ns_sets: dict[tuple[int, ...], int] = {}
         self._multinames: dict[tuple, int] = {}
-        self._methods: list[tuple[int, int, int, int, bytes]] = []
+        self._methods: list[tuple] = []
         self._classes: list[tuple] = []
         self._scripts: list[tuple[int, int, int]] = []
 
@@ -54,8 +64,11 @@ class AbcBuilder:
         return self._intern(self._multinames, (MULTINAME, self.string(name), set_index))
 
     def method(self, max_stack: int, local_count: int, init_scope_depth: int, max_scope_depth: int,
-               code: bytes) -> int:
-        self._methods.append((max_stack, local_count, init_scope_depth, max_scope_depth, code))
+               code: bytes, *, flags: int = 0, exceptions: tuple = (), traits: tuple = ()) -> int:
+        """`exceptions`: (from, to, target, type multiname, variable multiname) code offsets; `traits`: SlotTraits
+        of the method body (its activation object)."""
+        self._methods.append((max_stack, local_count, init_scope_depth, max_scope_depth, code, flags,
+                              tuple(exceptions), tuple(traits)))
         return len(self._methods) - 1
 
     def add_class(self, name_mn: int, super_mn: int, protected_ns: int, iinit: int, cinit: int,
@@ -83,8 +96,8 @@ class AbcBuilder:
         for kind, a, b in self._multinames:
             out += bytes([kind]) + u30(a) + u30(b)      # QName: ns, name / Multiname: name, ns_set
         out += u30(len(self._methods))
-        for _ in self._methods:
-            out += u30(0) + u30(0) + u30(0) + bytes([0])       # no params, return *, no name, no flags
+        for method in self._methods:
+            out += u30(0) + u30(0) + u30(0) + bytes([method[5]])   # no params, return *, no name, flags
         out += u30(0)                                          # metadata
         out += u30(len(self._classes))
         for name_mn, super_mn, protected_ns, iinit, _cinit, traits in self._classes:
@@ -98,7 +111,12 @@ class AbcBuilder:
         for init, class_mn, class_index in self._scripts:
             out += u30(init) + u30(1) + u30(class_mn) + bytes([4]) + u30(1) + u30(class_index)
         out += u30(len(self._methods))
-        for index, (max_stack, locals_, init_scope, max_scope, code) in enumerate(self._methods):
+        for index, (max_stack, locals_, init_scope, max_scope, code, _, exceptions, traits) in enumerate(self._methods):
             out += u30(index) + u30(max_stack) + u30(locals_) + u30(init_scope) + u30(max_scope)
-            out += u30(len(code)) + code + u30(0) + u30(0)
+            out += u30(len(code)) + code + u30(len(exceptions))
+            for entry in exceptions:
+                out += b"".join(u30(v) for v in entry)
+            out += u30(len(traits))
+            for t in traits:
+                out += u30(t.name_mn) + bytes([0]) + u30(t.slot_id) + u30(t.type_mn) + u30(0)
         return bytes(out)
