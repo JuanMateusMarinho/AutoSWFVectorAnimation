@@ -18,7 +18,7 @@ from autoswf.items.structure import ItemStructure, PieceRef, read_structure
 from autoswf.items.thumbs import piece_image
 from autoswf.model.geometry import Matrix
 from autoswf.render.colors import PlayerColors
-from autoswf.render.display import ScriptContext, instantiate, run_pending_actions, tick
+from autoswf.render.display import ClipInstance, ScriptContext, instantiate, run_pending_actions
 from autoswf.render.painter import Renderer, object_bounds
 from autoswf.swf.decode import MovieData
 
@@ -74,19 +74,20 @@ class _ItemCanvas(QWidget):
             return
         obj = instantiate(e.edited_movie, part.char_id) if part.char_id else None
         if part.char_id == 0:
-            from autoswf.render.display import ClipInstance
             obj = ClipInstance(e.edited_movie, 0, sprite=e.edited_movie.root)
             obj._reconcile(0)
         if obj is None:
             return
         ctx = ScriptContext(self.colors)
+        if e.frame and isinstance(obj, ClipInstance):
+            obj.driven = True                       # shown on that frame: its own frame scripts do not move it
+            obj.goto(e.frame)
         run_pending_actions(obj, ctx)
-        for _ in range(e.frame):
-            tick(obj, ctx)
         bounds = object_bounds(obj, Matrix())
         if bounds is None:
             p.setPen(QColor(200, 200, 200))
-            p.drawText(QRectF(0, 0, width, height), Qt.AlignmentFlag.AlignCenter, "This part is empty")
+            p.drawText(QRectF(0, 0, width, height), Qt.AlignmentFlag.AlignCenter,
+                       e.canvas_message() or "This part is empty")
             return
         x0, x1, y0, y1 = bounds
         scale = min((width - 40) / max(x1 - x0, 1e-3), (height - 40) / max(y1 - y0, 1e-3))
@@ -97,7 +98,7 @@ class _ItemCanvas(QWidget):
         if selected is None or "/" not in selected:
             return
         target, parent = obj, view
-        for depth in [int(d) for d in selected.split("/")[1:]]:
+        for depth in [int(d.split(".")[0]) for d in selected.split("/")[1:]]:
             child = target.child_at_depth(depth) if hasattr(target, "child_at_depth") else None
             if child is None:
                 return
@@ -284,8 +285,19 @@ class SwfEditor(QWidget):
         key = (self.selected_path or self.structure.parts[0].key).split("/")[0]
         return next((p for p in self.structure.parts if p.key == key), None)
 
+    def canvas_message(self) -> str:
+        """What the canvas says instead of drawing the current part ("" when there is something to draw)."""
+        part = self.current_part()
+        if part is None or part.pieces:
+            return ""
+        if self.animated is not None:
+            return "This part is empty: the armor draws its whole character in its Head"
+        return "This part is empty"
+
     def select(self, path: str) -> None:
         self.selected_path = path
+        top = "/".join(path.split("/")[:2]) if path and "/" in path else None
+        self.frame = self.structure.piece(top).frame if top else 0
         item = self._items.get(path)
         if item is not None and self.tree.currentItem() is not item:
             self.tree.blockSignals(True)
@@ -314,7 +326,9 @@ class SwfEditor(QWidget):
             lines.append("Follows the player's %s color (%s)" % piece.color)
         if piece.changes:
             lines.append("Other characters take this place later in the timeline; removing it removes them too.")
-        instances = self.structure.instances(piece.ref)
+        siblings = piece.path.rpartition("/")[0]
+        instances = [p for p in self.structure.instances(piece.ref)
+                     if p == piece.path or p.rpartition("/")[0] != siblings]
         if len(instances) > 1:
             labels = list(dict.fromkeys(self.structure.part_of(p).label for p in instances))
             lines.append("Also used in: %s — this piece sits inside a symbol used in %d places; removing it removes it "

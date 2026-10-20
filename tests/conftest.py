@@ -147,3 +147,14 @@ def azrael():
     if not path.exists():
         pytest.skip("the animated armor is not in %s" % path)
     return path.read_bytes()
+
+
+@pytest.fixture
+def the_sword_hero():
+    """The user's animated armor TheSwordHero.swf (made by another tool, never committed): AUTOSWF_LISTENER_ARMOR or
+    cache/real/TheSwordHero.swf."""
+    path = Path(os.environ.get("AUTOSWF_LISTENER_ARMOR")
+                or Path(__file__).resolve().parents[1] / "cache" / "real" / "TheSwordHero.swf")
+    if not path.exists():
+        pytest.skip("the animated armor is not in %s" % path)
+    return path.read_bytes()

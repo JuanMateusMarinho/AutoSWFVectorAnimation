@@ -37,13 +37,15 @@ class AvatarRig:
         self.client, self.gender, self.colors = client, gender, colors
         self.world = dict(world) if world is not None else {"bitWalk": True}     # as in normal play
         self.anim_events: dict[str, list[tuple[str, bool]]] = {}
-        self._head_state: dict[str, bool] = {}
         self._skeleton_request: str | None = None
         self.animated = None
         self._armor = armor
+        self._scripts = None                       # the animated head's running class (HeadScripts)
+        self._scripts_clip: ClipInstance | None = None
+        self._motion: tuple[int, int] | None = None
         if armor is not None and armor_link:
             from autoswf.items.animated import read_animated_armor
-            found = read_animated_armor(armor)
+            found = read_animated_armor(armor, gender)
             if found is not None and found.class_name == "%s%sHead" % (armor_link, gender):
                 self.animated = found
         self.skel: ClipInstance = instantiate(client, skel_id)
@@ -146,6 +148,7 @@ class AvatarRig:
         for c in existing:
             if id(c) in alive:
                 advance(c)
+        self._enter_frame()
         self._run()
 
     def _targets_label(self, action) -> bool:
@@ -176,7 +179,8 @@ class AvatarRig:
         run_pending_actions(self.skel, ScriptContext(self.colors, self._on_call, self._on_frame))
         if self._skeleton_request is not None:
             label, self._skeleton_request = self._skeleton_request, None
-            self.play(label)
+            if label in self.skel.sprite.labels or label in self.anim_events:
+                self.play(label)
 
     # ------------------------------------------------------------ animated armors (spec §15)
 
@@ -188,15 +192,37 @@ class AvatarRig:
         return face
 
     def _on_frame(self, clip: ClipInstance, frame: int) -> None:
-        """The animated head's frame scripts: listeners register, the skeleton may be sent to another label."""
+        """The animated head's frame scripts (listeners register, the skeleton may be sent to another label); a new
+        head is constructed and added to the stage first."""
         if clip is not self._armor_head():
             return
-        method = self.animated.frame_methods.get(frame)
-        if method is None:
+        self._ensure_scripts(clip)
+        self._apply(self._scripts.frame(frame), frame_script=True)
+
+    def _ensure_scripts(self, clip: ClipInstance) -> None:
+        if self._scripts_clip is clip:
             return
-        from autoswf.items.animated import Listen, SkeletonPlay, run_method
-        effects, _ = run_method(self.animated.abc, method, self._head_state, self.world,
-                                frozenset(self.animated.handlers))
+        from autoswf.items.animated import HeadScripts
+        self._scripts_clip = clip
+        self._scripts = HeadScripts(self.animated.head, _RigHost(self))
+        self._apply(self._scripts.construct())
+        self._apply(self._scripts.dispatch("addedToStage"))
+
+    def _enter_frame(self) -> None:
+        """ENTER_FRAME on the animated head (after the playheads moved): an armor animation played by name loops, then
+        the head's own handlers run."""
+        head = self._armor_head()
+        if head is None:
+            return
+        if self._motion is not None and not self._motion[0] <= head.frame < self._motion[1]:
+            head.goto(self._motion[0])
+        self._ensure_scripts(head)
+        self._apply(self._scripts.dispatch("enterFrame"))
+
+    def _apply(self, effects: list, frame_script: bool = False) -> None:
+        """What the head's code did. A frame script's own goto/stop/play are run by the display list already."""
+        from autoswf.items.animated import Anchor, Goto, Listen, PlayClip, SetVisible, SkeletonPlay, StopClip
+        head = self._armor_head()
         for e in effects:
             if isinstance(e, Listen):
                 entry = (e.handler, e.block)
@@ -204,6 +230,52 @@ class AvatarRig:
                     self.anim_events[e.game_label].append(entry)
             elif isinstance(e, SkeletonPlay):
                 self._skeleton_request = e.label
+            elif isinstance(e, SetVisible):
+                obj = self._resolve(e.place)
+                if obj is not None:
+                    obj.visible = e.visible
+            elif isinstance(e, Anchor):
+                if head is not None and self.head() is not None:
+                    head.matrix, head.script_transformed = self.head().matrix.inverse(), True
+            elif frame_script or head is None:
+                continue
+            elif isinstance(e, Goto):
+                self._motion = None
+                if isinstance(e.target, str):
+                    head.goto_label(e.target)
+                else:
+                    head.goto(e.target)
+                head.playing = e.play
+            elif isinstance(e, StopClip):
+                head.playing = False
+            elif isinstance(e, PlayClip):
+                head.playing = True
+
+    def _resolve(self, place: tuple) -> DisplayObject | None:
+        """The clip at a place around the animated head (items.animated.locate): the head, its slot, the skeleton,
+        then children by name. The avatar above the skeleton is not a clip here."""
+        ups, downs = place
+        chain = [self._armor_head(), self.head(), self.skel]
+        if ups >= len(chain):
+            return None
+        obj = chain[ups]
+        for name in downs:
+            obj = obj.child_by_name(name) if isinstance(obj, ClipInstance) else None
+        return obj
+
+    def play_motion(self, label: str) -> None:
+        """Play one of the animated armor's own animations by name: its head goes there and plays it in a loop (a
+        one-frame animation holds), until a game label's handler sends it elsewhere."""
+        head = self._armor_head()
+        if head is None or label not in head.sprite.labels:
+            raise ValueError("Unknown armor animation '%s'" % label)
+        labels = head.sprite.labels
+        start = labels[label]
+        end = min((f for f in labels.values() if f > start), default=head.sprite.frame_count)
+        self._motion = (start, end)
+        head.goto(start)
+        head.playing = end - start > 1
+        self._run()
 
     def play(self, label: str) -> None:
         """The client's mcSkel.gotoAndPlay(label): an armor listener for the label runs first (only the first one) and
@@ -224,21 +296,49 @@ class AvatarRig:
             raise ValueError("Unknown animation label '%s'" % label)
 
     def _call_handler(self, handler: str) -> None:
-        from autoswf.items.animated import Goto, PlayClip, StopClip, run_method
         head = self._armor_head()
-        method = self.animated.handlers.get(handler) if self.animated is not None else None
-        if head is None or method is None:
+        if head is None:
             return
-        effects, _ = run_method(self.animated.abc, method, self._head_state, self.world,
-                                frozenset(self.animated.handlers))
-        for e in effects:
-            if isinstance(e, Goto):
-                if isinstance(e.target, str):
-                    head.goto_label(e.target)
-                else:
-                    head.goto(e.target)
-                head.playing = e.play
-            elif isinstance(e, StopClip):
-                head.playing = False
-            elif isinstance(e, PlayClip):
-                head.playing = True
+        self._ensure_scripts(head)
+        self._apply(self._scripts.call(handler))
+
+
+class _RigHost:
+    """The animated head's surroundings in this rig: the static avatar (items.animated.Host) plus its real clips —
+    whether one exists, its frame and visibility."""
+
+    def __init__(self, rig: AvatarRig):
+        from autoswf.items.animated import Host
+        self.rig, self.static = rig, Host(rig.world)
+
+    def value(self, path: tuple):
+        from autoswf.items.animated import SCALARS, locate
+        known = self.static.value(path)
+        if known is not None or not path or path[-1] not in SCALARS:
+            return known
+        place = locate(path[:-1])
+        obj = self.rig._resolve(place) if place is not None and place[0] < 3 else None
+        if obj is None:
+            return None
+        name = path[-1]
+        if name == "visible":
+            return ("bool", obj.visible)
+        if name == "name":
+            return ("str", obj.name or "")
+        if isinstance(obj, ClipInstance) and name in ("currentFrame", "totalFrames", "numChildren"):
+            return ("int", {"currentFrame": obj.frame + 1, "totalFrames": obj.sprite.frame_count,
+                            "numChildren": len(obj.children)}[name])
+        return None
+
+    def exists(self, path: tuple):
+        from autoswf.items.animated import locate
+        place = locate(path)
+        if place is None or place[0] >= 3:
+            return self.static.exists(path)
+        return self.rig._resolve(place) is not None
+
+    def has(self, path: tuple, name: str):
+        return self.static.has(path, name)
+
+    def contains(self, path: tuple, other: tuple):
+        return self.static.contains(path, other)

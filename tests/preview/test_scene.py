@@ -108,3 +108,11 @@ def test_an_animated_armor_is_framed_wider(qapp, tmp_path):
     plain = PreviewScene.from_cache(cache, None, armor_data=mini_armor_with_pieces("M"))
     animated = PreviewScene.from_cache(cache, None, armor_data=animated_armor_swf())
     assert animated.animated is not None and animated.default_zoom(600) < plain.default_zoom(600) / 2
+
+
+def test_scene_plays_an_armors_own_motions():
+    from aqw_fakes import listener_armor_swf
+    sc = PreviewScene(MovieData(mini_client()), {"M": MovieData(listener_armor_swf())}, "TestBind", genders=("M",))
+    assert sc.motions == ["Portrait", "Idle", "Walk", "Slash"]
+    sc.play_motion("Walk")
+    assert sc.rigs["M"].head().child_by_name("face").frame == 2

@@ -58,3 +58,16 @@ def test_kind_of_brave(kind_of_brave):
     assert {p.color for p in walk(st) if p.color} == {("Skin", "None"), ("Skin", "Dark"), ("Skin", "Darker"),
                                                       ("Eye", "None"), ("Eye", "Light"), ("Hair", "None")}
     assert st.instances(PieceRef(110, 39)) == ["MChest/39"] and st.instances(PieceRef(31, 1)) == ["MRobeBack/1"]
+
+
+def test_a_part_that_shows_other_characters_later_lists_each_with_its_label():
+    from aqw_fakes import listener_armor_swf
+    st = read_structure(MovieData(listener_armor_swf()))
+    head = next(p for p in st.parts if p.key == "MHead")
+    assert [p.label for p in head.pieces] == ["Portrait: headOnly", "Idle: body", "Walk: body", "Slash: body"]
+    assert [p.frame for p in head.pieces] == [0, 1, 2, 3] and [len(p.children) for p in head.pieces] == [0, 1, 2, 4]
+    assert [c.label for c in head.pieces[2].children] == ["Frame 1: Shape %d" % head.pieces[2].children[0].char_id,
+                                                          "Frame 2: Shape %d" % head.pieces[2].children[1].char_id]
+    assert len({p.ref for p in head.pieces}) == 1
+    assert st.instances(head.pieces[0].ref) == [p.path for p in head.pieces]
+    assert st.piece(head.pieces[2].path) is head.pieces[2]

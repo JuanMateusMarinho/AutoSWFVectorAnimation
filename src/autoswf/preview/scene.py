@@ -104,6 +104,16 @@ class PreviewScene:
         """The worn armor's animated head (AnimatedArmor), or None."""
         return next((rig.animated for rig in self.rigs.values() if rig.animated is not None), None)
 
+    @property
+    def motions(self) -> list[str]:
+        """An animated armor's own animations (its head's labels), playable by name."""
+        return self.animated.motions() if self.animated is not None else []
+
+    def play_motion(self, label: str) -> None:
+        for rig in self.rigs.values():
+            if rig.animated is not None:
+                rig.play_motion(label)
+
     def set_color(self, location: str, rgb: int) -> None:
         self.colors = self.colors.replace(location, rgb)
         for rig in self.rigs.values():

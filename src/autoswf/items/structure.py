@@ -31,20 +31,24 @@ class Piece:
     instance_name: str | None
     color: tuple[str, str] | None               # a colorable clip's (location, shade)
     matrix: Matrix
-    changes: bool                               # other characters are placed at this depth later
+    changes: bool                               # other characters are placed at this depth on other frames
     children: list["Piece"] = field(default_factory=list)
     path: str = ""
+    frame: int = 0                              # the frame of its sprite where this character is placed first
+    frame_label: str | None = None              # that frame's label (or "Frame N") when the depth changes
 
     @property
     def label(self) -> str:
         if self.color is not None:
-            return "%s (%s)" % self.color
-        if self.instance_name:
-            return self.instance_name
-        if self.class_name:
-            return self.class_name.rpartition(".")[2]
-        return {"shape": "Shape %d", "morph": "Morph shape %d", "clip": "Clip %d"}.get(self.kind, "Character %d") \
-            % self.char_id
+            name = "%s (%s)" % self.color
+        elif self.instance_name:
+            name = self.instance_name
+        elif self.class_name:
+            name = self.class_name.rpartition(".")[2]
+        else:
+            name = {"shape": "Shape %d", "morph": "Morph shape %d", "clip": "Clip %d"}.get(
+                self.kind, "Character %d") % self.char_id
+        return "%s: %s" % (self.frame_label, name) if self.frame_label else name
 
 
 @dataclass(eq=False)
@@ -125,31 +129,33 @@ class _Reader:
         sprite = self.movie.character(sprite_id)
         if not isinstance(sprite, SpriteDef) or level > MAX_DEPTH:
             return []
-        first: dict[int, PlaceCommand] = {}
-        changes: set[int] = set()
-        for frame in sprite.frames:
+        placed: dict[int, list[tuple[int, PlaceCommand]]] = {}      # depth -> each character it shows, first frame
+        for f, frame in enumerate(sprite.frames):
             for cmd in frame:
                 if not isinstance(cmd, PlaceCommand) or cmd.char_id is None:
                     continue
-                if cmd.depth not in first:
-                    first[cmd.depth] = cmd
-                elif cmd.char_id != first[cmd.depth].char_id:
-                    changes.add(cmd.depth)
+                entries = placed.setdefault(cmd.depth, [])
+                if all(c.char_id != cmd.char_id for _, c in entries):
+                    entries.append((f, cmd))
+        frame_labels = {f: label for label, f in sprite.labels.items()}
         out = []
-        for depth in sorted(first):
-            cmd = first[depth]
-            char = self.movie.character(cmd.char_id)
-            kind = ("clip" if isinstance(char, SpriteDef) else "morph" if isinstance(char, MorphShapeDef)
-                    else "shape" if isinstance(char, ShapeDef) else "other")
-            class_name = self.movie.class_name(cmd.char_id)
-            piece = Piece(PieceRef(sprite_id, depth), cmd.char_id, kind, class_name, cmd.name,
-                          self.color(class_name), cmd.matrix or Matrix(), depth in changes)
-            piece.path = "%s/%d" % (prefix, depth)
-            self.paths[piece.path] = piece
-            self.instances.setdefault(piece.ref, []).append(piece.path)
-            if kind == "clip":
-                piece.children = self.pieces(cmd.char_id, piece.path, level + 1)
-            out.append(piece)
+        for depth in sorted(placed):
+            entries = placed[depth]
+            changes = len(entries) > 1
+            for k, (f, cmd) in enumerate(entries):
+                char = self.movie.character(cmd.char_id)
+                kind = ("clip" if isinstance(char, SpriteDef) else "morph" if isinstance(char, MorphShapeDef)
+                        else "shape" if isinstance(char, ShapeDef) else "other")
+                class_name = self.movie.class_name(cmd.char_id)
+                piece = Piece(PieceRef(sprite_id, depth), cmd.char_id, kind, class_name, cmd.name,
+                              self.color(class_name), cmd.matrix or Matrix(), changes, frame=f,
+                              frame_label=frame_labels.get(f, "Frame %d" % (f + 1)) if changes else None)
+                piece.path = "%s/%d" % (prefix, depth) if k == 0 else "%s/%d.%d" % (prefix, depth, k + 1)
+                self.paths[piece.path] = piece
+                self.instances.setdefault(piece.ref, []).append(piece.path)
+                if kind == "clip":
+                    piece.children = self.pieces(cmd.char_id, piece.path, level + 1)
+                out.append(piece)
         return out
 
     def part(self, key: str, label: str, gender: str | None, class_name: str | None, char_id: int) -> ItemPart:

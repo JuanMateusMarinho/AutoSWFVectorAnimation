@@ -94,3 +94,14 @@ def test_animated_armors_show_their_animations(qapp, tmp_path):
     assert not e.animations_view.isHidden()
     plain = editor(tmp_path / "p", mini_armor_with_pieces("M"))
     assert plain.animations_view.isHidden()
+
+
+def test_an_armor_that_registers_from_methods_shows_its_motions(qapp, tmp_path):
+    from aqw_fakes import listener_armor_swf
+    e = editor(tmp_path, listener_armor_swf())
+    assert ("Walk", "Walk", "yes") in e.animation_rows() and not e.animations_view.isHidden()
+    walk = e.structure.parts[-1].pieces[2]
+    e.select(walk.path)
+    assert e.frame == 2                                                     # the canvas shows the head on its Walk frame
+    e.select("MChest")
+    assert "draws its whole character in its Head" in e.canvas_message()

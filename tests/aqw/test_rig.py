@@ -101,3 +101,40 @@ def test_azrael_walks_with_the_throne_walk(azrael, aqw_cache):
     for _ in range(3):
         rig.tick()
     assert rig.label == "throneWalk" and 9 <= rig.head().child_by_name("face").frame <= 21
+
+
+def test_a_head_that_registers_from_its_methods_plays_its_motions_on_the_avatar():
+    from aqw_fakes import listener_armor_swf
+    rig = AvatarRig(MovieData(mini_client()), "M", armor=MovieData(listener_armor_swf()), armor_link="TestBind")
+    face = rig.head().child_by_name("face")
+    assert set(rig.anim_events) == {"Idle", "Fight", "Walk", "Attack1", "Attack2"}    # bind() when it was added
+    assert face.frame == 1 and not face.playing                                         # its own Idle
+    assert not rig.head().child_by_name("hair").visible and not rig._slot("cape").visible
+    assert face.script_transformed and face.matrix == rig.head().matrix.inverse()     # drawn in the skeleton's space
+    rig.play("Walk")
+    assert face.frame == 2 and rig.label == "Idle"                                      # blocked: the body stays
+    rig.play("Attack1")
+    assert face.frame == 3
+    for _ in range(5):
+        rig.tick()
+    assert face.frame == 1                                                               # onTick: the Slash body ended
+    assert face.matrix == rig.head().matrix.inverse()
+
+
+def test_an_armors_own_motion_plays_by_name():
+    from aqw_fakes import animated_armor_swf, listener_armor_swf
+    rig = AvatarRig(MovieData(mini_client()), "M", armor=MovieData(listener_armor_swf(readable=False)),
+                    armor_link="TestBind")
+    face = rig.head().child_by_name("face")
+    assert rig.anim_events == {}
+    rig.play_motion("Slash")
+    rig.tick()
+    assert face.frame == 3                                                               # a one-frame motion holds
+    rig = AvatarRig(MovieData(mini_client()), "M", armor=MovieData(animated_armor_swf()), armor_link="TestAnim")
+    face = rig.head().child_by_name("face")
+    rig.play_motion("Walking")
+    seen = set()
+    for _ in range(25):
+        rig.tick()
+        seen.add(face.frame)
+    assert seen <= set(range(9, 19)) and len(seen) > 5                                   # a longer motion loops

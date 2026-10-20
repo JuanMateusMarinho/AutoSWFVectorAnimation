@@ -39,8 +39,10 @@ class ABC:
             name = self.u30(); fl = self.u8(); self.method_flags = getattr(self, "method_flags", []) + [fl]
             self.method_info.append({"params": ptypes, "ret": ret, "name": name, "flags": fl})
             if fl & 0x08:
+                optional = []
                 for _ in range(self.u30()):
-                    self.u30(); self.u8()
+                    index = self.u30(); optional.append((self.u8(), index))
+                self.method_info[-1]["optional"] = optional
             if fl & 0x80:
                 [self.u30() for _ in range(pc)]
             self.methods.append(name)
@@ -103,7 +105,7 @@ class ABC:
             if t in (0, 6):
                 info["slot"] = self.u30(); info["type"] = self.u30(); vi = self.u30()
                 if vi:
-                    self.u8()
+                    info["default"] = (self.u8(), vi)
             elif t in (1, 2, 3):
                 self.u30(); info["method"] = self.u30()
             elif t in (4, 5):
@@ -112,6 +114,18 @@ class ABC:
                 [self.u30() for _ in range(self.u30())]
             out.append(info)
         return out
+
+    def constant(self, kind: int, index: int):
+        """A default value (vkind, vindex) as Python: str, int, float, bool or None (null and undefined)."""
+        if kind == 0x01:
+            return self.strings[index]
+        if kind == 0x03:
+            return self.ints[index]
+        if kind == 0x04:
+            return self.uints[index]
+        if kind == 0x06:
+            return self.doubles[index]
+        return {0x0A: False, 0x0B: True}.get(kind)
 
     def nsname(self, i):
         k, s = self.ns[i]; return self.strings[s] if s < len(self.strings) else "?"

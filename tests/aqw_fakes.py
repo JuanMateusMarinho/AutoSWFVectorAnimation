@@ -250,3 +250,145 @@ def animated_armor_swf(link: str = "TestAnim") -> bytes:
     init.initproperty(class_mn).returnvoid()
     b.add_script(b.method(2, 1, 1, 9, init.bytes()), class_mn, class_index)
     return build_swf(list(parts.values()), names, b.serialize())
+
+
+def _asm(steps: list):
+    """Bytecode (a Code) from (emitter, *args) steps; a "@name" string marks a place, and a jump's argument may name
+    one."""
+    from autoswf.abc.code import Code
+    jumps = {"jump", "iftrue", "iffalse", "ifeq", "ifne"}
+
+    def emit(code, step, offset_of):
+        if isinstance(step, str):
+            return
+        name, *args = step
+        if name in jumps and isinstance(args[0], str):
+            args = [offset_of(args[0], len(code) + 4)]
+        getattr(code, name)(*args)
+    places, code = {}, Code()
+    for step in steps:
+        if isinstance(step, str):
+            places[step] = len(code)
+        emit(code, step, lambda place, end: 0)
+    code = Code()
+    for step in steps:
+        emit(code, step, lambda place, end: places[place] - end)
+    return code
+
+
+def listener_armor_swf(link: str = "TestBind", readable: bool = True) -> bytes:
+    """A male animated armor like TheSwordHero.swf: every part an empty clip except <Link>MHead, whose class registers
+    its listeners from methods (no frame scripts). Its constructor stops the clip and listens for ADDED_TO_STAGE
+    (bind) and ENTER_FRAME (onTick); bind() walks the parent chain up to the avatar, registers
+    listen(["Idle","Fight"], onIdle), listen(["Walk"], onWalk) and listen(["Attack1","Attack2"], onSlash) (each label
+    with block = true), goes to its Idle motion, hides the skeleton's cape and the head's hair and cancels its parent's
+    transform (anchor). The head has four one-frame labels, Portrait (a shape named headOnly), Idle, Walk and Slash,
+    each placing a clip named body that plays 1, 2 and 4 frames; onTick goes back to Idle when the Slash body ends.
+    With readable=False the label lists come from Config.LABELS, which a reader cannot know."""
+    from autoswf.abc.movieclip_classes import ANCESTORS, _add_class
+    from autoswf.abc.writer import PACKAGE, PROTECTED, AbcBuilder, SlotTrait
+    colors = {"head": (230, 190, 150, 255), "Idle": (100, 200, 100, 255), "Walk": (100, 100, 220, 255),
+              "Slash": (220, 80, 80, 255)}
+    bodies = {label: Symbol("Body" + label, [Frame([Placement(_shape(colors[label], 10 + 3 * k, 30), 1)])
+                                             for k in range(count)])
+              for label, count in (("Idle", 1), ("Walk", 2), ("Slash", 4))}
+    head = Symbol("Head", [Frame([Placement(_shape(colors["head"], 12, 12), 1, name="headOnly")], "Portrait")] +
+                  [Frame([Placement(bodies[label], 1, name="body")], label) for label in ("Idle", "Walk", "Slash")])
+    parts = {part: Symbol(part, [Frame()]) for part in ("Chest", "Hip", "Shoulder", "Hand", "Thigh", "Shin", "Foot",
+                                                       "FootIdle", "Robe", "RobeBack")}
+    parts["Head"] = head
+    names = {id(sym): "%sM%s" % (link, part) for part, sym in parts.items()}
+
+    b = AbcBuilder()
+    for name in names.values():
+        if not name.endswith("Head"):
+            _add_class(b, ClassSpec(name))
+    head_name = link + "MHead"
+    movieclip = b.qname(PACKAGE, "flash.display", "MovieClip")
+    event = b.qname(PACKAGE, "flash.events", "Event")
+
+    def n(name):
+        return b.qname(PACKAGE, "", name)
+
+    def s(text):
+        return ("pushstring", b.string(text))
+
+    def call(method, *pushes, argc=None, void=True):
+        return [("findpropstrict", n(method)), *pushes,
+                ("callpropvoid" if void else "callproperty", n(method), len(pushes) if argc is None else argc)]
+
+    def listen(labels, handler):
+        if readable:
+            pushes = [s(label) for label in labels] + [("newarray", len(labels))]
+        else:
+            pushes = [("getlex", n("Config")), ("getproperty", n("LABELS"))]
+        return [("findpropstrict", n("listen")), *pushes, ("getlex", n(handler)), ("callpropvoid", n("listen"), 2)]
+
+    start = [("getlocal0",), ("pushscope",)]
+    code = {
+        "iinit": start + [("getlocal0",), ("newarray", 0), ("setproperty", n("registrations")),
+                          ("getlocal0",), ("constructsuper", 0)] + call("stop") +
+                 [("findpropstrict", n("addEventListener")), ("getlex", event), ("getproperty", n("ADDED_TO_STAGE")),
+                  ("getlex", n("onAdded")), ("callpropvoid", n("addEventListener"), 2),
+                  ("findpropstrict", n("addEventListener")), ("getlex", event), ("getproperty", n("ENTER_FRAME")),
+                  ("getlex", n("onTick")), ("callpropvoid", n("addEventListener"), 2), ("returnvoid",)],
+        "onAdded": start + call("bind") + [("returnvoid",)],
+        "bind": start + [("getlex", n("avatar")), ("pushnull",), ("ifeq", "@search"), ("returnvoid",),
+                         "@search", ("getlex", n("parent")), ("setlocal1",), ("jump", "@check"),
+                         "@loop", ("label",), s("addAnimationListener"), ("getlocal1",), ("in_",), ("iffalse", "@up"),
+                         ("findproperty", n("avatar")), ("getlocal1",), ("setproperty", n("avatar")), ("jump", "@found"),
+                         "@up", ("getlocal1",), ("getproperty", n("parent")), ("setlocal1",),
+                         "@check", ("getlocal1",), ("pushnull",), ("ifne", "@loop"),
+                         "@found", ("getlex", n("avatar")), ("pushnull",), ("ifne", "@bound"), ("returnvoid",),
+                         "@bound"] +
+                listen(("Idle", "Fight"), "onIdle") + listen(("Walk",), "onWalk") +
+                listen(("Attack1", "Attack2"), "onSlash") + call("setMotion", s("Idle"), ("pushtrue",)) +
+                call("hide", ("getlex", n("avatar")), ("getproperty", n("mcChar")), s("cape"),
+                     ("callproperty", n("getChildByName"), 1), argc=1) +
+                call("hide", ("getlex", n("parent")), s("hair"), ("callproperty", n("getChildByName"), 1), argc=1) +
+                call("anchor") + [("returnvoid",)],
+        "listen": start + [("pushbyte", 0), ("setlocal", 4), ("getlocal1",), ("coerce_a",), ("setlocal", 5),
+                           ("jump", "@next"),
+                           "@each", ("label",), ("getlocal", 5), ("getlocal", 4), ("nextvalue",), ("setlocal3",),
+                           ("getlex", n("avatar")), ("getlocal3",), ("getlocal2",), ("pushtrue",),
+                           ("callpropvoid", n("addAnimationListener"), 3),
+                           ("getlex", n("registrations")), ("getlocal3",), ("callpropvoid", n("push"), 1),
+                           "@next", ("hasnext2", 5, 4), ("iftrue", "@each"), ("returnvoid",)],
+        "hide": start + [("getlocal1",), ("pushnull",), ("ifne", "@go"), ("returnvoid",),
+                         "@go", ("getlocal1",), ("pushfalse",), ("setproperty", n("visible")), ("returnvoid",)],
+        "anchor": start + [("getlex", n("parent")), ("getproperty", n("transform")), ("getproperty", n("matrix")),
+                           ("callproperty", n("clone"), 0), ("setlocal1",), ("getlocal1",),
+                           ("callpropvoid", n("invert"), 0), ("getlex", n("transform")), ("getlocal1",),
+                           ("setproperty", n("matrix")), ("returnvoid",)],
+        "setMotion": start + [("getlex", n("motion")), ("getlocal1",), ("ifne", "@set"), ("getlocal2",),
+                              ("iftrue", "@set"), ("returnvoid",),
+                              "@set", ("findproperty", n("motion")), ("getlocal1",), ("setproperty", n("motion"))] +
+                     call("gotoAndStop", ("getlocal1",)) + [("returnvoid",)],
+        "onIdle": start + [("getlex", n("motion")), s("Slash"), ("ifeq", "@skip")] + call("setMotion", s("Idle")) +
+                  ["@skip", ("returnvoid",)],
+        "onWalk": start + call("setMotion", s("Walk")) + [("returnvoid",)],
+        "onSlash": start + call("setMotion", s("Slash"), ("pushtrue",)) + [("returnvoid",)],
+        "onTick": start + [("getlex", n("avatar")), ("pushnull",), ("ifne", "@run")] + call("bind") +
+                  [("returnvoid",), "@run"] + call("anchor") + call("getChildByName", s("body"), void=False) +
+                  [("setlocal2",), ("getlex", n("motion")), s("Slash"), ("ifne", "@end"),
+                   ("getlocal2",), ("pushnull",), ("ifeq", "@end"),
+                   ("getlocal2",), ("getproperty", n("currentFrame")), ("getlocal2",),
+                   ("getproperty", n("totalFrames")), ("ifne", "@end")] +
+                  call("setMotion", s("Idle"), ("pushtrue",)) + ["@end", ("returnvoid",)],
+    }
+    methods = {name: b.method(8, 6, 10, 11, _asm(steps).bytes()) for name, steps in code.items()}
+    traits = [SlotTrait(n("avatar"), 0, 0), SlotTrait(n("registrations"), 0, 0),
+              SlotTrait(n("motion"), 0, n("String"), b.string("Portrait"))]
+    traits += [MethodTrait(n(name), index) for name, index in methods.items() if name != "iinit"]
+    cinit = b.method(1, 1, 9, 10, _asm(start + [("returnvoid",)]).bytes())
+    class_mn = n(head_name)
+    class_index = b.add_class(class_mn, movieclip, b.namespace(PROTECTED, head_name), methods["iinit"], cinit, traits)
+    init = _asm(start + [("getscopeobject", 0)])
+    for ns, ancestor in ANCESTORS:
+        init.getlex(b.qname(PACKAGE, ns, ancestor)).pushscope()
+    init.getlex(movieclip).newclass(class_index)
+    for _ in ANCESTORS:
+        init.popscope()
+    init.initproperty(class_mn).returnvoid()
+    b.add_script(b.method(2, 1, 1, 9, init.bytes()), class_mn, class_index)
+    return build_swf(list(parts.values()), names, b.serialize())

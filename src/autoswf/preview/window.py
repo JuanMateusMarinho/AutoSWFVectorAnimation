@@ -25,6 +25,8 @@ def download_question(cache: AqwCache) -> str:
             "server (game.aq.com)? They are saved only on this computer, in %s, and are never shared." % Path(cache.root))
 
 
+MOTION_PREFIX = "Armor: "          # an animated armor's own animation in the label box, played by name
+
 class _Canvas(QWidget):
     def __init__(self, window: "PreviewWindow"):
         super().__init__()
@@ -174,6 +176,7 @@ class PreviewWindow(QMainWindow):
         self.label_box.blockSignals(True)
         self.label_box.clear()
         self.label_box.addItems(scene.labels)
+        self.label_box.addItems([MOTION_PREFIX + m for m in scene.motions])
         self.label_box.setCurrentText(scene.label)
         self.label_box.blockSignals(False)
         self._refresh_swatches()
@@ -240,7 +243,11 @@ class PreviewWindow(QMainWindow):
     # ------------------------------------------------------------ actions
 
     def _on_label(self, label: str) -> None:
-        if self.scene is not None and label:
+        if self.scene is not None and label.startswith(MOTION_PREFIX):
+            self.scene.play_motion(label[len(MOTION_PREFIX):])
+            self._restart_clock()
+            self.canvas.update()
+        elif self.scene is not None and label:
             self.scene.set_label(label)
             self._restart_clock()
             self.canvas.update()

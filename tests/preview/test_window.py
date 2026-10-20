@@ -69,3 +69,14 @@ def test_preview_takes_a_helm_from_memory(qapp, tmp_path):
     assert w.set_helm_data(helm("Kit3"), "Kit3") is None and w.scene.helm_link == "Kit3"
     assert "not a valid SWF file" in w.set_helm_data(b"junk", "X") and w.scene.helm_link == "Kit3"
     w.close()
+
+
+def test_the_label_box_offers_an_animated_armors_motions(qapp, tmp_path):
+    from aqw_fakes import listener_armor_swf
+    sc = PreviewScene(MovieData(mini_client()), {"M": MovieData(listener_armor_swf())}, "TestBind", genders=("M",))
+    w = PreviewWindow(sc, cache=AqwCache(tmp_path))
+    items = [w.label_box.itemText(i) for i in range(w.label_box.count())]
+    assert "Armor: Slash" in items and "Idle" in items
+    w.label_box.setCurrentText("Armor: Slash")
+    assert sc.rigs["M"].head().child_by_name("face").frame == 3
+    w.close()

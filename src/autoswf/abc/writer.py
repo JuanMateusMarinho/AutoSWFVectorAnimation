@@ -26,6 +26,7 @@ class SlotTrait:
     name_mn: int
     slot_id: int
     type_mn: int
+    value: int = 0                      # a string constant's index as the default value (0: none)
 
 
 NEED_ACTIVATION = 0x02
@@ -72,7 +73,7 @@ class AbcBuilder:
         return len(self._methods) - 1
 
     def add_class(self, name_mn: int, super_mn: int, protected_ns: int, iinit: int, cinit: int,
-                  instance_traits: list[MethodTrait]) -> int:
+                  instance_traits: list[MethodTrait | SlotTrait]) -> int:
         self._classes.append((name_mn, super_mn, protected_ns, iinit, cinit, list(instance_traits)))
         return len(self._classes) - 1
 
@@ -104,7 +105,11 @@ class AbcBuilder:
             out += u30(name_mn) + u30(super_mn) + bytes([CLASS_PROTECTED_NS]) + u30(protected_ns)
             out += u30(0) + u30(iinit) + u30(len(traits))
             for t in traits:
-                out += u30(t.name_mn) + bytes([1]) + u30(0) + u30(t.method)
+                if isinstance(t, SlotTrait):
+                    out += u30(t.name_mn) + bytes([0]) + u30(t.slot_id) + u30(t.type_mn) + u30(t.value)
+                    out += bytes([0x01]) if t.value else b""             # Utf8 constant
+                else:
+                    out += u30(t.name_mn) + bytes([1]) + u30(0) + u30(t.method)
         for *_rest, cinit, _traits in self._classes:
             out += u30(cinit) + u30(0)
         out += u30(len(self._scripts))
