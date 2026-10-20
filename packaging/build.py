@@ -5,8 +5,12 @@ art got in, the packaged app's own smoke test, then the installer (Inno Setup) u
 """
 import argparse
 import json
+import os
+import re
+import shutil
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -39,6 +43,44 @@ def smoke_test(exe: Path, out: Path) -> dict:
     return json.loads(out.read_text(encoding="utf-8"))
 
 
+def app_version() -> str:
+    text = (ROOT / "src" / "autoswf" / "__init__.py").read_text(encoding="utf-8")
+    return re.search(r'__version__ = "([^"]+)"', text).group(1)
+
+
+def find_iscc() -> Path | None:
+    """Inno Setup's compiler: on PATH, or where its installer puts it (for all users or for this user)."""
+    found = shutil.which("ISCC")
+    if found:
+        return Path(found)
+    bases = [os.environ.get("ProgramFiles(x86)"), os.environ.get("ProgramFiles")]
+    if os.environ.get("LOCALAPPDATA"):
+        bases.append(str(Path(os.environ["LOCALAPPDATA"]) / "Programs"))
+    for base in filter(None, bases):
+        path = Path(base) / "Inno Setup 6" / "ISCC.exe"
+        if path.is_file():
+            return path
+    return None
+
+
+def package(dist: Path, version: str) -> tuple[Path | None, str]:
+    """dist/AutoSWF-Setup-<version>.exe, or a zip of dist/AutoSWF when Inno Setup is not installed."""
+    iscc = find_iscc()
+    if iscc is None:
+        path = dist / ("AutoSWF-%s-win64.zip" % version)
+        with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+            for p in sorted((dist / "AutoSWF").rglob("*")):
+                if p.is_file():
+                    z.write(p, p.relative_to(dist).as_posix())
+        return path, "Inno Setup was not found: wrote a zip instead. Install Inno Setup 6 to build the installer."
+    command = [str(iscc), "/Q", "/DAppVersion=" + version, "/DDistDir=" + str(Path(dist).resolve()),
+               str(ROOT / "packaging" / "autoswf.iss")]
+    if subprocess.run(command, cwd=ROOT).returncode != 0:
+        return None, "Inno Setup failed"
+    path = dist / ("AutoSWF-Setup-%s.exe" % version)
+    return path, "Built the installer %s (%.0f MB)" % (path, path.stat().st_size / 2 ** 20)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--skip-installer", action="store_true", help="build the app folder only")
@@ -60,7 +102,11 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     print("Smoke test passed (helm %s, %d bytes)" % (report.get("link"), report.get("size", 0)))
     print("Built %s (%.0f MB)" % (app, folder_size(app) / 2 ** 20))
-    return 0
+    if args.skip_installer:
+        return 0
+    path, message = package(dist, app_version())
+    print(message)
+    return 0 if path is not None else 1
 
 
 if __name__ == "__main__":

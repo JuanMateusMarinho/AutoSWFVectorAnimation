@@ -39,3 +39,20 @@ def test_the_built_exe_passes_its_smoke_test(tmp_path):
     out = tmp_path / "smoke.json"
     subprocess.run([str(exe), "--smoke-test", str(out)], timeout=300, check=True)
     assert json.loads(out.read_text(encoding="utf-8"))["ok"]
+
+
+def test_without_inno_setup_the_build_writes_a_zip(tmp_path, monkeypatch):
+    import zipfile
+    b = build_module()
+    monkeypatch.setattr(b, "find_iscc", lambda: None)
+    dist = tmp_path / "dist"
+    (dist / "AutoSWF").mkdir(parents=True)
+    (dist / "AutoSWF" / "AutoSWF.exe").write_bytes(b"MZ")
+    path, message = b.package(dist, "0.1.0")
+    assert path.name == "AutoSWF-0.1.0-win64.zip" and "Inno Setup was not found" in message
+    assert zipfile.ZipFile(path).namelist() == ["AutoSWF/AutoSWF.exe"]
+
+
+def test_the_installer_script_installs_per_user():
+    text = (ROOT / "packaging" / "autoswf.iss").read_text(encoding="utf-8")
+    assert "PrivilegesRequired=lowest" in text and r"{localappdata}\Programs\AutoSWF" in text

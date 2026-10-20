@@ -8,10 +8,10 @@ vector shapes that look hand-made in Animate, finds the parts with AI (eyes, hai
 accessories), animates them Flash-style (blinking eyes, swaying hair, light cloth physics), wires AQW's
 color customization, shows the item on the AQW body, and exports a SWF ready for the game.
 
-> **Status: early development.** Phase 1 (helms and morph helms) is being built. Done so far: the SWF engine
-> (AQW-valid helm export), the preview of a helm on the AQW male and female bodies, and the conversion of a layered
-> drawing (`.clip`, `.psd`, `.png`) into an animated vector helm split into parts (blinking eyes, swaying hair),
-> with AQW color custom.
+> **Status: Phase 1 (helms and morph helms) is done.** The Windows app turns a layered drawing (`.clip`, `.psd`,
+> `.png`) into an animated vector helm split into parts (blinking eyes, swaying hair) with AQW color custom, shows it
+> on the AQW body and exports a checked SWF. It also opens existing AQW item SWFs to remove pieces from them. Next:
+> Phase 2, armors.
 
 ## Why
 
@@ -19,7 +19,7 @@ Making an AQW item today means drawing it, then redrawing every line as vector a
 animating it by hand. That second step is slow, and Adobe discontinued Animate on March 1, 2026.
 AutoSWF replaces it.
 
-## Planned features — Phase 1: helms
+## Features — Phase 1: helms
 
 - **Open your files directly:** Clip Studio Paint `.clip` and `.psd`, keeping your layers by painting
   pass (line art, flat colors, shadow, occlusion shadow, details, light).
@@ -37,17 +37,72 @@ AutoSWF replaces it.
 - **Export:** normal helms and morph helms (a whole new head with its own face), optional back hair,
   optional male/female variants. Every file is checked against the AQW format before it is saved.
 
+## Download and install
+
+Run the installer, `AutoSWF-Setup-<version>.exe` (until releases are published, build it as described under *For
+developers*). It installs for your Windows user only (no administrator rights) in `%LOCALAPPDATA%\Programs\AutoSWF`,
+with a Start menu entry and, if you want, a desktop icon.
+
+On first run AutoSWF asks to download the AQW reference files it needs to show your item on the AQW head and body
+(the game client and one armor, from AQW's public server). They stay on your computer, in `%LOCALAPPDATA%\AutoSWF`, and
+the uninstaller leaves them there; you can download them later from **Help › Download AQW files**.
+
+## Make a helm
+
+The bar at the top walks through six stages; each one can be revisited at any time.
+
+1. **Import** (Ctrl+R): open a `.clip`, `.psd` or `.png`. A drawing made on the AutoSWF template lands on the head by
+   itself; otherwise drag it onto the AQW head (Alt+drag scales, Shift+drag turns it). Ctrl+M switches the head under
+   it between male and female.
+2. **Vectorize**: the Layers list shows the role found for each layer (line art, flat colors, shadow…), which you can
+   change; Properties has the detail level, gradients and separate tones.
+3. **Parts**: the parts found are drawn over the art and listed in the part tree. To fix one, click the region and pick
+   the part it belongs to (two clicks at most); the cut tool splits a region along a line. The Suggestions panel
+   proposes what to do next (blink the eyes, sway the locks, give the helm a color slot…): **Accept** it, **Fix** it or
+   **Skip** it.
+4. **Animate**: pick a part's preset and settings in Properties and drag its pivot on the canvas. The 24 fps timeline
+   shows every layer of every part with its keyframes: F6 inserts a keyframe, Shift+F6 clears it, F5 and Shift+F5 make
+   the loop a frame longer or shorter, Enter plays and pauses, and onion skin shows the frames around the playhead.
+   Running a preset again asks before it replaces keyframes you made by hand.
+5. **Colors**: give parts a color slot (Skin, Hair, Eye, Base, Trim or Accessory) and try other player colors.
+6. **Export** (Ctrl+Alt+Shift+S): the file and the link name (checked against AQW's own class names), helm or morph
+   helm, back hair, and optional male and female versions, each with its own size and offset. Every file is checked
+   against the AQW format before it is saved, and files over 200 KB get a warning.
+
+Ctrl+Return shows the helm on the AQW male and female bodies, playing the game's animations. Every change can be undone
+(Ctrl+Z) and redone (Ctrl+Y). In the exported SWF every element (the face, each eye, the hair, each lock, each
+accessory) keeps its own layer, so the file stays easy to edit in Animate or JPEXS.
+
+## Projects
+
+**File › Save** (Ctrl+S) writes an `.aswf` project: your choices (alignment, layer roles, part fixes, presets,
+keyframes, pivots, color slots, export settings), the parts found, a copy of the drawing and the last helm built. When
+the drawing changes on disk — even while the project is open — AutoSWF offers to re-import it: the parts that still
+match (by place, size and color) keep their animation, keyframes, pivots and color slots, and a short report lists what
+no longer applies. If the drawing was moved or deleted, the project opens with the copy saved inside it.
+
+## Open SWF
+
+**File › Open SWF** (Ctrl+Shift+O) opens an existing AQW item — an armor, helm, hair, cape, weapon or pet, including
+local and male-only armors. Armors list their parts first (Head, Chest, Robe…), and every part shows its pieces with
+thumbnails. Untick a piece to remove it (a piece used in several parts says so and goes everywhere); undo brings it
+back. The edited item can be shown on the AQW body, and **Export** writes a new file that changes only what you removed:
+every other byte of the original stays the same, unused shapes can be dropped, the link name can be renamed, and the
+file is checked against the AQW format (the official script variants included). Animated armors (a whole animated
+character that plays its own walk, attack and idle) show which game animation plays which of theirs, and the preview
+plays them as the game does.
+
 ## Roadmap
 
 | Phase | Items |
 |---|---|
-| 1 | Helms and morph helms *(in progress)* |
-| 2 | Armors (all 11 body parts, male and female) |
+| 1 | Helms and morph helms *(done)* |
+| 2 | Armors (all 11 body parts, male and female) *(next)* |
 | 3 | Capes and weapons, plus **AI FX from a text prompt** (e.g. "electric energy running from the guard to the blade tip") |
 | 4 | Pets |
 | Later | Native Procreate, Krita, Illustrator, Animate and SWF importers |
 
-Phase 1 is built in six steps: SWF engine → preview window → import and vectorization → parts and
+Phase 1 was built in six steps: SWF engine → preview window → import and vectorization → parts and
 color custom → animation presets → the full app (`.exe`).
 
 ## For developers
@@ -59,6 +114,12 @@ py -3.13 -m venv .venv
 .venv/Scripts/python -m pip install -e ".[dev]"
 .venv/Scripts/python -m pytest
 ```
+
+Run the app from the source with `.venv/Scripts/python -m autoswf app [FILE]`. To build it, install the build extra
+(`pip install -e ".[build]"`) and Inno Setup 6, then run `python packaging/build.py`: it writes the app folder
+`dist/AutoSWF`, runs the packaged app's smoke test and compiles `dist/AutoSWF-Setup-<version>.exe` (a zip instead when
+Inno Setup is not installed; `--skip-installer` stops after the folder). The app is also a command-line tool; the
+commands below do what the app does, one step at a time.
 
 ### Try it
 
@@ -178,7 +239,10 @@ keyframe there changes a single frame; Blink and Twitch only key the frames wher
 
 `download-aqw` fetches the current AQW game client and one armor (for the preview body) from AQW's public server.
 AQW files are only downloaded when you ask, stay on your computer (in `cache/`), and are never committed or shared.
-Other commands: `inspect FILE` describes a SWF, `render FILE --class NAME --out OUT.png` renders one class, and
+`edit-swf ITEM.swf --list` shows an item's parts and pieces; `--remove PIECE` (repeatable, a path from the list
+such as `MChest/39`) with `-o OUT.swf` writes the edited file, `--rename LINK` renames the link and `--keep-unused` keeps
+shapes nothing uses any more. `preview --armor NAME|FILE.swf` shows a helm with another armor. Other commands:
+`inspect FILE` describes a SWF, `render FILE --class NAME --out OUT.png` renders one class, and
 `fidelity` compares the renderer with JPEXS FFDec on official items.
 
 ## Disclaimer
