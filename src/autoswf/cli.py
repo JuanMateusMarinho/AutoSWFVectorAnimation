@@ -143,12 +143,18 @@ def _cmd_preview(args) -> int:
     except ValueError as e:
         print(e)
         return 1
+    armor_data = Path(args.armor) if args.armor.lower().endswith(".swf") or Path(args.armor).exists() else None
+    if armor_data is not None and not armor_data.exists():
+        print("The armor file %s was not found" % armor_data)
+        return 1
     if not args.snapshot:
         from autoswf.preview.window import run_preview
-        return run_preview(helm_path, link=args.link, label=args.label, armor=args.armor, colors=colors)
+        return run_preview(helm_path, link=args.link, label=args.label, armor=args.armor, colors=colors,
+                           armor_data=armor_data)
     _qt_app()
     try:
-        scene = PreviewScene.from_cache(AqwCache(default_cache_dir()), helm_path, link=args.link, armor=args.armor)
+        scene = PreviewScene.from_cache(AqwCache(default_cache_dir()), helm_path, link=args.link, armor=args.armor,
+                                        armor_data=armor_data)
         scene.set_label(args.label)
         for location, rgb in colors.items():
             scene.set_color(location, rgb)
@@ -482,7 +488,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("helm", nargs="?", help="helm SWF to show")
     p.add_argument("--link", help="helm class name (found automatically when the file has one)")
     p.add_argument("--label", default="Idle", help="game animation to play (default: %(default)s)")
-    p.add_argument("--armor", default=DEFAULT_ARMOR, help="armor worn by the preview bodies (default: %(default)s)")
+    p.add_argument("--armor", default=DEFAULT_ARMOR,
+                   help="armor worn by the preview bodies: a downloaded armor's name or a local .swf file "
+                        "(default: %(default)s)")
     p.add_argument("--snapshot", help="save one image instead of opening the window")
     p.add_argument("--frames", type=int, default=0, help="frames to play (24 fps) before the snapshot")
     p.add_argument("--size", default="800x600", help="snapshot size, WIDTHxHEIGHT")

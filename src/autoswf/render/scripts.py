@@ -87,8 +87,13 @@ def analyze_frame_script(ops: list[tuple[str, tuple[str, ...]]]) -> list[FrameAc
     for op, args in ops:
         if op in ("getlocal0", "findpropstrict", "findproperty"):
             stack.append(THIS)
-        elif op == "getlex" or op in CONSTANTS:
-            stack.append(OTHER)
+        elif op == "getlex" or op in CONSTANTS or op in ("newactivation", "getlocal", "getlocal1", "getlocal2",
+                                                           "getlocal3"):
+            stack.append(OTHER)              # an activation object (official color scripts keep one) or a local
+        elif op in ("setlocal", "setlocal1", "setlocal2", "setlocal3"):
+            pop()
+        elif op == "kill":
+            continue
         elif op == "getproperty":
             pop(); stack.append(("prop", args[0]))
         elif op == "pushstring":

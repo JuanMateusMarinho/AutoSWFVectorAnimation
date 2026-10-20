@@ -43,7 +43,7 @@ class AvatarRig:
             slot = self._slot(name)
             if slot is not None:
                 slot.visible = False
-        self._load_face()
+        self._load_face(armor, armor_link)
         self._load_armor(armor, armor_link)
         self._load_helm(helm, helm_link)
         self.set_label("Idle" if "Idle" in labels else self.labels[0] if self.labels else "")
@@ -57,8 +57,12 @@ class AvatarRig:
     def head(self) -> ClipInstance:
         return self._slot("head")
 
-    def _load_face(self) -> None:
-        head, face = self.head(), _new(self.client, "mcHead" + self.gender)
+    def _load_face(self, armor: MovieData | None = None, armor_link: str = "") -> None:
+        """The armor's <Link><G>Head when it has one, else the client's mcHead<G> (as the client does)."""
+        head = self.head()
+        face = _new(armor, "%s%sHead" % (armor_link, self.gender)) if armor is not None and armor_link else None
+        if face is None:
+            face = _new(self.client, "mcHead" + self.gender)
         if head is None or face is None:
             return
         old = head.child_by_name("face")

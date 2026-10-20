@@ -59,3 +59,13 @@ def test_real_client_idle_and_walk(aqw_cache):
     for _ in range(30):
         r.tick(); frames.add(r.skel.frame)
     assert frames == set(range(53, 67)) and r.skel.child_by_name("frontfoot").visible
+
+
+def test_an_armor_head_replaces_the_default_head():
+    from aqw_fakes import mini_armor_with_pieces
+    armor = MovieData(mini_armor_with_pieces("M"))
+    rig = AvatarRig(MovieData(mini_client()), "M", armor=armor, armor_link="TestArmor")
+    face = rig.head().child_by_name("face")
+    assert face.movie is armor and face.char_id == armor.classes["TestArmorMHead"]
+    plain = AvatarRig(MovieData(mini_client()), "M", armor=MovieData(mini_armor("M")), armor_link="TestArmor")
+    assert plain.head().child_by_name("face").movie is plain.client

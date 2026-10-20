@@ -1,3 +1,4 @@
+import pytest
 # tests/render/test_colors_scripts.py
 from autoswf.abc.movieclip_classes import ClassSpec, build_abc, expected_setcolor_ops
 from autoswf.abc.reader import ABC
@@ -72,3 +73,12 @@ def test_constructor_may_reference_frame_methods_by_plain_name():
     b.add_class(name, mc, b.namespace(PROTECTED, "spider_fla:Face_1"), b.method(3, 1, 10, 11, ctor.bytes()), cinit,
                 [MethodTrait(b.qname(PACKAGE_INTERNAL, "spider_fla", "frame1"), frame)])
     assert class_frame_actions([ABC(b.serialize())], "spider_fla.Face_1") == {0: [Stop()]}
+
+
+@pytest.mark.parametrize("form", ["plain", "try", "activation"])
+def test_color_scripts_in_every_official_form_are_found(form):
+    from aqw_fakes import mini_armor_with_pieces
+    from autoswf.render.scripts import SetColor, class_frame_actions
+    from autoswf.swf.decode import MovieData
+    movie = MovieData(mini_armor_with_pieces("M", setcolor_form=form))
+    assert class_frame_actions(movie.abcs, "TestArmor_fla.Skin_1")[0] == [SetColor("Skin", "None")]

@@ -37,8 +37,10 @@ def find_helm_link(movie: MovieData, file_name: str = "the file") -> str:
 
 class PreviewScene:
     def __init__(self, client: MovieData, armors: dict[str, MovieData | None], armor_link: str, *,
-                 helm: MovieData | None = None, helm_link: str | None = None, colors: PlayerColors | None = None):
+                 helm: MovieData | None = None, helm_link: str | None = None, colors: PlayerColors | None = None,
+                 genders: tuple[str, ...] = GENDERS):
         self.client, self.armors, self.armor_link = client, armors, armor_link
+        self.genders = tuple(genders)
         self.helm, self.helm_link = helm, helm_link
         self.colors = colors or PlayerColors()
         self.renderer = Renderer()
@@ -47,8 +49,22 @@ class PreviewScene:
 
     @classmethod
     def from_cache(cls, cache: AqwCache, helm_path: Path | bytes | None, *, link: str | None = None,
-                   armor: str = DEFAULT_ARMOR) -> "PreviewScene":
-        """`helm_path` is a helm file or its bytes (the app's helm in memory), or None for no helm."""
+                   armor: str = DEFAULT_ARMOR, armor_data: Path | bytes | None = None) -> "PreviewScene":
+        """`helm_path` is a helm file or its bytes (the app's helm in memory), or None for no helm. `armor_data` is a
+        local armor file (or its bytes) worn instead of the cached armor; only the genders it has are shown."""
+        if armor_data is not None:
+            from autoswf.items.structure import find_armor_link
+            if cache.client_path() is None:
+                raise MissingReferenceFiles("AQW reference files are missing: AQW game client. Run: python -m autoswf "
+                                            "download-aqw")
+            name = "the armor" if isinstance(armor_data, (bytes, bytearray)) else Path(armor_data).name
+            movie = MovieData(armor_data)
+            armor_link, genders = find_armor_link(movie, name)
+            helm = MovieData(helm_path) if helm_path else None
+            if helm is not None and link is None:
+                link = find_helm_link(helm, "the helm")
+            return cls(MovieData(cache.client_path()), {g: movie for g in genders}, armor_link, helm=helm,
+                       helm_link=link, genders=genders)
         missing = cache.missing(armor)
         if missing:
             command = "python -m autoswf download-aqw" + ("" if armor == DEFAULT_ARMOR else " --armor %s" % armor)
@@ -63,9 +79,10 @@ class PreviewScene:
     def _build(self) -> None:
         wanted = self.label
         self.rigs = {g: AvatarRig(self.client, g, armor=self.armors.get(g), armor_link=self.armor_link,
-                                  helm=self.helm, helm_link=self.helm_link, colors=self.colors) for g in GENDERS}
-        self.labels = self.rigs["M"].labels
-        self.label = self.rigs["M"].label
+                                  helm=self.helm, helm_link=self.helm_link, colors=self.colors) for g in self.genders}
+        first = self.rigs[self.genders[0]]
+        self.labels = first.labels
+        self.label = first.label
         if wanted != self.label and wanted in self.labels:
             self.set_label(wanted)
 
@@ -100,14 +117,15 @@ class PreviewScene:
         return 0.8 * height / AVATAR_HEIGHT
 
     def view_matrix(self, gender: str, width: int, height: int, zoom: float, mirror: bool = False) -> Matrix:
-        center = width / 4 + (width / 2 if gender == "F" else 0)
+        index, count = self.genders.index(gender), len(self.genders)
+        center = width * (2 * index + 1) / (2 * count)
         return Matrix.translate(center, 0.88 * height) @ Matrix.scale(-zoom if mirror else zoom, zoom)
 
     def paint(self, painter: QPainter, width: int, height: int, *, zoom: float | None = None, mirror: bool = False,
               morph_check: bool = False, background: RGBA = (51, 51, 51, 255)) -> None:
         zoom = zoom or self.default_zoom(height)
         painter.fillRect(0, 0, width, height, QColor(*background))
-        for g in GENDERS:
+        for g in self.genders:
             view = self.view_matrix(g, width, height, zoom, mirror)
             self.renderer.draw(painter, self.rigs[g].skel, view, self.colors, filter_scale=zoom)
             if morph_check:
@@ -149,7 +167,7 @@ class PreviewScene:
 
     def morph_check(self) -> dict[str, int]:
         """Base-head pixels the helm leaves uncovered, per gender (more than MORPH_TOLERANCE_PX means visible)."""
-        return {g: self.uncovered_head_pixels(g) for g in GENDERS}
+        return {g: self.uncovered_head_pixels(g) for g in self.genders}
 
     def uncovered_head_pixels(self, gender: str) -> int:
         size, head = MORPH_CHECK_SIZE, self.rigs[gender].head()

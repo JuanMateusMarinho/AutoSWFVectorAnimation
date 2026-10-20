@@ -123,7 +123,8 @@ def mini_armor_with_pieces(gender: str = "M", link: str = "TestArmor", setcolor_
                                  Frame([Placement(a, 1), Placement(b, 2, Matrix.translate(1, 0))]),
                                  Frame([Placement(a, 1)])])
     parts = {
-        "Chest": Symbol("Chest", [Frame([Placement(skin, 1), Placement(vest, 3), Placement(strap, 5)])]),
+        "Chest": Symbol("Chest", [Frame([Placement(skin, 1), Placement(vest, 3, name="Vest"),
+                                         Placement(strap, 5, name="Strap")])]),
         "Shoulder": Symbol("Shoulder", [Frame([Placement(_shape((90, 110, 140, 255), 5, 8), 1),
                                                Placement(stud, 3, Matrix.translate(0, 4))])]),
         "RobeBack": Symbol("RobeBack", [Frame([Placement(quiver, 1)])]),
@@ -136,3 +137,26 @@ def mini_armor_with_pieces(gender: str = "M", link: str = "TestArmor", setcolor_
     specs = [ClassSpec(n) for n in names.values() if "_fla." not in n]
     specs.append(ClassSpec(names[id(skin)], ((0, SetColorScript("Skin", "None")),)))
     return build_swf(list(parts.values()), names, build_abc(specs, setcolor_form=setcolor_form))
+
+
+def labeled_item_swf(link: str, labels: tuple[str, ...]) -> bytes:
+    """One exported class whose timeline has these frame labels (a cape: Idle, Move; a pet: Ready, Idle, Walk)."""
+    frames = [Frame([Placement(_shape((120, 40, 40, 255), 8 + k, 12), 1)], label) for k, label in enumerate(labels)]
+    item = Symbol(link, frames)
+    return build_swf([item], {id(item): link}, build_abc([ClassSpec(link)]))
+
+
+def hair_swf(name: str = "Normal", gender: str = "M") -> bytes:
+    front, back = _holder("Front", _shape((110, 60, 30, 255), 20, 12)), _holder("Back", _shape((90, 50, 25, 255), 22, 30))
+    names = {id(front): "%s%sHair" % (name, gender), id(back): "%s%sHairBack" % (name, gender)}
+    return build_swf([front, back], names, build_abc([ClassSpec(n) for n in names.values()]))
+
+
+def root_weapon_swf() -> bytes:
+    """An uncompressed (FWS) weapon whose art sits on the root timeline: no classes."""
+    from swf_builders import place2, shape_tag, swf
+    blade = shape_tag(1, 1, [("solid", (200, 200, 220, 255))], [],
+                      [{"start": (0, 0), "edges": [(4, 0), (4, 60), (0, 60), (0, 0)], "fill1": 1}])
+    grip = shape_tag(2, 1, [("solid", (90, 50, 30, 255))], [],
+                     [{"start": (0, 60), "edges": [(4, 60), (4, 75), (0, 75), (0, 60)], "fill1": 1}])
+    return swf([blade, grip, place2(1, 1), place2(2, 2)])

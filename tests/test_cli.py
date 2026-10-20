@@ -261,3 +261,13 @@ def test_convert_reads_part_names_like_color(tmp_path, capsys, qapp):
     t = _parts_psd(tmp_path)
     assert main(["convert", str(tmp_path / "helm.psd"), "--align", str(t.alignment), "--animate", "ear l=twitch"]) == 0
     assert "twitches at frame 30" in capsys.readouterr().out
+
+
+def test_preview_takes_a_local_armor_file(tmp_path, monkeypatch):
+    from aqw_fakes import mini_armor_with_pieces, write_mini_cache
+    cache = write_mini_cache(tmp_path / "c")
+    monkeypatch.setenv("AUTOSWF_CACHE", str(cache.root))
+    armor = tmp_path / "Mine.swf"
+    armor.write_bytes(mini_armor_with_pieces("M", link="Mine"))
+    assert main(["preview", "--armor", str(armor), "--snapshot", str(tmp_path / "s.png")]) == 0
+    assert (tmp_path / "s.png").exists()

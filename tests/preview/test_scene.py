@@ -89,3 +89,14 @@ def test_morph_check_reports_both_genders(qapp):
     from autoswf.preview.scene import MORPH_TOLERANCE_PX
     small, big = scene(blob_helm("Kit", 5)).morph_check(), scene(blob_helm("Kit", 200)).morph_check()
     assert set(small) == {"M", "F"} and min(small.values()) > MORPH_TOLERANCE_PX and big == {"M": 0, "F": 0}
+
+
+def test_a_male_only_armor_file_shows_one_body(qapp, tmp_path):
+    from aqw_fakes import mini_armor_with_pieces, write_mini_cache
+    from autoswf.render.effects import qimage_to_array
+    cache = write_mini_cache(tmp_path)
+    sc = PreviewScene.from_cache(cache, None, armor_data=mini_armor_with_pieces("M"))
+    assert tuple(sc.rigs) == ("M",) and sc.armor_link == "TestArmor"
+    body = qimage_to_array(sc.snapshot(400, 300, background=(0, 0, 0, 0)))[..., 3]
+    assert body[:, 140:260].max() > 0 and body[:, :60].max() == 0           # one body, in the middle
+    assert sc.morph_check().keys() == {"M"}
