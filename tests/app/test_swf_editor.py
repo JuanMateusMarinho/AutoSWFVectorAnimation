@@ -84,3 +84,13 @@ def test_main_window_opens_a_swf_in_the_editor(qapp, tmp_path, app_cache):
     bad.write_bytes(b"CWS\x0f\x00\x00\x00\x00junk")
     assert "not a valid SWF file" in w.open_path(bad)
     w.close()
+
+
+def test_animated_armors_show_their_animations(qapp, tmp_path):
+    from aqw_fakes import animated_armor_swf
+    e = editor(tmp_path, animated_armor_swf())
+    rows = e.animation_rows()
+    assert ("Walk", "Walking", "yes") in rows and ("Idle", "Idleing", "") in rows
+    assert not e.animations_view.isHidden()
+    plain = editor(tmp_path / "p", mini_armor_with_pieces("M"))
+    assert plain.animations_view.isHidden()

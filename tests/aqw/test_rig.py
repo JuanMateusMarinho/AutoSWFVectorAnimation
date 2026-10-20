@@ -69,3 +69,35 @@ def test_an_armor_head_replaces_the_default_head():
     assert face.movie is armor and face.char_id == armor.classes["TestArmorMHead"]
     plain = AvatarRig(MovieData(mini_client()), "M", armor=MovieData(mini_armor("M")), armor_link="TestArmor")
     assert plain.head().child_by_name("face").movie is plain.client
+
+
+def test_an_animated_armor_plays_its_own_walk_and_blocks_the_body():
+    from aqw_fakes import animated_armor_swf
+    armor = MovieData(animated_armor_swf())
+    rig = AvatarRig(MovieData(mini_client()), "M", armor=armor, armor_link="TestAnim")
+    for _ in range(2):
+        rig.tick()                                    # the head reaches frame 2 and registers its listeners
+    assert set(rig.anim_events) == {"Idle", "Walk", "Attack1", "Fight"}
+    head = rig.head().child_by_name("face")
+    skel_frame = rig.skel.frame
+    rig.play("Walk")
+    assert head.frame == 9 and rig.skel.frame == skel_frame        # blocked: the body stays
+    rig.play("Walk")
+    assert head.frame == 9                                          # walking: the handler does not restart it
+    rig.play("Attack1")
+    assert head.frame == 19                                         # not blocked (the mini client has no Attack1)
+    for _ in range(11):
+        rig.tick()
+    assert head.frame == 1                                          # gotoAndStop(2) at the end of the attack
+
+
+@pytest.mark.real
+@pytest.mark.aqw
+def test_azrael_walks_with_the_throne_walk(azrael, aqw_cache):
+    rig = AvatarRig(MovieData(aqw_cache.client_path()), "M", armor=MovieData(azrael), armor_link="AzraelGuardianArmor")
+    for _ in range(3):
+        rig.tick()
+    rig.play("Walk")
+    for _ in range(3):
+        rig.tick()
+    assert rig.label == "throneWalk" and 9 <= rig.head().child_by_name("face").frame <= 21

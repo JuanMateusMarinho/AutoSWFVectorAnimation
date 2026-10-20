@@ -29,11 +29,23 @@ def _replace_first(slot: ClipInstance, obj: DisplayObject, index: int | None = N
 
 class AvatarRig:
     def __init__(self, client: MovieData, gender: str, *, armor: MovieData | None = None, armor_link: str = "",
-                 helm: MovieData | None = None, helm_link: str | None = None, colors: PlayerColors | None = None):
+                 helm: MovieData | None = None, helm_link: str | None = None, colors: PlayerColors | None = None,
+                 world: dict | None = None):
         skel_id = client.classes.get("mcSkel")
         if skel_id is None:
             raise ValueError("The AQW client has no mcSkel class")
         self.client, self.gender, self.colors = client, gender, colors
+        self.world = dict(world) if world is not None else {"bitWalk": True}     # as in normal play
+        self.anim_events: dict[str, list[tuple[str, bool]]] = {}
+        self._head_state: dict[str, bool] = {}
+        self._skeleton_request: str | None = None
+        self.animated = None
+        self._armor = armor
+        if armor is not None and armor_link:
+            from autoswf.items.animated import read_animated_armor
+            found = read_animated_armor(armor)
+            if found is not None and found.class_name == "%s%sHead" % (armor_link, gender):
+                self.animated = found
         self.skel: ClipInstance = instantiate(client, skel_id)
         self.skel.driven = True
         labels = self.skel.sprite.labels
@@ -161,4 +173,72 @@ class AvatarRig:
             front.visible, idle.visible = True, False
 
     def _run(self) -> None:
-        run_pending_actions(self.skel, ScriptContext(self.colors, self._on_call))
+        run_pending_actions(self.skel, ScriptContext(self.colors, self._on_call, self._on_frame))
+        if self._skeleton_request is not None:
+            label, self._skeleton_request = self._skeleton_request, None
+            self.play(label)
+
+    # ------------------------------------------------------------ animated armors (spec §15)
+
+    def _armor_head(self) -> ClipInstance | None:
+        head = self.head()
+        face = head.child_by_name("face") if head is not None else None
+        if self.animated is None or not isinstance(face, ClipInstance) or face.movie is not self._armor:
+            return None
+        return face
+
+    def _on_frame(self, clip: ClipInstance, frame: int) -> None:
+        """The animated head's frame scripts: listeners register, the skeleton may be sent to another label."""
+        if clip is not self._armor_head():
+            return
+        method = self.animated.frame_methods.get(frame)
+        if method is None:
+            return
+        from autoswf.items.animated import Listen, SkeletonPlay, run_method
+        effects, _ = run_method(self.animated.abc, method, self._head_state, self.world,
+                                frozenset(self.animated.handlers))
+        for e in effects:
+            if isinstance(e, Listen):
+                entry = (e.handler, e.block)
+                if entry not in self.anim_events.setdefault(e.game_label, []):
+                    self.anim_events[e.game_label].append(entry)
+            elif isinstance(e, SkeletonPlay):
+                self._skeleton_request = e.label
+
+    def play(self, label: str) -> None:
+        """The client's mcSkel.gotoAndPlay(label): an armor listener for the label runs first (only the first one) and
+        keeps the body from playing it when its flag is set (never for Idle); a label the skeleton does not have
+        changes nothing when a listener took it."""
+        events = self.anim_events.get(label)
+        if events:
+            handler, flag = events[0]
+            self._call_handler(handler)
+            if flag and label != "Idle":
+                self._run()
+                return
+        if label in self.skel.sprite.labels:
+            self.set_label(label)
+        elif events:
+            self._run()
+        else:
+            raise ValueError("Unknown animation label '%s'" % label)
+
+    def _call_handler(self, handler: str) -> None:
+        from autoswf.items.animated import Goto, PlayClip, StopClip, run_method
+        head = self._armor_head()
+        method = self.animated.handlers.get(handler) if self.animated is not None else None
+        if head is None or method is None:
+            return
+        effects, _ = run_method(self.animated.abc, method, self._head_state, self.world,
+                                frozenset(self.animated.handlers))
+        for e in effects:
+            if isinstance(e, Goto):
+                if isinstance(e.target, str):
+                    head.goto_label(e.target)
+                else:
+                    head.goto(e.target)
+                head.playing = e.play
+            elif isinstance(e, StopClip):
+                head.playing = False
+            elif isinstance(e, PlayClip):
+                head.playing = True

@@ -119,3 +119,14 @@ def kind_of_brave():
     if not path.exists():
         pytest.skip("the reference armor is not in %s" % path)
     return path
+
+
+@pytest.fixture
+def azrael():
+    """The user's animated armor AzraelGuardianArmor.swf (AQW art, never committed): AUTOSWF_ANIMATED_ARMOR or
+    cache/real/AzraelGuardianArmor.swf."""
+    path = Path(os.environ.get("AUTOSWF_ANIMATED_ARMOR")
+                or Path(__file__).resolve().parents[1] / "cache" / "real" / "AzraelGuardianArmor.swf")
+    if not path.exists():
+        pytest.skip("the animated armor is not in %s" % path)
+    return path.read_bytes()

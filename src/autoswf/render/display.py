@@ -210,6 +210,7 @@ class ClipInstance(DisplayObject):
 class ScriptContext:
     colors: PlayerColors | None = None
     on_call: Callable[[ClipInstance, str], None] | None = None
+    on_frame: Callable[[ClipInstance, int], None] | None = None     # before a clip's frame actions run
 
 
 def instantiate(movie: MovieData, char_id: int) -> ShapeInstance | ClipInstance | None:
@@ -243,6 +244,8 @@ def run_pending_actions(obj: DisplayObject, ctx: ScriptContext) -> None:
     gotos = 0
     while obj.pending:
         obj.pending = False
+        if ctx.on_frame is not None:
+            ctx.on_frame(obj, obj.frame)
         for action in obj.frame_actions(obj.frame):
             if action.conditional:
                 continue

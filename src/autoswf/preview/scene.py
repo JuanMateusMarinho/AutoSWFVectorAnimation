@@ -20,6 +20,8 @@ AVATAR_HEIGHT = 150.0           # skeleton units from the feet to above the head
 UNCOVERED_TINT = (255, 0, 0, 160)
 MORPH_CHECK_SCALE, MORPH_CHECK_SIZE = 4.0, 600
 MORPH_TOLERANCE_PX = 40         # uncovered base-head pixels (at the check's scale) still counted as covered
+ANIMATED_ARMOR_SCALE = 2.5      # an animated armor's own character is drawn around the avatar, much larger
+MAX_WARM_UP = 5                 # frames an animated armor's head may take to register its listeners
 
 
 class MissingReferenceFiles(Exception):
@@ -87,9 +89,20 @@ class PreviewScene:
             self.set_label(wanted)
 
     def set_label(self, label: str) -> None:
+        """Play a game label as the client does (an animated armor's listeners first; its head registers them on
+        its second frame, so a fresh scene plays a few frames first)."""
+        for _ in range(MAX_WARM_UP):
+            if self.animated is None or all(r.anim_events for r in self.rigs.values() if r.animated is not None):
+                break
+            self.tick()
         for rig in self.rigs.values():
-            rig.set_label(label)
+            rig.play(label)
         self.label = label
+
+    @property
+    def animated(self):
+        """The worn armor's animated head (AnimatedArmor), or None."""
+        return next((rig.animated for rig in self.rigs.values() if rig.animated is not None), None)
 
     def set_color(self, location: str, rgb: int) -> None:
         self.colors = self.colors.replace(location, rgb)
@@ -112,9 +125,9 @@ class PreviewScene:
 
     # ------------------------------------------------------------ drawing
 
-    @staticmethod
-    def default_zoom(height: int) -> float:
-        return 0.8 * height / AVATAR_HEIGHT
+    def default_zoom(self, height: int) -> float:
+        """The fitted zoom: the avatar, or the much larger character of an animated armor."""
+        return 0.8 * height / (AVATAR_HEIGHT * (ANIMATED_ARMOR_SCALE if self.animated is not None else 1))
 
     def view_matrix(self, gender: str, width: int, height: int, zoom: float, mirror: bool = False) -> Matrix:
         index, count = self.genders.index(gender), len(self.genders)

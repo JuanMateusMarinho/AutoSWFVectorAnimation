@@ -100,3 +100,11 @@ def test_a_male_only_armor_file_shows_one_body(qapp, tmp_path):
     body = qimage_to_array(sc.snapshot(400, 300, background=(0, 0, 0, 0)))[..., 3]
     assert body[:, 140:260].max() > 0 and body[:, :60].max() == 0           # one body, in the middle
     assert sc.morph_check().keys() == {"M"}
+
+
+def test_an_animated_armor_is_framed_wider(qapp, tmp_path):
+    from aqw_fakes import animated_armor_swf, mini_armor_with_pieces, write_mini_cache
+    cache = write_mini_cache(tmp_path)
+    plain = PreviewScene.from_cache(cache, None, armor_data=mini_armor_with_pieces("M"))
+    animated = PreviewScene.from_cache(cache, None, armor_data=animated_armor_swf())
+    assert animated.animated is not None and animated.default_zoom(600) < plain.default_zoom(600) / 2

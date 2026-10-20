@@ -172,7 +172,15 @@ class SwfEditor(QWidget):
         title.setStyleSheet("font-weight: bold;")
         right.addWidget(title)
         right.addWidget(self.info, 1)
+        self.animations_view = QTreeWidget()
+        self.animations_view.setColumnCount(3)
+        self.animations_view.setHeaderLabels(["Game label", "Armor animation", "Blocks the body"])
+        self.animations_view.setToolTip("This armor plays its own animations: each game label (skills, walk, emotes…) "
+                                        "starts one of them; the preview plays them as the game does")
+        self.animations_view.hide()
+        right.addWidget(self.animations_view, 2)
         self._right_layout = right
+        self.animated = None
         split = QSplitter(Qt.Orientation.Horizontal)
         split.addWidget(self.tree)
         split.addWidget(center)
@@ -201,6 +209,7 @@ class SwfEditor(QWidget):
         self._set_edited(data)
         self.kind_box.setVisible(structure.kind == "item")
         self.kind_label.setVisible(structure.kind == "item")
+        self._fill_animations()
         self.title.setText("%s — %s%s" % (path.name, structure.kind, " %s" % structure.link if structure.link else ""))
         self._fill_tree()
         if structure.parts:
@@ -226,6 +235,32 @@ class SwfEditor(QWidget):
             item.setCheckState(0, Qt.CheckState.Unchecked if piece.ref in self.removed else Qt.CheckState.Checked)
             self._items[piece.path] = item
             self._add_pieces(item, piece.children)
+
+    def _fill_animations(self) -> None:
+        from autoswf.items.animated import read_animated_armor
+        self.animated = read_animated_armor(self.movie) if self.structure.kind == "armor" else None
+        self.animations_view.clear()
+        self.animations_view.setHidden(self.animated is None)
+        if self.animated is None:
+            return
+        own = QTreeWidgetItem(self.animations_view, ["Armor's own animations", "", ""])
+        starts = sorted(self.animated.labels.items(), key=lambda kv: kv[1])
+        sprite = self.movie.character(self.animated.char_id)
+        for k, (label, frame) in enumerate(starts):
+            end = starts[k + 1][1] if k + 1 < len(starts) else sprite.frame_count
+            QTreeWidgetItem(own, [label, "frames %d-%d" % (frame + 1, end), ""])
+        table = QTreeWidgetItem(self.animations_view, ["Game label → armor animation", "", ""])
+        for game, armor, block in self.animated.table():
+            QTreeWidgetItem(table, [game, armor or "?", "yes" if block else ""])
+        self.animations_view.expandAll()
+        for note in self.animated.notes:
+            QTreeWidgetItem(self.animations_view, [note, "", ""])
+
+    def animation_rows(self) -> list[tuple[str, str, str]]:
+        """(game label, armor animation, "yes" when it blocks the body) as the Animations panel lists them."""
+        if self.animated is None:
+            return []
+        return [(game, armor or "?", "yes" if block else "") for game, armor, block in self.animated.table()]
 
     def _load_thumbs(self, item: QTreeWidgetItem) -> None:
         for k in range(item.childCount()):
