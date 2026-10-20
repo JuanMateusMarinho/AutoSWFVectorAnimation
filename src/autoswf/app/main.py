@@ -86,9 +86,12 @@ def run_app(argv: list[str]) -> int:
     from autoswf.app.theme import apply_dark_theme
     from autoswf.app.window import MainWindow
     from autoswf.aqw.assets import AqwCache, default_cache_dir
+    from autoswf.qt_gc import GuiThreadCollector
     app = QApplication.instance() or QApplication(["AutoSWF"])
     app.setApplicationName("AutoSWF")
     app.setOrganizationName("AutoSWF")
+    collector = GuiThreadCollector(app)             # Qt objects in cycles are never freed on the build thread
+    collector.start()
     apply_dark_theme(app)
     cache = AqwCache(default_cache_dir())
     window = MainWindow(ProjectController(cache), cache)

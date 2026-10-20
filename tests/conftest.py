@@ -12,6 +12,23 @@ def qapp():
     return QApplication.instance() or QApplication([])
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _collect_cycles_on_the_gui_thread():
+    """As in the app (autoswf.qt_gc): no cycle collection on the build and download threads, which would destroy Qt
+    objects there; a collection step after every test instead."""
+    import gc
+    gc.disable()
+    yield
+    gc.enable()
+
+
+@pytest.fixture(autouse=True)
+def _collect_step():
+    yield
+    from autoswf.qt_gc import collect_step
+    collect_step()
+
+
 @pytest.fixture
 def aqw_cache():
     """The real AQW files in the local cache; tests using it skip when they are not downloaded."""

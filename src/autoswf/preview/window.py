@@ -369,6 +369,8 @@ class PreviewWindow(QMainWindow):
 def run_preview(helm_path: Path | None, *, link: str | None = None, label: str = "Idle",
                 armor: str = DEFAULT_ARMOR, colors: dict[str, int] | None = None, armor_data: Path | None = None) -> int:
     app = QApplication.instance() or QApplication([])
+    from autoswf.qt_gc import GuiThreadCollector
+    GuiThreadCollector(app).start()                 # Qt objects in cycles are never freed on the download thread
     cache = AqwCache(default_cache_dir())
     scene, problem = None, None
     try:
