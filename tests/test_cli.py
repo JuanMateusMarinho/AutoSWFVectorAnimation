@@ -271,3 +271,27 @@ def test_preview_takes_a_local_armor_file(tmp_path, monkeypatch):
     armor.write_bytes(mini_armor_with_pieces("M", link="Mine"))
     assert main(["preview", "--armor", str(armor), "--snapshot", str(tmp_path / "s.png")]) == 0
     assert (tmp_path / "s.png").exists()
+
+
+def test_edit_swf_lists_and_removes(tmp_path, capsys):
+    from aqw_fakes import mini_armor_with_pieces
+    from autoswf.swf.decode import MovieData
+    src = tmp_path / "A.swf"
+    src.write_bytes(mini_armor_with_pieces("M"))
+    assert main(["edit-swf", str(src), "--list"]) == 0
+    assert "MChest/5" in capsys.readouterr().out
+    out = tmp_path / "B.swf"
+    assert main(["edit-swf", str(src), "--remove", "Chest/5", "-o", str(out), "--rename", "Bee"]) == 0
+    text = capsys.readouterr().out
+    assert "1 placement removed" in text and "— valid" in text
+    assert "BeeMChest" in MovieData(out).classes
+
+
+def test_item_export_never_overwrites_the_original(tmp_path, monkeypatch):
+    from aqw_fakes import mini_armor_with_pieces
+    src = tmp_path / "A.swf"
+    src.write_bytes(mini_armor_with_pieces("M"))
+    before = src.read_bytes()
+    monkeypatch.chdir(tmp_path)
+    assert main(["edit-swf", str(src), "--remove", "Chest/5", "-o", "./A.swf"]) == 1
+    assert src.read_bytes() == before

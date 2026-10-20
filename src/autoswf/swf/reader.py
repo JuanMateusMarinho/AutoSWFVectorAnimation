@@ -121,7 +121,10 @@ def decompress(raw: bytes) -> tuple[str, int, int, bytes]:
     elif sig == b"ZWS":
         props = raw[12:17]
         hdr = props + struct.pack("<Q", flen - 8)
-        body = lzma.decompress(hdr + raw[17:], format=lzma.FORMAT_ALONE)
+        try:
+            body = lzma.decompress(hdr + raw[17:], format=lzma.FORMAT_ALONE)
+        except lzma.LZMAError:              # a stream with an end marker (some tools write one): size unknown
+            body = lzma.LZMADecompressor(format=lzma.FORMAT_ALONE).decompress(props + b"\xff" * 8 + raw[17:])
     else:
         raise ValueError("not a SWF file (signature %r)" % sig)
     return sig.decode(), ver, flen, body

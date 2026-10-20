@@ -1,4 +1,4 @@
-"""Command line: inspect, demo-helm, render, download-aqw, preview, fidelity, convert, template and app."""
+"""Command line: inspect, demo-helm, render, download-aqw, preview, fidelity, convert, template, edit-swf and app."""
 import argparse
 import sys
 from pathlib import Path
@@ -446,6 +446,75 @@ def _cmd_template(args) -> int:
     return 0
 
 
+def _plural(n: int, word: str) -> str:
+    return "%d %s%s" % (n, word, "" if n == 1 else "s")
+
+
+def _print_pieces(pieces, indent: int) -> None:
+    for piece in pieces:
+        extra = ", changes over time" if piece.changes else ""
+        print("%s%s  %s  (char %d%s)" % ("  " * indent, piece.path, piece.label, piece.char_id, extra))
+        _print_pieces(piece.children, indent + 1)
+
+
+def _cmd_edit_swf(args) -> int:
+    """List an AQW item's parts and sub-pieces, or remove sub-pieces (and rename the link) losslessly."""
+    import os
+    from autoswf.aqw.validate import validate_item_swf
+    from autoswf.items.edit import edit_swf, parse_piece_path
+    from autoswf.items.structure import read_structure
+    from autoswf.swf.decode import MovieData
+    src = Path(args.file)
+    try:
+        data = src.read_bytes()
+        structure = read_structure(MovieData(data), src.name)
+    except OSError as e:
+        print("Could not read %s: %s" % (src, e.strerror or e))
+        return 1
+    except ValueError as e:
+        print(e)
+        return 1
+    if args.list or not (args.remove or args.rename):
+        print("%s: %s%s, %s" % (src.name, structure.kind, " %s" % structure.link if structure.link else "",
+                                _plural(len(structure.parts), "part")))
+        for part in structure.parts:
+            print("%s  %s  %s" % (part.key, part.label, part.class_name or "(root timeline)"))
+            _print_pieces(part.pieces, 1)
+        return 0
+    out = Path(args.out) if args.out else src.with_name(src.stem + "_edited.swf")
+    if out.resolve() == src.resolve():
+        print("The output would overwrite the file being edited; choose another name")
+        return 1
+    try:
+        refs = [parse_piece_path(structure, path) for path in args.remove]
+        result = edit_swf(data, refs, prune=not args.keep_unused, rename=args.rename)
+    except ValueError as e:
+        print(e)
+        return 1
+    tmp = out.with_name(out.name + ".part")
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_bytes(result.data)
+        os.replace(tmp, out)
+    except OSError as e:
+        if tmp.exists():
+            tmp.unlink()
+        print("Could not write %s: %s" % (out, e.strerror or e))
+        return 1
+    expected = [result.renamed.get(c, c) for c in structure.public_classes()]
+    report = validate_item_swf(result.data, expected, data)
+    for p in report.problems:
+        print("Problem: " + p)
+    if report.problems:
+        return 1
+    print("Wrote %s (%.1f KB, %s removed, %s dropped) — valid"
+          % (out, len(result.data) / 1024, _plural(result.removed_placements, "placement"),
+             _plural(len(result.removed_characters), "unused shape")))
+    for note in result.notes + report.notes:
+        print(note)
+    return 0
+
+
 def _cmd_app(args) -> int:
     from autoswf.app.main import run_app
     return run_app([args.file] if args.file else [])
@@ -543,6 +612,15 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("out", help="PSD file to write")
     p.add_argument("--clip", help="also write a Clip Studio Paint .clip (experimental)")
     p.set_defaults(run=_cmd_template)
+    p = sub.add_parser("edit-swf", help="list or remove the sub-pieces of an AQW item SWF (everything else unchanged)")
+    p.add_argument("file")
+    p.add_argument("--list", action="store_true", help="list the parts and sub-pieces with their paths")
+    p.add_argument("--remove", action="append", default=[], metavar="PATH",
+                   help="a sub-piece to remove, as --list prints it (e.g. MChest/39; repeatable)")
+    p.add_argument("-o", "--out", help="SWF to write (default: FILE_edited.swf)")
+    p.add_argument("--rename", metavar="LINK", help="a new link (class name prefix) for a new item")
+    p.add_argument("--keep-unused", action="store_true", help="keep shapes and clips nothing uses any more")
+    p.set_defaults(run=_cmd_edit_swf)
     p = sub.add_parser("app", help="open the AutoSWF app")
     p.add_argument("file", nargs="?", help="a drawing, an AutoSWF project (.aswf) or a SWF to open")
     p.set_defaults(run=_cmd_app)
