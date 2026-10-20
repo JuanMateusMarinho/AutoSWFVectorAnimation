@@ -49,6 +49,12 @@ class ProjectController(QObject):
         self.busy = False
         self.exported_settings: dict | None = None     # the settings of the last successful export
         self.selected_part: str | None = None
+        self.project_path: Path | None = None
+        self.signatures: list = []                     # the parts of the saved project (re-import matches them)
+        self.saved_copy: Path | None = None
+        self.source_changed_on_disk = False
+        self._saved: dict | None = None
+        self._watcher = None
         self._latest = 0
         self._jobs: dict[int, Callable[[object], None]] = {}
         self._count = 0
@@ -67,6 +73,10 @@ class ProjectController(QObject):
         self.settings = HelmSettings(source=str(Path(path)), align=align)
         self.build = self.helm_build = None
         self.exported_settings = None
+        self.project_path, self.signatures, self.saved_copy = None, [], None
+        self.source_changed_on_disk = False
+        self._saved = self.settings.to_dict()
+        self._watch()
         self.settings_changed.emit()
         self._request_build()
 
@@ -134,6 +144,9 @@ class ProjectController(QObject):
     # ------------------------------------------------------------ suggestions, animation, colors, adjustments
 
     def accept(self, suggestion) -> None:
+        if suggestion.key == "reimport":
+            self.reimport_drawing()
+            return
         if suggestion.preset is None or not suggestion.parts:
             return
 
@@ -143,6 +156,11 @@ class ProjectController(QObject):
         self.change("Accept suggestion", edit)
 
     def skip(self, suggestion) -> None:
+        if suggestion.key == "reimport":
+            self.source_changed_on_disk = False
+            self.settings_changed.emit()
+            return
+
         def edit(s):
             if suggestion.parts:
                 for part in suggestion.parts:
@@ -299,6 +317,92 @@ class ProjectController(QObject):
         new = int(min(high, max(low, current + delta)))
         if new != current:
             self.set_preset_value(part, key, new, edits="keep")
+
+    # ------------------------------------------------------------ project file
+
+    @property
+    def dirty(self) -> bool:
+        return self.settings is not None and self.settings.to_dict() != self._saved
+
+    def save(self, path=None) -> None:
+        """Save the project (.aswf) to `path`, or where it was last saved; ValueError with the reason."""
+        from autoswf.project.aswf import save_project
+        path = Path(path) if path is not None else self.project_path
+        if path is None:
+            raise ValueError("Choose where to save the project")
+        save_project(path, self.settings, self.helm_build)
+        self.project_path = path
+        self._saved = self.settings.to_dict()
+        self.settings_changed.emit()
+
+    def open_project(self, path):
+        """Open a .aswf project: its saved helm shows at once, the drawing is built again in the background."""
+        from autoswf.project.aswf import load_project
+        loaded = load_project(Path(path), Path(self.cache.root))
+        self.undo_stack.clear()
+        self.settings = loaded.settings
+        self.project_path = Path(path)
+        self.signatures = loaded.signatures
+        self.saved_copy = loaded.saved_copy
+        self.build = self.helm_build = None
+        if loaded.swf is not None:
+            self.helm_build = Build(loaded.settings.copy(), link=loaded.settings.export_link(), swf=loaded.swf,
+                                    still=loaded.swf)
+        self.exported_settings = None
+        self._saved = self.settings.to_dict()
+        self._watch()
+        self.settings_changed.emit()
+        self._request_build()
+        return loaded
+
+    def use_saved_copy(self) -> None:
+        """Work from the drawing saved inside the project instead of the changed one on disk."""
+        if self.saved_copy is not None:
+            self.settings.source = str(self.saved_copy)
+            self._saved = self.settings.to_dict()
+            self._watch()
+            self._request_build()
+
+    def reimport_drawing(self, on_done: Callable | None = None) -> None:
+        """Read the changed drawing again and move the work onto the parts that still match (one undo step)."""
+        from autoswf.project.aswf import part_signatures, reimport
+        old = part_signatures(self.helm_build) if self.helm_build is not None and self.helm_build.parts is not None \
+            else list(self.signatures)
+        snapshot, builder = self.settings.copy(), self.builder
+        self.source_changed_on_disk = False
+
+        def job(progress, cancelled):
+            return builder.build(snapshot, progress=progress)
+
+        def done(build) -> None:
+            if isinstance(build, Exception) or build.parts is None:
+                report = None
+            else:
+                moved, report = reimport(snapshot, old, build)
+                self.change("Re-import drawing", lambda s: s.__dict__.update(moved.copy().__dict__))
+                self.signatures = part_signatures(build)
+            if not self.busy:
+                self._request_build()
+            self.settings_changed.emit()
+            if on_done is not None:
+                on_done(report)
+        self.run_job(job, done)
+
+    def _watch(self) -> None:
+        from PySide6.QtCore import QFileSystemWatcher
+        if self._watcher is None:
+            self._watcher = QFileSystemWatcher(self)
+            self._watcher.fileChanged.connect(self._on_source_changed)
+        if self._watcher.files():
+            self._watcher.removePaths(self._watcher.files())
+        if self.settings is not None and Path(self.settings.source).exists():
+            self._watcher.addPath(self.settings.source)
+
+    def _on_source_changed(self, path: str) -> None:
+        self.source_changed_on_disk = True
+        self.settings_changed.emit()
+        if self._watcher is not None and Path(path).exists() and path not in self._watcher.files():
+            self._watcher.addPath(path)       # editors replace the file: watch the new one
 
     def set_settings(self, settings: HelmSettings) -> None:
         self.settings = settings

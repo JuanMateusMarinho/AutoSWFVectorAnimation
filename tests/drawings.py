@@ -325,15 +325,17 @@ def _truth(size, scale, origin, ordered) -> dict:
     return {name: owner == i for i, name in enumerate(names)}
 
 
-def synthetic_parts_helm(size: int = 720, hair=HAIR, skin=SKIN) -> PartsDrawing:
+def synthetic_parts_helm(size: int = 720, hair=HAIR, skin=SKIN, extra_left_lock: bool = False) -> PartsDrawing:
     """A cel-shaded helm with the part kinds of spec 9.1 a helm usually has, painted in passes like the user's
     drawings (Flats, Shadow, Occlusion, Light, Details, Line), with the ground truth of its parts (head units; the AQW
-    head faces right)."""
+    head faces right). `extra_left_lock` adds one more lock left of Lock 1 (a drawing changed after a project was
+    saved)."""
+    teeth_ranges = ([(-42.0, -36.5)] if extra_left_lock else []) + TEETH
     scale, origin = size / 120, (0.55 * size, 0.5575 * size)
     face, ear = _ellipse(-9, 10, 30, 33), _ellipse(-40, 14, 7, 10)
     mouth = _ellipse(-6, 31, 5, 1.8)
     hair_band = _path([(-42, -14), (26, -14), (26, -8), (-42, -8)])
-    teeth = [_path([(x0, -8), (x1, -8), ((x0 + x1) / 2, 4)]) for x0, x1 in TEETH]
+    teeth = [_path([(x0, -8), (x1, -8), ((x0 + x1) / 2, 4)]) for x0, x1 in teeth_ranges]
     side = _path(SIDE_LOCK)
     dome, band, gem = _hat_shapes()
     horn = _path(HORN_POINTS)
@@ -380,7 +382,7 @@ def synthetic_parts_helm(size: int = 720, hair=HAIR, skin=SKIN) -> PartsDrawing:
                    _brush(_arc(-9, 10, 30, 33, 8, 20), 1.2), _brush(_arc(-40, 14, 7, 10, 90, 270), 1.0),
                    _brush(_arc(-6, 31, 5.4, 2.2, 180, 360), 0.8)]
         zigzag = [(-42, -14), (-42, -8)]
-        for x0, x1 in TEETH:
+        for x0, x1 in teeth_ranges:
             zigzag += [(x0, -8), ((x0 + x1) / 2, 4)]
         zigzag += [(14, -8), (19, 8), (25, 28), (28, 10), (26, -8), (26, -14)]
         strokes.append(_stroke(zigzag, 1.2))
@@ -530,3 +532,8 @@ def back_hair_specs() -> tuple[int, int, list[LayerSpec], str]:
     specs = [LayerSpec("Back hair", children=[LayerSpec("Flats", rect(w, h, (120, 70, 40, 255), 60, 120, 180, 230))]),
              LayerSpec("Flats", disc(w, h, (240, 200, 160, 255), 120, 110, 70))]
     return w, h, specs, str(Alignment(2.4, (120, 120)))
+
+
+def add_lock_on_the_left(t) -> list[LayerSpec]:
+    """The synthetic parts helm's layers with one more lock left of Lock 1 (same size and alignment as `t`)."""
+    return synthetic_parts_helm(t.width, extra_left_lock=True).layers

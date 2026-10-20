@@ -19,7 +19,7 @@ class SuggestionCard(QFrame):
         text.setWordWrap(True)
         column.addWidget(text)
         row = QHBoxLayout()
-        self.accept_button = QPushButton("Accept")
+        self.accept_button = QPushButton("Accept" if suggestion.key != "reimport" else "Re-import")
         self.fix_button = QPushButton("Fix")
         self.skip_button = QPushButton("Skip")
         self.accept_button.setHidden(suggestion.preset is None)
@@ -69,7 +69,12 @@ class SuggestionsPanel(QScrollArea):
 
     def current(self) -> list[Suggestion]:
         c = self.controller
-        return list(self.extra) + suggestions(c.helm_build or c.build, c.settings)
+        extra = list(self.extra)
+        if getattr(c, "source_changed_on_disk", False):
+            extra.append(Suggestion("reimport", "The drawing changed in its app. Re-import it? (Animation and hand-made "
+                                                "keyframes stay on the parts that still match.)", (), "Re-import",
+                                    "Import"))
+        return extra + suggestions(c.helm_build or c.build, c.settings)
 
     def refresh(self) -> None:
         self._pending = False

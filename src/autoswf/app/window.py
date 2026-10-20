@@ -22,11 +22,12 @@ from autoswf.aqw.assets import DEFAULT_ARMOR, AqwCache
 from autoswf.preview.window import Downloader, PreviewWindow, download_question
 
 DRAWING_SUFFIXES = (".clip", ".psd", ".psb", ".png")
+RECENT_MAX = 8
 OPEN_HINT = "AutoSWF opens drawings (.clip, .psd, .png), AutoSWF projects (.aswf) and SWF files"
 
 SHORTCUTS = {
     "import": ("&Import drawing…", "Ctrl+R"), "open": ("&Open…", "Ctrl+O"), "open_swf": ("Open &SWF…", "Ctrl+Shift+O"),
-    "save": ("&Save", "Ctrl+S"), "save_as": ("Save &As…", "Ctrl+Shift+S"), "export": ("&Export SWF…", "Ctrl+Alt+Shift+S"),
+    "save": ("&Save", "Ctrl+S"), "save_as": ("Save &As…", "Ctrl+Shift+S"), "reimport": ("&Re-import drawing", None), "export": ("&Export SWF…", "Ctrl+Alt+Shift+S"),
     "quit": ("&Quit", "Ctrl+Q"), "play": ("&Play / Pause", "Return"), "preview": ("Preview on AQW &body", "Ctrl+Return"),
     "insert_frame": ("Insert &frame", "F5"), "remove_frame": ("&Remove frame", "Shift+F5"),
     "insert_keyframe": ("Insert &keyframe", "F6"), "clear_keyframe": ("&Clear keyframe", "Shift+F6"),
@@ -57,6 +58,7 @@ class MainWindow(QMainWindow):
         controller.settings_changed.connect(self._refresh)
         controller.exported.connect(lambda results: self._refresh())
         self._refresh()
+        self._refresh_recent()
 
     # ------------------------------------------------------------ actions and menus
 
@@ -76,7 +78,7 @@ class MainWindow(QMainWindow):
         self.actions["undo"], self.actions["redo"] = undo, redo
         self.actions["timeline"].setCheckable(True)
         handlers = {"import": self._on_import, "open": self._on_open, "open_swf": self._on_open_swf,
-                    "save": self._on_save, "save_as": self._on_save_as, "export": self._on_export, "quit": self.close,
+                    "save": self._on_save, "save_as": self._on_save_as, "reimport": self._on_reimport, "export": self._on_export, "quit": self.close,
                     "play": self._on_play, "preview": self.preview_window, "insert_frame": self._on_insert_frame,
                     "remove_frame": self._on_remove_frame, "insert_keyframe": self._on_insert_keyframe,
                     "clear_keyframe": self._on_clear_keyframe, "timeline": self._on_timeline,
@@ -95,7 +97,8 @@ class MainWindow(QMainWindow):
     def _make_menus(self) -> None:
         bar = self.menuBar()
         a = self.actions
-        for title, names in (("&File", ("import", "open", "open_swf", None, "save", "save_as", None, "export", None, "quit")),
+        for title, names in (("&File", ("import", "open", "open_swf", None, "save", "save_as", "reimport", None, "export", None,
+                                       "quit")),
                              ("&Edit", ("undo", "redo")),
                              ("&View", ("zoom_in", "zoom_out", "fit", None, "toggle_gender", "timeline")),
                              ("&Control", ("play", "preview")),
@@ -220,6 +223,7 @@ class MainWindow(QMainWindow):
         column.addLayout(buttons)
         self.recent_box = QVBoxLayout()
         column.addLayout(self.recent_box)
+        self._recent_ready = True
         self.aqw_status = QLabel()
         self.aqw_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
         column.addWidget(self.aqw_status)
@@ -251,10 +255,11 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(self.title())
 
     def title(self) -> str:
-        settings = self.controller.settings
-        if settings is None:
+        c = self.controller
+        if c.settings is None:
             return "AutoSWF"
-        return "AutoSWF — %s" % Path(settings.source).name
+        name = c.project_path.name if c.project_path is not None else Path(c.settings.source).name
+        return "AutoSWF — %s%s" % (name, " *" if c.dirty else "")
 
     def _on_built(self, build) -> None:
         self._busy_stage = None
@@ -285,12 +290,17 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------ opening
 
     def open_path(self, path) -> str | None:
-        """Open a drawing (new project); returns an error message when the file cannot be opened."""
+        """Open a drawing (new project) or a project (.aswf); returns an error message when it cannot be opened."""
         path = Path(path)
+        if path.suffix.lower() in DRAWING_SUFFIXES + (".aswf",) and not self._may_leave():
+            return None                      # the user kept the current project
+        if path.suffix.lower() == ".aswf":
+            return self.open_project(path)
         if path.suffix.lower() in DRAWING_SUFFIXES:
             if not path.exists():
                 return "%s was not found" % path
             self.controller.import_drawing(path)
+            self._add_recent(path)
             self.stack.setCurrentWidget(self.workspace)
             self.stage_bar.show()
             self.set_stage("Import")
@@ -327,11 +337,113 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------ actions (later tasks fill the empty ones)
 
-    def _on_save(self) -> None:
-        pass
+    def open_project(self, path: Path) -> str | None:
+        try:
+            loaded = self.controller.open_project(path)
+        except ValueError as e:
+            return str(e)
+        self._add_recent(path)
+        self.stack.setCurrentWidget(self.workspace)
+        self.stage_bar.show()
+        self.set_stage("Import")
+        for note in loaded.notes:
+            self.statusBar().showMessage(note)
+        if loaded.source_changed:
+            if self.ask_reimport():
+                self.controller.reimport_drawing(self._on_reimported)
+            else:
+                self.controller.use_saved_copy()
+        self._refresh()
+        return None
 
-    def _on_save_as(self) -> None:
-        pass
+    def ask_reimport(self) -> bool:
+        box = QMessageBox(QMessageBox.Icon.Question, "The drawing changed",
+                          "The drawing changed since this project was saved. Re-import it? Animation and hand-made "
+                          "keyframes stay on the parts that still match.", parent=self)
+        yes = box.addButton("Re-import", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("Use the saved copy", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        return box.clickedButton() is yes
+
+    def show_report(self, text: str) -> None:
+        QMessageBox.information(self, "Re-import", text)
+
+    def _on_reimported(self, report) -> None:
+        self.show_report(report.text() if report is not None else
+                         "The drawing could not be read again; the project keeps its parts as they were.")
+        self._refresh()
+
+    def _on_reimport(self) -> None:
+        if self.controller.settings is not None:
+            self.controller.reimport_drawing(self._on_reimported)
+
+    def _add_recent(self, path: Path) -> None:
+        recent = [str(Path(path))] + [p for p in self.recent_files() if Path(p) != Path(path)]
+        self.settings_store.setValue("recent", recent[:RECENT_MAX])
+        self._refresh_recent()
+
+    def recent_files(self) -> list[str]:
+        value = self.settings_store.value("recent", [])
+        return [value] if isinstance(value, str) else list(value or [])
+
+    def _refresh_recent(self) -> None:
+        while self.recent_box.count():
+            item = self.recent_box.takeAt(0)
+            if item.widget() is not None:
+                item.widget().deleteLater()
+        for path in self.recent_files():
+            button = QPushButton(Path(path).name)
+            button.setFlat(True)
+            button.setToolTip(path)
+            button.clicked.connect(lambda _=False, p=path: self._open_recent(p))
+            self.recent_box.addWidget(button)
+
+    def _open_recent(self, path: str) -> None:
+        error = self.open_path(path)
+        if error:
+            QMessageBox.warning(self, "Open", error)
+
+    def _on_save(self) -> bool:
+        if self.controller.settings is None:
+            return False
+        if self.controller.project_path is None:
+            return self._on_save_as()
+        return self._save(self.controller.project_path)
+
+    def _on_save_as(self) -> bool:
+        if self.controller.settings is None:
+            return False
+        default = str(Path(self.controller.settings.source).with_suffix(".aswf"))
+        path, _ = QFileDialog.getSaveFileName(self, "Save project", default, "AutoSWF projects (*.aswf)")
+        return self._save(Path(path)) if path else False
+
+    def _save(self, path: Path) -> bool:
+        try:
+            self.controller.save(path)
+        except ValueError as e:
+            QMessageBox.warning(self, "Save project", str(e))
+            return False
+        self._add_recent(path)
+        self.statusBar().showMessage("Saved %s" % path.name)
+        self._refresh()
+        return True
+
+    def ask_save(self) -> str:
+        """"save", "discard" or "cancel" for unsaved changes."""
+        answer = QMessageBox.question(self, "Unsaved changes", "Save the changes to this project first?",
+                                      QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard
+                                      | QMessageBox.StandardButton.Cancel)
+        return {QMessageBox.StandardButton.Save: "save",
+                QMessageBox.StandardButton.Discard: "discard"}.get(answer, "cancel")
+
+    def _may_leave(self) -> bool:
+        """True when the current project may be closed (saved, discarded or clean)."""
+        if not self.controller.dirty:
+            return True
+        choice = self.ask_save()
+        if choice == "save":
+            return self._on_save()
+        return choice == "discard"
 
     def _on_play(self) -> None:
         self.timeline.toggle_play()
@@ -458,6 +570,9 @@ class MainWindow(QMainWindow):
         self._refresh()
 
     def closeEvent(self, event) -> None:
+        if not self._may_leave():
+            event.ignore()
+            return
         if self._preview is not None:
             self._preview.close()
         self.controller.close()

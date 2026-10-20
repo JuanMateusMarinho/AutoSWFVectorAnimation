@@ -6,8 +6,11 @@ from autoswf.app.window import MainWindow
 
 
 def window(cache, tmp_path, threaded=False):
-    return MainWindow(ProjectController(cache, threaded=threaded), cache,
-                      settings_store=QSettings(str(tmp_path / "ui.ini"), QSettings.Format.IniFormat))
+    """A main window whose unsaved-changes question answers "discard" (tests replace `ask_save` to try others)."""
+    w = MainWindow(ProjectController(cache, threaded=threaded), cache,
+                   settings_store=QSettings(str(tmp_path / "ui.ini"), QSettings.Format.IniFormat))
+    w.ask_save = lambda: "discard"
+    return w
 
 
 def find_action(menu, text):
