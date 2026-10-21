@@ -169,7 +169,8 @@ class EditTools(QObject):
     selection_changed = Signal()
     tone_changed = Signal()
     message = Signal(str)
-    changed = Signal()                      # anything the overlay or the options bar shows
+    changed = Signal()                      # the tool, size, colors, layer or selection (the options bar)
+    stroke_changed = Signal()               # only what the canvas overlay draws (a stroke or drag in progress)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -272,7 +273,7 @@ class EditTools(QObject):
         elif self.tool == "move":
             self._drag = ("move", (x, y))
             self._offset = (0.0, 0.0)
-        self.changed.emit()
+        self.stroke_changed.emit()
 
     def move(self, x: float, y: float, pressure: float = 1.0) -> None:
         if self.transforming and self._drag is not None:
@@ -283,12 +284,12 @@ class EditTools(QObject):
             self._offset = (x - self._drag[1][0], y - self._drag[1][1])
         else:
             return
-        self.changed.emit()
+        self.stroke_changed.emit()
 
     def release(self, x: float, y: float, pressure: float = 1.0) -> None:
         if self.transforming:
             self._drag = None
-            self.changed.emit()
+            self.stroke_changed.emit()
             return
         if self._stroke is not None:
             self._stroke.append(Sample(x, y, pressure))
@@ -306,7 +307,7 @@ class EditTools(QObject):
             self._drag, self._offset = None, (0.0, 0.0)
             if math.hypot(dx, dy) > 1e-6:
                 self._apply_matrix(Matrix.translate(dx, dy), "Move")
-        self.changed.emit()
+        self.stroke_changed.emit()
 
     def _emit(self, edit, label: str) -> None:
         for note in edit.notes:
@@ -348,7 +349,7 @@ class EditTools(QObject):
         if box is None:
             return
         self.transforming, self._transform, self._box, self._drag = True, Matrix(), box, None
-        self.changed.emit()
+        self.stroke_changed.emit()
 
     def _corners(self):
         x0, x1, y0, y1 = self._box
@@ -387,12 +388,12 @@ class EditTools(QObject):
         self.transforming, self._drag, self._box = False, None, None
         if m != Matrix():
             self._apply_matrix(m, "Free Transform")
-        self.changed.emit()
+        self.stroke_changed.emit()
 
     def cancel_transform(self) -> None:
         if self.transforming:
             self.transforming, self._drag, self._box = False, None, None
-            self.changed.emit()
+            self.stroke_changed.emit()
 
     # ------------------------------------------------------------ overlay
 

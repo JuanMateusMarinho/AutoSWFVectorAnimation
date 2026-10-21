@@ -125,28 +125,41 @@ def _root(movie: MovieData, char_id: int):
     return instantiate(movie, char_id)
 
 
-def _target(movie: MovieData, structure: ItemStructure, path: str, frame: int, ctx: ScriptContext):
-    """(the piece's display object, the matrix and AQW color above it) with every clip on the way at the frame that
-    shows the next piece, and the piece itself at `frame` of its own timeline."""
+NOT_SHOWN = "This piece is not shown on this frame"
+
+
+def drive(root, structure: ItemStructure, path: str, ctx: ScriptContext, part_frame: int | None = None):
+    """(the piece's display object, the objects from the part down to it) with the part at `part_frame` (default:
+    the frame where the first piece on the path is placed) and every clip below at the frame that shows the next
+    piece. The canvas and the edit layer both go through here, so they show the same drawing."""
     part = structure.part_of(path)
-    root = _root(movie, part.char_id)
-    if root is None:
-        raise ValueError("The part %s cannot be shown" % part.label)
-    run_pending_actions(root, ctx)
     target, prefix, chain = root, part.key, []
-    for comp in path.split("/")[1:]:
+    for i, comp in enumerate(path.split("/")[1:]):
         prefix += "/" + comp
         piece = structure.piece(prefix)
         if not isinstance(target, ClipInstance):
             raise ValueError("Piece %s is not in a clip" % path)
         target.driven = True
-        target.goto(piece.frame)
+        target.goto(part_frame if i == 0 and part_frame is not None else piece.frame)
         run_pending_actions(root, ctx)
         child = target.child_at_depth(piece.ref.depth)
         if child is None or child.char_id != piece.char_id:
-            raise ValueError("Piece %s is not shown" % path)
+            raise ValueError(NOT_SHOWN)
         chain.append(child)
         target = child
+    return target, chain
+
+
+def _target(movie: MovieData, structure: ItemStructure, path: str, frame: int, ctx: ScriptContext,
+            part_frame: int | None = None):
+    """(the piece's display object, the matrix and AQW color above it), the piece itself at `frame` of its own
+    timeline."""
+    part = structure.part_of(path)
+    root = _root(movie, part.char_id)
+    if root is None:
+        raise ValueError("The part %s cannot be shown" % part.label)
+    run_pending_actions(root, ctx)
+    target, chain = drive(root, structure, path, ctx, part_frame)
     if isinstance(target, ClipInstance) and target.sprite.frame_count > 1:
         target.driven = True
         target.goto(max(0, min(frame, target.sprite.frame_count - 1)))
@@ -180,11 +193,11 @@ def _luminance(c) -> float:
 
 
 def swf_layer(movie: MovieData, structure: ItemStructure, path: str, frame: int,
-              colors: PlayerColors | None = None) -> EditLayer:
+              colors: PlayerColors | None = None, part_frame: int | None = None) -> EditLayer:
     """The piece at `path` as an EditLayer; `frame` is a frame of the piece's own timeline (a clip with several frames),
     ignored otherwise. Drawing keys are the shape's char id ("12"; "12#2" for its second placement in the piece)."""
     colors = colors or PlayerColors()
-    target, above, color = _target(movie, structure, path, frame, ScriptContext(colors))
+    target, above, color = _target(movie, structure, path, frame, ScriptContext(colors), part_frame)
     found: list = []
     _shapes(target, above, color, found)
     drawings, tones, seen = [], [], {}

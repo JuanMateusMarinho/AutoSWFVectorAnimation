@@ -99,6 +99,27 @@ class ArtEdits:
         return cls(shapes, extras)
 
 
+STYLE_MATCH = 24                   # RGB distance within which a kept fill takes a traced face's style
+
+
+def _styles_for(shape: Shape, traced: list[FaceStyle]) -> list[FaceStyle]:
+    """Each fill of an edited shape with the traced style of its own color (the trace may have changed since the
+    edit: a style is never paired by position alone); a color no face has is a fixed color."""
+    out = []
+    for k, fill in enumerate(shape.fills):
+        color = tuple(fill.color if isinstance(fill, SolidFill) else fill.stops[0].color)
+        if k < len(traced) and tuple(traced[k].color) == color:
+            out.append(traced[k])
+            continue
+        same = next((s for s in traced if tuple(s.color) == color), None)
+        if same is None and traced:
+            near = min(traced, key=lambda s: sum((int(a) - int(b)) ** 2 for a, b in zip(s.color[:3], color[:3])))
+            if sum((int(a) - int(b)) ** 2 for a, b in zip(near.color[:3], color[:3])) <= STYLE_MATCH ** 2:
+                same = near
+        out.append(same if same is not None else FaceStyle(color, None))
+    return out
+
+
 def apply_art_edits(art: VectorArt, edits: ArtEdits) -> tuple[VectorArt, list[str]]:
     """The art with each edited traced layer's shape replaced (its face map dropped, so assembly uses the shape);
     notes for edits whose part is gone."""
@@ -110,10 +131,6 @@ def apply_art_edits(art: VectorArt, edits: ArtEdits) -> tuple[VectorArt, list[st
             layers.append(t)
             continue
         used.add(key)
-        styles = list(t.styles)
-        for f in shape.fills[len(styles):]:
-            color = f.color if isinstance(f, SolidFill) else f.stops[0].color
-            styles.append(FaceStyle(color, None))
-        layers.append(replace(t, shape=shape, styles=styles, labels=None))
+        layers.append(replace(t, shape=shape, styles=_styles_for(shape, t.styles), labels=None))
     gone = sorted({k.split("/", 1)[0] for k in edits.shapes if k not in used})
     return replace(art, layers=layers), [EDIT_GONE % part for part in gone]

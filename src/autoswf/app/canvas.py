@@ -161,8 +161,8 @@ class HelmCanvas(EditableCanvas, QWidget):
 
     def _on_built(self, build) -> None:
         self.pending = None
-        if build is not None and build.complete:
-            self.pending_layer = None
+        if build is not None and not self.controller.busy:
+            self.pending_layer = None                # the latest edit's build landed (or failed)
         helm = self.controller.helm_build
         if helm is not None and helm is not self._player_build:
             self._player_build = helm

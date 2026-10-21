@@ -53,7 +53,8 @@ def test_trace_png_replace_and_new_from_the_panel(qapp, tmp_path, app_cache):
     Image.fromarray(face_like_png()).save(png)
     e.ask_png_path = lambda: png
     e.ask_trace_target = lambda name: "replace"
-    e.place_png = lambda size, layer_bounds: __import__("autoswf.model.geometry", fromlist=["Matrix"]).Matrix()
+    e.place_png = lambda size, layer_bounds, content=None: __import__("autoswf.model.geometry",
+                                                                      fromlist=["Matrix"]).Matrix()
     e.layers_panel.trace_requested.emit()
     assert e.undo_stack.count() == 1 and e.edit_tools.layer.tone_at(285, 100) is None
     e.ask_trace_target = lambda name: "new"

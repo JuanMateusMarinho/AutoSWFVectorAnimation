@@ -143,3 +143,17 @@ def test_extra_layers_come_out_of_the_build(helm_psd):
     s.edits.extras.append(ExtraLayer("Scar", [(SCAR, None, "None")]))
     b = HelmBuilder().build(s)
     assert "Scar" in b.helm.wrappers and validate_helm_swf(b.swf, b.link) == []
+
+
+def test_kept_edits_take_the_style_of_their_own_color():
+    from autoswf.model.geometry import Matrix as M
+    from autoswf.project.edits import apply_art_edits
+    from autoswf.vectorize.art import FaceStyle, TracedLayer, VectorArt
+    a, b = FaceStyle((200, 100, 50, 255), (200, 100, 50, 255)), FaceStyle((30, 20, 40, 255), None)
+    traced = TracedLayer("Face: Fills", "fills", "Face", shape_of({0: rect_area(0, 0, 5, 5)}, [a.color]), [a, b])
+    art = VectorArt([traced], None, [], None)
+    edits = ArtEdits()
+    edits.set_shape("Face", "Face: Fills", shape_of({0: rect_area(0, 0, 5, 5), 1: rect_area(6, 0, 9, 5)},
+                                                    [b.color, a.color]))
+    out, _ = apply_art_edits(art, edits)
+    assert out.layers[0].styles[:2] == [b, a]

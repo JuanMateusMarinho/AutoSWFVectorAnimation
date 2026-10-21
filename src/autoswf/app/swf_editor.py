@@ -18,11 +18,11 @@ from autoswf.app.frame_strip import FrameStrip
 from autoswf.aqw.assets import AqwCache
 from autoswf.aqw.contract import check_link, client_class_names
 from autoswf.aqw.validate import validate_item_swf
-from autoswf.edit.swf_source import UneditableDrawing, drawing_uses, shape_def_of, swf_layer
+from autoswf.edit.swf_source import NOT_SHOWN, UneditableDrawing, drawing_uses, drive, shape_def_of, swf_layer
 from autoswf.items.edit import edit_swf
 from autoswf.items.item_edits import ItemEdits
 from autoswf.items.layers import NewLayer
-from autoswf.items.structure import ItemStructure, PieceRef, read_structure
+from autoswf.items.structure import ItemStructure, PieceRef, read_structure, refresh_part
 from autoswf.items.thumbs import piece_image
 from autoswf.model.geometry import Matrix, Point
 from autoswf.render.colors import PlayerColors
@@ -151,18 +151,9 @@ class _ItemCanvas(EditableCanvas, QWidget):
         part = e.current_part()
         if part is None or e.edited_movie is None:
             return
-        obj = instantiate(e.edited_movie, part.char_id) if part.char_id else None
-        if part.char_id == 0:
-            obj = ClipInstance(e.edited_movie, 0, sprite=e.edited_movie.root)
-            obj._reconcile(0)
+        obj = e.display_object(ScriptContext(self.colors))
         if obj is None:
             return
-        ctx = ScriptContext(self.colors)
-        if e.frame and isinstance(obj, ClipInstance):
-            obj.driven = True                       # shown on that frame: its own frame scripts do not move it
-            obj.goto(e.frame)
-        run_pending_actions(obj, ctx)
-        e.prepare_display(obj, ctx)
         bounds = object_bounds(obj, Matrix())
         if bounds is None and self._box is None:
             p.setPen(QColor(200, 200, 200))
@@ -204,6 +195,9 @@ class SwfEditor(QWidget):
         self.edits = ItemEdits()
         self._exported = ItemEdits()                    # the edits of the last export
         self.project_path: Path | None = None           # the .aswf this item was saved to or opened from
+        self._saved = ItemEdits()                       # the edits of the last save (or of the project opened)
+        self._added: dict[PieceRef, int] = {}           # where each new layer landed -> its index in edits.layers
+        self._original_colors: dict[str, tuple[str, str]] = {}
         self._structure_key = self.edits.structure_key()
         self._stale = False                             # the edited bytes lag behind drawings shown by override
         self._shared_ok: set[int] = set()               # shared drawings the user agreed to edit everywhere
@@ -218,6 +212,7 @@ class SwfEditor(QWidget):
         self.edit_tools.edit_ready.connect(self._on_layer_edit)
         self.edit_tools.message.connect(lambda text: self.message.setText(text))
         self.edit_tools.changed.connect(lambda: self.canvas.update())
+        self.edit_tools.stroke_changed.connect(lambda: self.canvas.update())
         self._items: dict[str, QTreeWidgetItem] = {}
         self._preview = None
         self._thumbs: dict[int, QIcon] = {}
@@ -335,15 +330,19 @@ class SwfEditor(QWidget):
             self.select(structure.parts[0].key)
         if structure.notes:
             self.message.setText(" ".join(structure.notes))
+        self._saved, self._added = ItemEdits(), {}
+        self._original_colors = {p.class_name: p.color for p in structure.walk() if p.class_name and p.color}
         if edits is not None and not edits.empty:
             self.apply_edits(edits)
             self.undo_stack.clear()
+            self._saved = edits.copy()
         return None
 
     def save_project(self, path: Path) -> None:
         from autoswf.project.aswf import save_item_project
         save_item_project(path, self.original, self.path.name if self.path else "item.swf", self.edits)
         self.project_path = Path(path)
+        self._saved = self.edits.copy()
 
     def _fill_tree(self) -> None:
         self.tree.blockSignals(True)
@@ -511,9 +510,12 @@ class SwfEditor(QWidget):
     def prepare_display(self, obj, ctx) -> None:
         """The canvas's part as the editor shows it: the selected clip at its own frame, hidden pieces hidden."""
         path = self.selected_path
-        if self.layer_frame and path and "/" in path:
-            target = self._child(obj, path)
-            if isinstance(target, ClipInstance):
+        if path and "/" in path:
+            try:
+                target, _ = drive(obj, self.structure, path, ctx, self.frame)
+            except (ValueError, KeyError):
+                target = None
+            if self.layer_frame and isinstance(target, ClipInstance):
                 target.driven = True
                 target.goto(self.layer_frame)
                 run_pending_actions(obj, ctx)
@@ -575,9 +577,9 @@ class SwfEditor(QWidget):
         box.exec()
         return {id(replace): "replace", id(new): "new"}.get(id(box.clickedButton()))
 
-    def place_png(self, size, layer_bounds):
+    def place_png(self, size, layer_bounds, content=None):
         from autoswf.edit.trace_png import placement
-        return placement(size, target_bounds=layer_bounds)
+        return placement(size, target_bounds=layer_bounds, content_bounds=content)
 
     def trace_png(self) -> None:
         from autoswf.edit.regions import bounds_px, union
@@ -598,7 +600,7 @@ class SwfEditor(QWidget):
         everything = []
         for area in (layer.visible_areas().values() if layer is not None else []):
             everything = union(everything, area)
-        matrix = self.place_png(traced.size, bounds_px(everything))
+        matrix = self.place_png(traced.size, bounds_px(everything), content=traced.content)
         if target == "replace" and layer is not None:
             edit = replace_layer(layer, traced, matrix)
             for note in edit.notes:
@@ -618,10 +620,13 @@ class SwfEditor(QWidget):
         layer = None
         if path is not None and self.edited_movie is not None:
             try:
-                layer = swf_layer(self.edited_movie, self.structure, path, self.layer_frame, self.canvas.colors)
+                layer = swf_layer(self.edited_movie, self.structure, path, self.layer_frame, self.canvas.colors,
+                                  part_frame=self.frame if "/" in path else None)
             except UneditableDrawing as e:
                 self.message.setText(str(e))
-            except (ValueError, KeyError):
+            except (ValueError, KeyError) as e:
+                if str(e) == NOT_SHOWN:
+                    self.message.setText(NOT_SHOWN)
                 layer = None
         self.edit_tools.set_layer(layer, keep_selection=keep_selection)
 
@@ -673,6 +678,11 @@ class SwfEditor(QWidget):
 
     def set_removed(self, ref: PieceRef, removed: bool) -> None:
         """Remove (or restore) a placement: one undo step; every instance of it in the tree follows."""
+        if removed and ref in self._added:              # a layer added here: deleting it drops it
+            after = self.edits.copy()
+            after.layers.pop(self._added[ref])
+            self.push_edit("Delete layer", after)
+            return
         if removed == (ref in self.removed):
             return
         after = self.edits.copy()
@@ -684,23 +694,25 @@ class SwfEditor(QWidget):
 
     def apply_edits(self, edits: ItemEdits) -> None:
         """Show these edits: drawings at once through the movie's overrides, structure changes by rewriting the file."""
-        previous, self.edits = self.edits, edits
+        previous = self.edits
         if edits.structure_key() != self._structure_key:
-            grew = (edits.layers, edits.rebinds) != (previous.layers, previous.rebinds)
+            try:
+                result = edits.apply_result(self.original)
+            except ValueError as e:                     # never half-applied: the item stays as it was
+                self.message.setText(str(e))
+                return
+            self.edits = edits
             self._structure_key = edits.structure_key()
-            self._set_edited(self.edits.apply(self.original))
+            self._set_edited(result.data if result is not None else self.original)
             self._stale = False
-            if grew:
-                shown = ItemEdits([], dict(edits.shapes), list(edits.layers), dict(edits.rebinds))
-                self.structure = read_structure(MovieData(shown.apply(self.original)), self.path.name if self.path else "")
-                selected = self.selected_path
-                self._fill_tree()
-                if selected and (selected in self._items):
-                    item = self._items[selected]
-                    self.tree.blockSignals(True)
-                    self.tree.setCurrentItem(item)
-                    self.tree.blockSignals(False)
+            self._added = {PieceRef(part, depth): i for i, (part, depth) in
+                           enumerate(result.added_layers if result is not None else [])}
+            if edits.rebinds != previous.rebinds:
+                self._show_colors()
+            if edits.layers != previous.layers:
+                self._show_new_layers(previous)
         else:
+            self.edits = edits
             for cid in set(previous.shapes) | set(edits.shapes):
                 shape = edits.shapes.get(cid)
                 if shape is previous.shapes.get(cid):
@@ -716,10 +728,68 @@ class SwfEditor(QWidget):
         self.tree.blockSignals(False)
         n = len(self.edits.removed)
         self.message.setText("%d piece%s removed" % (n, "" if n == 1 else "s") if n else "")
+        if self.selected_path and self.selected_path not in self._items:
+            self.select(self.selected_path.split("/")[0])
         self.refresh_layer(keep_selection=True)
         self.canvas.update()
         if self._preview is not None and self._preview.isVisible():
             self.preview()
+
+    def _show_colors(self) -> None:
+        """Each colorable piece's color as the rebinds say (no file read again)."""
+        from autoswf.app.edit_layers import color_tag
+        for piece in self.structure.walk():
+            if piece.class_name in self._original_colors:
+                piece.color = self.edits.rebinds.get(piece.class_name, self._original_colors[piece.class_name])
+                item = self._items.get(piece.path)
+                if item is not None:
+                    item.setText(2, color_tag(piece.color[0]) or "")
+
+    def _show_new_layers(self, previous: ItemEdits) -> None:
+        """The parts that gained or lost a layer, read again (only them) with their tree rows."""
+        parts = {l.part_char for l in previous.layers} | {l.part_char for l in self.edits.layers}
+        shown = ItemEdits([], dict(self.edits.shapes), list(self.edits.layers), dict(self.edits.rebinds))
+        movie = self.edited_movie if not self.edits.removed else MovieData(shown.apply(self.original))
+        for part in self.structure.parts:
+            if part.char_id in parts:
+                refresh_part(self.structure, movie, part.key)
+                self._refill_part(part.key)
+
+    def _refill_part(self, key: str) -> None:
+        item = self._items.get(key)
+        if item is None:
+            return
+        self.tree.blockSignals(True)
+        item.takeChildren()
+        for path in [p for p in self._items if p.startswith(key + "/")]:
+            del self._items[path]
+        self._add_pieces(item, next(p for p in self.structure.parts if p.key == key).pieces)
+        self.tree.blockSignals(False)
+
+    def display_object(self, ctx):
+        """The current part as the canvas shows it: at its frame, the selected piece's chain driven like the edit
+        layer's, the selected clip at its own frame, hidden pieces hidden."""
+        part = self.current_part()
+        if part is None or self.edited_movie is None:
+            return None
+        if part.char_id == 0:
+            obj = ClipInstance(self.edited_movie, 0, sprite=self.edited_movie.root)
+            obj._reconcile(0)
+        else:
+            obj = instantiate(self.edited_movie, part.char_id)
+        if obj is None:
+            return None
+        if self.frame and isinstance(obj, ClipInstance):
+            obj.driven = True                       # shown on that frame: its own frame scripts do not move it
+            obj.goto(self.frame)
+        run_pending_actions(obj, ctx)
+        self.prepare_display(obj, ctx)
+        return obj
+
+    def displayed_char(self, path: str) -> int | None:
+        obj = self.display_object(ScriptContext(self.canvas.colors))
+        target = self._child(obj, path) if obj is not None else None
+        return target.char_id if target is not None else None
 
     def current_data(self) -> bytes:
         """The file with every edit, written out (drawings shown by override are written here)."""
@@ -799,10 +869,12 @@ class SwfEditor(QWidget):
     @property
     def dirty(self) -> bool:
         """Edits that were not exported that way yet."""
-        e, x = self.edits, self._exported
-        same = (set(e.removed) == set(x.removed) and e.shapes == x.shapes and e.layers == x.layers
-                and e.rebinds == x.rebinds)
-        return not e.empty and not same
+        e = self.edits
+
+        def same(x: ItemEdits) -> bool:
+            return (set(e.removed) == set(x.removed) and e.shapes == x.shapes and e.layers == x.layers
+                    and e.rebinds == x.rebinds)
+        return not e.empty and not same(self._exported) and not same(self._saved)
 
     def export_dialog(self) -> "ItemExportDialog":
         return ItemExportDialog(self, self)

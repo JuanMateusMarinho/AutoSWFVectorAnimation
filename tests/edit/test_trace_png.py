@@ -64,3 +64,9 @@ def test_new_layer_binding_is_suggested_from_matching_item_colors():
     assert suggest_binding((0, 255, 0, 255), bound) is None
     tones = new_layer_tones(traced, Matrix.translate(100, 100), bound)
     assert [b for _, b in tones] == [("Hair", "None")] and tones[0][0].paths
+
+
+def test_fitting_uses_the_drawn_part_not_the_transparent_margins():
+    m = placement((200, 100), target_bounds=(0, 400, 0, 400), content_bounds=(50, 150, 25, 75))
+    assert m == Matrix(4, 0, 0, 4, -200, 0)
+    assert trace_png(three_color_disc()).content == pytest.approx((10, 111, 10, 111), abs=1.0)   # PIL includes the end pixel

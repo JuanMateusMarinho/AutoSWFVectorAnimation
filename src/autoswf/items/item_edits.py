@@ -50,9 +50,14 @@ class ItemEdits:
         except (KeyError, TypeError, ValueError, IndexError) as e:
             raise ValueError("the edits are incomplete (%s)" % e) from None
 
-    def apply(self, original: bytes, *, prune: bool = False, rename: str | None = None) -> bytes:
+    def apply_result(self, original: bytes, *, prune: bool = False, rename: str | None = None):
+        """The edit_swf result (its added_layers say where each new layer landed); None when nothing changes."""
         if self.empty and rename is None:
-            return original
+            return None
         from autoswf.items.edit import edit_swf
         return edit_swf(original, sorted(self.removed, key=lambda r: (r.sprite, r.depth)), prune=prune, rename=rename,
-                        replace_shapes=self.shapes, add_layers=self.layers, rebind=self.rebinds).data
+                        replace_shapes=self.shapes, add_layers=self.layers, rebind=self.rebinds)
+
+    def apply(self, original: bytes, *, prune: bool = False, rename: str | None = None) -> bytes:
+        result = self.apply_result(original, prune=prune, rename=rename)
+        return original if result is None else result.data

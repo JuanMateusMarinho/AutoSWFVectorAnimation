@@ -176,6 +176,25 @@ class _Reader:
         return ItemPart(key, label, gender, class_name, char_id, self.pieces(char_id, key, 0))
 
 
+def refresh_part(structure: ItemStructure, movie: MovieData, key: str) -> None:
+    """Read one part's pieces again (new layers in it), leaving every other part as it is."""
+    index, old = next((i, p) for i, p in enumerate(structure.parts) if p.key == key)
+    reader = _Reader(movie)
+    structure.parts[index] = reader.part(old.key, old.label, old.gender, old.class_name, old.char_id)
+    inside = lambda path: path == key or path.startswith(key + "/")
+    for path in [p for p in structure._paths if inside(p)]:
+        del structure._paths[path]
+    structure._paths.update(reader.paths)
+    for ref in list(structure._instances):
+        kept = [p for p in structure._instances[ref] if not inside(p)]
+        if kept:
+            structure._instances[ref] = kept
+        else:
+            del structure._instances[ref]
+    for ref, paths in reader.instances.items():
+        structure._instances.setdefault(ref, []).extend(paths)
+
+
 def read_structure(movie: MovieData, file_name: str = "the file") -> ItemStructure:
     reader = _Reader(movie)
     classes = movie.classes

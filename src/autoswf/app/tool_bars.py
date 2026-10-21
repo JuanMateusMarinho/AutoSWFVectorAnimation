@@ -8,6 +8,9 @@ from autoswf.app.edit_tools import TOOL_KEYS, TOOL_NAMES, TOOLS, EditTools
 from autoswf.edit.layer import ToneRef
 
 
+MAX_SWATCHES = 24
+
+
 class ToolsColumn(QToolBar):
     tool_picked = Signal(str)
 
@@ -15,7 +18,7 @@ class ToolsColumn(QToolBar):
         super().__init__("Tools", parent)
         self.setOrientation(Qt.Orientation.Vertical)
         self.group = QActionGroup(self)
-        self.group.setExclusive(True)
+        self.group.setExclusionPolicy(QActionGroup.ExclusionPolicy.ExclusiveOptional)
         self.actions_by_tool: dict[str, QAction] = {}
         for tool in TOOLS:
             action = QAction("%s (%s)" % (TOOL_NAMES[tool], TOOL_KEYS[tool]), self)
@@ -29,6 +32,10 @@ class ToolsColumn(QToolBar):
 
     def show_tool(self, tool: str) -> None:
         self.actions_by_tool[tool].setChecked(True)
+
+    def clear_tool(self) -> None:
+        for action in self.actions_by_tool.values():
+            action.setChecked(False)
 
 
 class ToolOptionsBar(QWidget):
@@ -94,7 +101,12 @@ class ToolOptionsBar(QWidget):
             item = self.swatches.takeAt(0)
             if item.widget() is not None:
                 item.widget().deleteLater()
+        shown, seen = [], set()
         for tone in (t.layer.tones if t.layer is not None else []):
+            if (tone.color, tone.binding) not in seen:
+                seen.add((tone.color, tone.binding))
+                shown.append(tone)
+        for tone in shown[:MAX_SWATCHES]:
             button = QPushButton()
             button.setFixedSize(20, 20)
             border = "2px solid white" if tone.ref == t.color else "1px solid #333"

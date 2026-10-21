@@ -289,6 +289,9 @@ class MainWindow(QMainWindow):
         if stage not in STAGES:
             return
         self.stage_bar.set_current(stage)
+        if hasattr(self, "helm_tools"):                 # a stage's own tools take the canvas back
+            self.helm_tools.active = False
+            self.tools_column.clear_tool()
         self.canvas.set_stage(stage)
         self.properties.show_stage(stage)
         self.left_tabs.setCurrentWidget(self.layers if stage in ("Import", "Vectorize") else self.parts_tree)
@@ -375,6 +378,7 @@ class MainWindow(QMainWindow):
         self.helm_tools.edit_ready.connect(self._on_helm_edit)
         self.helm_tools.message.connect(lambda text: self.statusBar().showMessage(text, 6000))
         self.helm_tools.changed.connect(self.canvas.update)
+        self.helm_tools.stroke_changed.connect(self.canvas.update)
         self.canvas.edit_tools = self.helm_tools
         self.tools_column = ToolsColumn(self)
         self.tools_column.tool_picked.connect(self.pick_tool)
@@ -461,8 +465,11 @@ class MainWindow(QMainWindow):
         everything = []
         for area in (layer.visible_areas().values() if layer is not None else []):
             everything = union(everything, area)
-        matrix = placement(traced.size, target_bounds=bounds_px(everything))
-        if layer is not None and self.swf_editor.ask_trace_target(layer.name) == "replace":
+        matrix = self.helm_trace_matrix(traced.size, bounds_px(everything), traced.content)
+        target = self.swf_editor.ask_trace_target(layer.name) if layer is not None else "new"
+        if target is None:
+            return
+        if target == "replace":
             edit = replace_layer(layer, traced, matrix)
             if not edit.empty:
                 self._on_helm_edit(edit, "Trace PNG")
@@ -470,7 +477,23 @@ class MainWindow(QMainWindow):
         tones = [(shape, binding[0] if binding else None, binding[1] if binding else "None")
                  for shape, binding in new_layer_tones(traced, matrix, [t for t in (layer.tones if layer else [])
                                                                        if t.binding])]
-        self.controller.change("Trace PNG", lambda s: s.edits.extras.append(ExtraLayer("Traced layer", tones)))
+        taken = {e.name for e in self.controller.settings.edits.extras}
+        n = 1
+        while "Traced layer %d" % n in taken:
+            n += 1
+        name = "Traced layer %d" % n
+        self.controller.change("Trace PNG", lambda s: s.edits.extras.append(ExtraLayer(name, tones)))
+        self.controller.select_part(name)
+
+    def helm_trace_matrix(self, size, target_bounds, content):
+        """A PNG of the drawing's own canvas lands where the drawing is; anything else is fitted into the layer."""
+        from autoswf.edit.trace_png import placement
+        build = self.controller.helm_build
+        if build is not None and build.passes is not None and build.alignment is not None:
+            return placement(size, source_size=(build.passes.width, build.passes.height),
+                             source_matrix=build.alignment.matrix(), target_bounds=target_bounds,
+                             content_bounds=content)
+        return placement(size, target_bounds=target_bounds, content_bounds=content)
 
     def active_tools(self):
         return self.swf_editor.edit_tools if self.in_swf_editor() else self.helm_tools
@@ -485,6 +508,8 @@ class MainWindow(QMainWindow):
 
     def refresh_helm_layer(self) -> None:
         from autoswf.edit.project_source import extra_layer, project_layer
+        if self.controller.busy and self.canvas.pending_layer is not None:
+            return                                      # an edit is on its way: keep the layer it was made on
         build, part = self.controller.helm_build, self.controller.selected_part
         layer = None
         if build is not None and part is not None and build.art is not None:
@@ -514,9 +539,11 @@ class MainWindow(QMainWindow):
                 return
             for key, shape in edit.shapes.items():
                 s.edits.set_shape(parts.get(key, layer.name), key, shape)
-        self.canvas.pending_layer = layer.applied(edit)
+        after = layer.applied(edit)
+        self.canvas.pending_layer = after
         self.canvas.update()
         self.controller.change(label, apply)
+        self.helm_tools.set_layer(after, keep_selection=True)   # the next stroke builds on this one
 
     def _on_preferences(self) -> None:
         from autoswf.app.preferences import PreferencesDialog
@@ -676,13 +703,17 @@ class MainWindow(QMainWindow):
         box.exec()
         return {id(replace): "replace", id(keep): "keep"}.get(id(box.clickedButton()))
 
+    def discard_question(self) -> str:
+        name = self.swf_editor.path.name if self.swf_editor.path else "this SWF"
+        return "Your changes to %s are not exported or saved yet. Save them first?" % name
+
     def ask_discard_edits(self) -> bool:
-        """True to drop the pieces removed in Open SWF and not exported."""
-        n = len(self.swf_editor.removed)
+        """True to leave the Open SWF workspace: after saving its changes, or dropping them."""
         answer = QMessageBox.question(
-            self, "Pieces not exported", "%d removed piece%s %s not exported yet. Discard %s?"
-            % (n, "" if n == 1 else "s", "is" if n == 1 else "are", "it" if n == 1 else "them"),
-            QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel)
+            self, "Unsaved changes", self.discard_question(),
+            QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel)
+        if answer == QMessageBox.StandardButton.Save:
+            return self._on_save()
         return answer == QMessageBox.StandardButton.Discard
 
     def _may_leave_swf(self) -> bool:

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from autoswf.edit.layer import RGBA, EditLayer, LayerEdit, Tone, ToneRef
-from autoswf.edit.regions import fill_areas, rebuild_shape, transform_area, union
+from autoswf.edit.regions import bounds_px, fill_areas, rebuild_shape, transform_area, union
 from autoswf.model.geometry import Matrix
 from autoswf.model.shape import Shape, SolidFill
 from autoswf.vectorize.art import vectorize_image
@@ -21,6 +21,7 @@ class TracedPng:
     shape: Shape                       # in the PNG's px, one fill per color
     colors: list[RGBA]
     size: tuple[int, int]              # width, height
+    content: tuple[float, float, float, float] | None = None     # the drawn part's bounds (x0, x1, y0, y1), px
 
 
 def read_png(path) -> np.ndarray:
@@ -39,20 +40,27 @@ def trace_png(rgba: np.ndarray, detail: int = 50) -> TracedPng:
     traced = vectorize_image(rgba, detail)
     if traced is None:
         raise ValueError(EMPTY)
-    return TracedPng(traced.shape, [s.color for s in traced.styles], (rgba.shape[1], rgba.shape[0]))
+    drawn = []
+    for area in fill_areas(traced.shape).values():
+        drawn = union(drawn, area)
+    return TracedPng(traced.shape, [s.color for s in traced.styles], (rgba.shape[1], rgba.shape[0]), bounds_px(drawn))
 
 
 def placement(png_size, *, source_size: tuple[int, int] | None = None, source_matrix: Matrix | None = None,
-              target_bounds: tuple[float, float, float, float] | None = None) -> Matrix:
-    """PNG px -> layer px: where the drawing was when the PNG has the drawing's canvas size, else fitted (aspect kept)
-    and centered in the target bounds (x0, x1, y0, y1), else centered on the origin."""
+              target_bounds: tuple[float, float, float, float] | None = None,
+              content_bounds: tuple[float, float, float, float] | None = None) -> Matrix:
+    """PNG px -> layer px: where the drawing was when the PNG has the drawing's canvas size, else its drawn part
+    (`content_bounds`; transparent margins left out) fitted, aspect kept, and centered in the target bounds (x0, x1,
+    y0, y1), else centered on the origin."""
     w, h = png_size
     if source_size is not None and source_matrix is not None and tuple(png_size) == tuple(source_size):
         return source_matrix
     if target_bounds is not None:
         x0, x1, y0, y1 = target_bounds
-        scale = min((x1 - x0) / w, (y1 - y0) / h)
-        return Matrix(scale, 0, 0, scale, (x0 + x1) / 2 - w * scale / 2, (y0 + y1) / 2 - h * scale / 2)
+        cx0, cx1, cy0, cy1 = content_bounds if content_bounds is not None else (0, w, 0, h)
+        scale = min((x1 - x0) / max(cx1 - cx0, 1e-6), (y1 - y0) / max(cy1 - cy0, 1e-6))
+        return Matrix(scale, 0, 0, scale, (x0 + x1) / 2 - (cx0 + cx1) / 2 * scale,
+                      (y0 + y1) / 2 - (cy0 + cy1) / 2 * scale)
     return Matrix.translate(-w / 2, -h / 2)
 
 
