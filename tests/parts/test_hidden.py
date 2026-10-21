@@ -160,9 +160,10 @@ def test_outlines_inside_the_eye_go_with_the_ball(ring_in):
     assert dark("Eye L lash", 100, 166) and not dark("Eye L ball", 100, 166)  # the outline below the eye
 
 
-def _eye_at_the_silhouette(lid_end=212):
+def _eye_at_the_silhouette(lid_end=212, lid_start=160, tip=0):
     """A face whose right edge cuts through an eye (the far eye of a 3/4 head): the white reaches the face's thin
-    outline, and the lid's thick line pokes out past the silhouette over the empty canvas (head units of 4 px)."""
+    outline, and the lid's thick line pokes out past the silhouette over the empty canvas (head units of 4 px). A `tip`
+    px long, 2 px thin, hangs off the lid's inner end."""
     from drawings import disc, rect, ring
     from autoswf.aqw.template import Alignment
     from autoswf.drawing.writers import LayerSpec
@@ -173,7 +174,8 @@ def _eye_at_the_silhouette(lid_end=212):
                   disc(W, H, (40, 120, 220, 255), 186, 132, 12), disc(W, H, (5, 5, 20, 255), 186, 132, 5)):
         flats = np.where((layer[..., 3:4] > 0) & (face[..., 3:4] > 0), layer, flats)       # clipped to the face
     outline = ring(W, H, (10, 10, 10, 255), 120, 130, 91, 89)                            # 2 px: half a unit
-    lid = rect(W, H, (10, 10, 10, 255), 160, 105, lid_end, 117)                          # 12 px: three units
+    lid = rect(W, H, (10, 10, 10, 255), lid_start, 105, lid_end, 117)                    # 12 px: three units
+    lid = np.maximum(lid, rect(W, H, (10, 10, 10, 255), lid_start - tip, 110, lid_start, 112))
     line = np.where(lid[..., 3:4] > 0, lid, outline)
     d = drawing_from_specs(W, H, [LayerSpec("Flats", flats), LayerSpec("Line", line)])
     passes = extract_passes(d, assign_roles(d))
@@ -221,6 +223,16 @@ def test_hidden_fills_continue_the_head_outline_under_a_lid():
     assert (fills[under & (r <= 88)] >= 0.99).mean() >= 0.95
     outside = under & (r >= 92)                                           # no skin shows outside the outline
     assert ((fills[outside] < 0.05) | lines[outside]).all()
+
+
+def test_a_lids_tapered_tip_moves_with_the_lid():
+    """A thin tip hanging off the end of a lid's thick wing, out over the face past where the eye's own pixels reach,
+    is the lid's: it must not stay behind on the face when the eye blinks (mcHeadF's near eye has one)."""
+    pm, layers, t = _eye_at_the_silhouette(lid_start=120, tip=8)
+    eye = next(n for n in pm.parts if n.startswith("Eye"))
+    for x in (113, 116, 119):
+        assert of(layers["%s lid" % eye], "lines", t)[111, x, 3] > 0.5, x
+        assert of(layers["Face"], "lines", t)[111, x, 3] < 0.5, x
 
 
 def test_nothing_of_a_lid_stays_floating_past_the_head():

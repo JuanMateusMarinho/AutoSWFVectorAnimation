@@ -28,6 +28,8 @@ SILHOUETTE_UNITS = 1.0                             # head units: a line at most 
                                                    # canvas is the head's silhouette, the outline of the part under it
 OPENING_WIDTHS = 4                                 # outline widths: radius of the disk opening the silhouette, which
                                                    # cuts off line art poking out past it (lids, lashes)
+LID_TIP_UNITS = 2.5                                # head units: line art hanging off a lid's thick stroke no farther
+                                                   # than this from it (its tapered tip) is the lid's
 EDGE_BAND_UNITS = 2.0                              # head units of an edge just outside a hole that give its direction
 EDGE_GAP = 2                                       # px next to a hole whose classes are redone (slivers hugging it)
 HEAD_ON = 0.42                                     # cos 65 degrees: a line meets a hole head-on (it goes on under it)
@@ -559,35 +561,34 @@ class _Splitter:
         """A thick stroke is one piece: where an eye owns most of a stroke thicker than SILHOUETTE_UNITS and than the
         drawing's outline with its blended fringe (a lid and its tip poking out past the face, farther from the eye's
         pixels than line ownership reaches), the rest of it is the eye's too, so it moves with the lid instead of
-        staying behind with the part under the eye, its rim included (the blended edge and the corners that measuring
-        it rounds off), but not thin lines going on away from it. Where it crosses the head's outline it is the eye's
-        as well (the outline goes on under it in the hidden fills)."""
+        staying behind with the part under the eye, its thinner ends included (the blended edge, the corners that
+        measuring it rounds off, a tapered tip up to LID_TIP_UNITS long), but not thin lines going on farther away from
+        it. Where it crosses the head's outline it is the eye's as well (the outline goes on under it in the hidden
+        fills)."""
         width = max(SILHOUETTE_UNITS * self.graph.scale, self.outline + 2)
         rim = int(np.ceil((np.sqrt(2) - 1) * max(1, round(width / 2)))) + 1   # px past what _thick keeps of a stroke
+        hang = max(rim, LID_TIP_UNITS * self.graph.scale)
         stay = [k for k, units in enumerate(self.owners) if self.units[units[0]].part.kind in PROVIDERS]
-        lower = None
+        strokes, count = ndimage.label(_thick(lines, width), structure=np.ones((3, 3)))   # on the whole drawing: a
+        if not count:                                                                       # lid's wing may reach far
+            return                                                                          # past the eye's pixels
+        lower = np.isin(owner, stay)
+        theirs = np.bincount(strokes[lower], minlength=count + 1)
         for o, units in enumerate(self.owners):
             if len(units) != 3:
                 continue
             mine = (owner == o) & lines
-            box = _box(mine, pad=int(np.ceil(self.reach)) * 2, shape=(self.h, self.w))
-            if box is None:
-                continue
-            if lower is None:
-                lower = np.isin(owner, stay)
-            x0, y0, x1, y1 = box
-            strokes, count = ndimage.label(_thick(lines[y0:y1, x0:x1], width), structure=np.ones((3, 3)))
-            if not count:
-                continue
-            ours = np.bincount(strokes[mine[y0:y1, x0:x1]], minlength=count + 1)
-            theirs = np.bincount(strokes[lower[y0:y1, x0:x1]], minlength=count + 1)
+            ours = np.bincount(strokes[mine], minlength=count + 1)
             ours[0] = 0
             taken = np.nonzero((ours > 0) & (ours >= theirs))[0]
-            core = np.isin(strokes, taken)
+            if not len(taken):
+                continue
+            x0, y0, x1, y1 = _box(np.isin(strokes, taken), pad=int(np.ceil(hang)) + 2, shape=(self.h, self.w))
+            core = np.isin(strokes[y0:y1, x0:x1], taken)
             rest, _ = ndimage.label(lines[y0:y1, x0:x1] & ~core & lower[y0:y1, x0:x1], structure=np.ones((3, 3)))
-            near = ndimage.binary_dilation(core, structure=np.ones((3, 3)), iterations=rim)
-            away = np.unique(rest[(rest > 0) & ~near])                # thin lines going on away from the stroke
-            take = (core & lower[y0:y1, x0:x1]) | ((rest > 0) & ~np.isin(rest, away))
+            hanging = np.unique(rest[ndimage.binary_dilation(core, structure=np.ones((3, 3)))])
+            away = np.unique(rest[ndimage.distance_transform_edt(~core) > hang])   # thin lines going on away from it
+            take = (core & lower[y0:y1, x0:x1]) | np.isin(rest, np.setdiff1d(hanging[hanging > 0], away))
             owner[y0:y1, x0:x1][take] = o
             self.silhouette[y0:y1, x0:x1][take] = False
 
