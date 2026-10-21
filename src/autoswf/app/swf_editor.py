@@ -216,6 +216,8 @@ class SwfEditor(QWidget):
         self._fill_tree()
         if structure.parts:
             self.select(structure.parts[0].key)
+        if structure.notes:
+            self.message.setText(" ".join(structure.notes))
         return None
 
     def _fill_tree(self) -> None:

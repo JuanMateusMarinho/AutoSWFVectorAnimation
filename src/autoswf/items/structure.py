@@ -13,6 +13,7 @@ ARMOR_CLASS = re.compile(r"^(.+?)([MF])(Chest|Hip|Shoulder|Hand|Thigh|Shin|FootI
 HAIR_CLASS = re.compile(r"^(.+?)([MF])(HairBack|Hair)$")
 GENDER_WORDS = {"M": "male", "F": "female"}
 MAX_DEPTH = 12                     # nesting levels expanded under a part
+MAX_PIECES = 20000                 # pieces listed in all (a crafted file may nest clips without end)
 
 
 @dataclass(frozen=True)
@@ -70,6 +71,7 @@ class ItemStructure:
     other_classes: list[str]
     _paths: dict[str, Piece] = field(default_factory=dict, repr=False)
     _instances: dict[PieceRef, list[str]] = field(default_factory=dict, repr=False)
+    notes: list[str] = field(default_factory=list)          # where the listing stopped short
 
     def piece(self, path: str) -> Piece:
         if path not in self._paths:
@@ -115,6 +117,7 @@ class _Reader:
         self._colors: dict[str, tuple[str, str] | None] = {}
         self.paths: dict[str, Piece] = {}
         self.instances: dict[PieceRef, list[str]] = {}
+        self.notes: list[str] = []
 
     def color(self, class_name: str | None) -> tuple[str, str] | None:
         if class_name is None:
@@ -125,10 +128,18 @@ class _Reader:
             self._colors[class_name] = (found.location, found.shade) if found is not None else None
         return self._colors[class_name]
 
-    def pieces(self, sprite_id: int, prefix: str, level: int) -> list[Piece]:
+    def _note(self, text: str) -> None:
+        if text not in self.notes:
+            self.notes.append(text)
+
+    def pieces(self, sprite_id: int, prefix: str, level: int, inside: frozenset = frozenset()) -> list[Piece]:
         sprite = self.movie.character(sprite_id)
         if not isinstance(sprite, SpriteDef) or level > MAX_DEPTH:
             return []
+        if sprite_id in inside:
+            self._note("A clip places itself inside itself; it is listed once")
+            return []
+        inside = inside | {sprite_id}
         placed: dict[int, list[tuple[int, PlaceCommand]]] = {}      # depth -> each character it shows, first frame
         for f, frame in enumerate(sprite.frames):
             for cmd in frame:
@@ -143,6 +154,9 @@ class _Reader:
             entries = placed[depth]
             changes = len(entries) > 1
             for k, (f, cmd) in enumerate(entries):
+                if len(self.paths) >= MAX_PIECES:
+                    self._note("This file has more than %d pieces; the list stops there" % MAX_PIECES)
+                    return out
                 char = self.movie.character(cmd.char_id)
                 kind = ("clip" if isinstance(char, SpriteDef) else "morph" if isinstance(char, MorphShapeDef)
                         else "shape" if isinstance(char, ShapeDef) else "other")
@@ -154,7 +168,7 @@ class _Reader:
                 self.paths[piece.path] = piece
                 self.instances.setdefault(piece.ref, []).append(piece.path)
                 if kind == "clip":
-                    piece.children = self.pieces(cmd.char_id, piece.path, level + 1)
+                    piece.children = self.pieces(cmd.char_id, piece.path, level + 1, inside)
                 out.append(piece)
         return out
 
@@ -211,4 +225,4 @@ def read_structure(movie: MovieData, file_name: str = "the file") -> ItemStructu
         raise ValueError("No AQW item classes were found in %s" % file_name)
     if not parts:
         raise ValueError("No AQW item classes were found in %s" % file_name)
-    return ItemStructure(kind, link, genders, parts, other, reader.paths, reader.instances)
+    return ItemStructure(kind, link, genders, parts, other, reader.paths, reader.instances, reader.notes)

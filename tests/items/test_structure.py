@@ -71,3 +71,20 @@ def test_a_part_that_shows_other_characters_later_lists_each_with_its_label():
     assert len({p.ref for p in head.pieces}) == 1
     assert st.instances(head.pieces[0].ref) == [p.path for p in head.pieces]
     assert st.piece(head.pieces[2].path) is head.pieces[2]
+
+
+def test_pieces_that_nest_without_end_stop_with_a_note():
+    import time
+    from swf_builders import place2, sprite_tag, symbol_class
+    loop = sprite_tag(1, [[place2(d, 1) for d in range(1, 5)]])                  # a clip that places itself 4 times
+    wide = sprite_tag(3, [[place2(d, 4) for d in range(1, 9)]])
+    deep = sprite_tag(4, [[place2(d, 5) for d in range(1, 9)]])
+    leaf = sprite_tag(5, [[place2(d, 6) for d in range(1, 9)]])
+    rest = sprite_tag(6, [[place2(d, 7) for d in range(1, 9)]])
+    tail = sprite_tag(7, [[place2(d, 8) for d in range(1, 9)]])
+    end = sprite_tag(8, [[]])
+    item = sprite_tag(2, [[place2(1, 1), place2(2, 3)]])
+    start = time.monotonic()
+    st = read_structure(MovieData(swf([loop, end, tail, rest, leaf, deep, wide, item, symbol_class({2: "Bomb"})])))
+    assert time.monotonic() - start < 5 and st.notes
+    assert len(list(st.walk())) <= 20000
