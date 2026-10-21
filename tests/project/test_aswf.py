@@ -83,3 +83,21 @@ def test_reimport_keeps_matched_parts_and_lists_the_rest(helm_psd, tmp_path):
     assert [(k.part, k.target) for k in s3.animation.keys] == [("Lock 3", "Lock 3")]
     assert s3.pivots == {"Lock 3": (1.0, 2.0)} and s3.corrections.colors == {"Lock 3": "Trim"}
     assert "Renamed: Lock 2 → Lock 3" in report.text()
+
+
+@pytest.mark.parametrize("name", ["../../escaped.txt", r"..\..\escaped.txt", "C:/escaped.txt", "sub/../../x.psd"])
+def test_a_crafted_project_never_writes_outside_its_cache_folder(tmp_path, name):
+    import json
+    import zipfile
+    from autoswf.project.aswf import FORMAT, VERSION, load_project
+    path = tmp_path / "evil.aswf"
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("project.json", json.dumps({"format": FORMAT, "version": VERSION, "settings": {"source": "x.psd"},
+                                               "source": {"name": name, "path": r"\\attacker\share\x.psd"}}))
+        z.writestr("source/" + name, b"payload")
+    cache = tmp_path / "deep" / "cache"
+    loaded = load_project(path, cache)
+    written = [p for p in tmp_path.rglob("*") if p.is_file() and p.read_bytes() == b"payload"]
+    assert all(cache / "projects" in p.parents for p in written)
+    assert loaded.saved_copy is None or (cache / "projects") in loaded.saved_copy.parents
+    assert not loaded.settings.source.startswith(("\\\\", "//"))                 # never a network path (NTLM)

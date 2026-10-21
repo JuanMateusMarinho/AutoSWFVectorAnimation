@@ -6,6 +6,7 @@ import io
 import json
 import math
 import os
+import re
 import zipfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -47,8 +48,23 @@ def _sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def save_project(path: Path, settings: HelmSettings, build) -> None:
-    """Write the project; nothing is left half-written when it fails (ValueError with the reason)."""
+def _file_name(name) -> str | None:
+    """A drawing's file name from a project file, or None when it is not a plain name (a crafted project may hold
+    "../../x" or "C:/x" to write elsewhere)."""
+    base = re.split(r"[\\/]", name)[-1] if isinstance(name, str) else ""
+    return None if base in ("", ".", "..") or ":" in base or base != name.strip() else base
+
+
+def _network(path: str) -> bool:
+    """A UNC path: never touched on opening a project (Windows would send the user's credentials to that server)."""
+    return path.replace("/", "\\").startswith("\\\\")
+
+
+def save_project(path: Path, settings: HelmSettings, build, *, signatures: list | None = None,
+                 pending: bool = False) -> None:
+    """Write the project; nothing is left half-written when it fails (ValueError with the reason). `signatures` are
+    the parts the settings were made for (default: the build's); `pending` marks a drawing that changed since and was
+    not re-imported, so reopening offers the re-import."""
     path = Path(path)
     source = Path(settings.source)
     try:
@@ -60,8 +76,10 @@ def save_project(path: Path, settings: HelmSettings, build) -> None:
     except ValueError:                   # another drive
         relative = None
     doc = {"format": FORMAT, "version": VERSION, "app_version": __version__,
-           "source": {"name": source.name, "path": str(source.resolve()), "relative": relative, "sha256": _sha(drawing)},
-           "settings": settings.to_dict(), "parts": [asdict(s) for s in part_signatures(build)]}
+           "source": {"name": source.name, "path": str(source.resolve()), "relative": relative,
+                      "sha256": "" if pending else _sha(drawing)},
+           "settings": settings.to_dict(),
+           "parts": [asdict(s) for s in (part_signatures(build) if signatures is None else signatures)]}
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr("project.json", json.dumps(doc, indent=2, ensure_ascii=False))
@@ -97,7 +115,8 @@ def load_project(path: Path, cache_root: Path) -> LoadedProject:
             names = set(z.namelist())
             source = doc.get("source", {}) if isinstance(doc, dict) else {}
             name = source.get("name", "") if isinstance(source, dict) else ""
-            saved = z.read("source/" + name) if "source/" + name in names else None
+            safe = _file_name(name)
+            saved = z.read("source/" + name) if safe and "source/" + name in names else None
             swf = z.read("vector/helm.swf") if "vector/helm.swf" in names else None
     except (zipfile.BadZipFile, KeyError, ValueError, OSError, UnicodeDecodeError):
         raise ValueError("%s is not an AutoSWF project" % path.name) from None
@@ -116,16 +135,17 @@ def load_project(path: Path, cache_root: Path) -> LoadedProject:
             continue
     saved_copy = None
     if saved is not None:
-        saved_copy = Path(cache_root) / "projects" / _sha(saved) / name
+        saved_copy = Path(cache_root) / "projects" / _sha(saved) / safe
         if not saved_copy.exists():
             saved_copy.parent.mkdir(parents=True, exist_ok=True)
             saved_copy.write_bytes(saved)
-    absolute = Path(source.get("path", ""))
-    relative = path.parent / source["relative"] if source.get("relative") else None
+    stored = source.get("path") if isinstance(source.get("path"), str) else ""
+    absolute = Path(stored)
+    relative = path.parent / source["relative"] if isinstance(source.get("relative"), str) else None
     found = None
-    if source.get("path") and absolute.exists():
+    if stored and not _network(stored) and absolute.exists():
         found = absolute
-    elif relative is not None and relative.exists():
+    elif relative is not None and not _network(str(relative)) and relative.exists():
         found = relative
     notes, changed = [], False
     if found is not None:
