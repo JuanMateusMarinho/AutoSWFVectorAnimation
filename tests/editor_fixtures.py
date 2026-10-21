@@ -141,6 +141,82 @@ def long_stroke():
     return [Sample(20 + k * 1.3, 40 + k * 1.1, 0.5 + 0.5 * ((k % 20) / 20)) for k in range(200)]
 
 
+# ---------------------------------------------------------------- SWF look-alikes
+
+HAIR_RGBA = (110, 60, 30, 255)
+
+
+def _hair_shape(k: int) -> Shape:
+    return shape_of({0: polygon_area([(150 + 3 * k, 0), (312, 20), (312, 120), (262, 70), (200, 45)])}, [HAIR_RGBA])
+
+
+def strip_face_armor(link: str = "StripHero", hair_drawings: int = 1) -> bytes:
+    """A male armor whose Head has a "skinLayer" clip (a Skin-colored face with the strip, a Skin Dark shadow and a
+    fixed outline ring) and a "hair" clip over it (with `hair_drawings` frames of its own drawings) — a look-alike of
+    TheSwordHero's head pieces."""
+    from aqw_fakes import _disc, _holder
+    from autoswf.abc.movieclip_classes import ClassSpec, build_abc
+    from autoswf.edit.regions import difference, offset
+    from autoswf.model.document import ColorCustom, Frame, Placement, SetColorScript, Symbol
+    from autoswf.swf.movie import build_swf
+    face = polygon_area(FACE)
+    ring = difference(offset(face, LINE_WIDTH / 2), offset(face, -LINE_WIDTH / 2))
+    skin = Symbol("Skin", [Frame([Placement(shape_of({0: face}, [SKIN_RGBA]), 1)])], color_custom=ColorCustom("Skin", "None"))
+    shadow = Symbol("Shadow", [Frame([Placement(shape_of({0: rect_area(*SHADOW_BOX)}, [SHADOW_RGBA]), 1)])],
+                    color_custom=ColorCustom("Skin", "Dark"))
+    skin_layer = Symbol("SkinLayer", [Frame([Placement(skin, 1), Placement(shadow, 2),
+                                             Placement(shape_of({0: ring}, [LINE_RGBA]), 3)])])
+    hair = Symbol("Hair", [Frame([Placement(_hair_shape(k), 1)]) for k in range(hair_drawings)])
+    head = Symbol("Head", [Frame([Placement(skin_layer, 1, name="skinLayer"), Placement(hair, 2, name="hair")])])
+    parts = {"Head": head}
+    for part in ("Chest", "Hip", "Shoulder", "Hand", "Thigh", "Shin", "Foot", "FootIdle", "Robe", "RobeBack"):
+        parts[part] = _holder(part, _disc((90, 110, 140, 255), 6, 9))
+    names = {id(s): "%sM%s" % (link, part) for part, s in parts.items()}
+    names[id(skin)] = "%s_fla.Skin_1" % link
+    names[id(shadow)] = "%s_fla.Shadow_2" % link
+    specs = [ClassSpec(n) for n in names.values() if "_fla." not in n]
+    specs.append(ClassSpec(names[id(skin)], ((0, SetColorScript("Skin", "None")),)))
+    specs.append(ClassSpec(names[id(shadow)], ((0, SetColorScript("Skin", "Dark")),)))
+    return build_swf(list(parts.values()), names, build_abc(specs))
+
+
+def swf_tags(data: bytes) -> list[tuple[int, bytes]]:
+    """(code, header + body) of every top-level tag."""
+    from autoswf.swf.reader import R, decompress
+    import struct
+    _, _, _, body = decompress(data)
+    r = R(body, 0)
+    r.rect()
+    r.align()
+    pos, out = r.p + 4, []
+    while pos < len(body):
+        cl = struct.unpack_from("<H", body, pos)[0]
+        code, length, size = cl >> 6, cl & 0x3F, 2
+        if length == 0x3F:
+            length, size = struct.unpack_from("<I", body, pos + 2)[0], 6
+        out.append((code, body[pos:pos + size + length]))
+        pos += size + length
+        if code == 0:
+            break
+    return out
+
+
+def changed_tag_indexes(before: bytes, after: bytes) -> list[int]:
+    a, b = swf_tags(before), swf_tags(after)
+    assert len(a) == len(b)
+    return [i for i, (x, y) in enumerate(zip(a, b)) if x != y]
+
+
+def index_of_shape(data: bytes, cid: int) -> int:
+    import struct
+    return next(i for i, (code, raw) in enumerate(swf_tags(data))
+                if code in (2, 22, 32, 83) and struct.unpack_from("<H", raw, 6 if (struct.unpack_from("<H", raw, 0)[0] & 0x3F) == 0x3F else 2)[0] == cid)
+
+
+def edges_in_twips(shape_def) -> list:
+    return sorted((e.start, e.control, e.end, e.fill0, e.fill1) for e in shape_def.edges)
+
+
 def background_pixels_inside(shape: Shape, scale: float) -> int:
     """Background pixels inside the union of the shape's fills, rendered at `scale` (a 1 px rim excluded)."""
     import numpy as np

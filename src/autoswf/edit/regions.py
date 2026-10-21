@@ -12,14 +12,14 @@ import pyclipper
 
 from autoswf.model.geometry import Matrix, Point
 from autoswf.model.shape import Fill, LineTo, Path, QuadTo, Shape
-from autoswf.vectorize.fit import FitSettings, fit_chain
+from autoswf.vectorize.fit import _try_fit, _unit
 
 TWIPS = 20
 FLATTEN_PX = 0.25
 SNAP_TWIPS = 2                     # vertices this close are one vertex after an edit
 RESAMPLE_PX = 0.5                  # spacing of the points a re-fitted run is fitted through
-CORNER_DEGREES = 35.0              # a re-fitted run is broken where it turns more than this
-REFIT = FitSettings(tolerance=FLATTEN_PX, smoothing=0.0)   # vector input: no pixel staircase to smooth
+CORNER_DEGREES = 20.0              # a re-fitted run is broken where it turns more than this (exact corners)
+FIT_PX = 0.125                     # how far a re-fitted curve may stray from the edited boundary
 
 Area = list[list[tuple[int, int]]]
 TPoint = tuple[int, int]
@@ -42,7 +42,8 @@ def _samples(start: tuple[float, float], seg) -> list[tuple[float, float]]:
     for k in range(1, n):
         t = k / n
         u = 1 - t
-        out.append((u * u * start[0] + 2 * u * t * c[0] + t * t * e[0], u * u * start[1] + 2 * u * t * c[1] + t * t * e[1]))
+        out.append((u * u * start[0] + 2 * u * t * c[0] + t * t * e[0],
+                    u * u * start[1] + 2 * u * t * c[1] + t * t * e[1]))
     out.append(e)
     return out
 
@@ -459,9 +460,53 @@ def _straight(points) -> bool:
     return all(abs((x - x0) * (y1 - y0) - (y - y0) * (x1 - x0)) / length <= FLATTEN_PX for x, y in points[1:-1])
 
 
+def _fit_points(q: np.ndarray) -> list:
+    """Lines and quadratic curves through dense points (px), from q[0] exactly to q[-1], within FLATTEN_PX."""
+    n = len(q)
+
+    def tangent(k: int) -> np.ndarray:
+        if k == 0:
+            return _unit(q[min(3, n - 1)] - q[0])
+        if k == n - 1:
+            return _unit(q[n - 1] - q[max(n - 4, 0)])
+        return _unit(q[min(k + 3, n - 1)] - q[max(k - 3, 0)])
+
+    segs, i = [], 0
+    while i < n - 1:
+        def fits(j: int):
+            return _try_fit(q[i:j + 1], tangent(i), tangent(j), FIT_PX)
+        good, good_fit, bad, step = i + 1, ("L",), None, 2
+        while True:
+            j = min(i + step, n - 1)
+            result = fits(j)
+            if result is None:
+                bad = j
+                break
+            good, good_fit = j, result
+            if j == n - 1:
+                break
+            step *= 2
+        if bad is not None:
+            while bad - good > 1:
+                mid = (good + bad) // 2
+                result = fits(mid)
+                if result is None:
+                    bad = mid
+                else:
+                    good, good_fit = mid, result
+        end = (float(q[good][0]), float(q[good][1]))
+        if good_fit[0] == "L":
+            segs.append(LineTo(*end))
+        else:
+            segs.append(QuadTo(float(good_fit[1][0]), float(good_fit[1][1]), *end))
+        i = good
+    return segs
+
+
 def _fit_open(points: list[tuple[float, float]]) -> list:
-    """Segments from points[0] exactly to points[-1], broken at corners (fit_chain would round them)."""
-    cuts = [0] + [i for i in range(1, len(points) - 1) if _turn(points[i - 1], points[i], points[i + 1]) > CORNER_DEGREES]
+    """Segments from points[0] exactly to points[-1], broken at corners first."""
+    cuts = [0] + [i for i in range(1, len(points) - 1)
+                  if _turn(points[i - 1], points[i], points[i + 1]) > CORNER_DEGREES]
     cuts.append(len(points) - 1)
     segs = []
     for a, b in zip(cuts, cuts[1:]):
@@ -469,8 +514,7 @@ def _fit_open(points: list[tuple[float, float]]) -> list:
         if _straight(piece):
             segs.append(LineTo(*piece[-1]))
             continue
-        _, raw = fit_chain(_densify(piece), False, REFIT)
-        fitted = [LineTo(r[1], r[2]) if r[0] == "L" else QuadTo(r[1], r[2], r[3], r[4]) for r in raw]
+        fitted = _fit_points(_densify(piece))
         last = fitted[-1]
         fitted[-1] = LineTo(*piece[-1]) if isinstance(last, LineTo) else QuadTo(last.cx, last.cy, *piece[-1])
         segs.extend(fitted)
@@ -486,11 +530,8 @@ def _fitted(points: list[tuple[float, float]], closed: bool) -> tuple[tuple[floa
         pts = pts[:-1]
     n = len(pts)
     corners = [i for i in range(n) if _turn(pts[i - 1], pts[i], pts[(i + 1) % n]) > CORNER_DEGREES]
-    if corners:
-        ring = pts[corners[0]:] + pts[:corners[0]]
-        return ring[0], _fit_open(ring + [ring[0]])
-    start, raw = fit_chain(_densify(pts + [pts[0]]), True, REFIT)
-    return start, [LineTo(r[1], r[2]) if r[0] == "L" else QuadTo(r[1], r[2], r[3], r[4]) for r in raw]
+    ring = pts[corners[0]:] + pts[:corners[0]] if corners else pts
+    return ring[0], _fit_open(ring + [ring[0]])
 
 
 def _emit(pts: list[TPoint], left, right, original: _Original) -> Path:

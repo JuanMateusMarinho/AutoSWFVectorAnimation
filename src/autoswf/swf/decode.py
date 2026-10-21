@@ -417,6 +417,7 @@ class MovieData:
         self._chars: dict[int, ShapeDef | MorphShapeDef | SpriteDef | None] = {}
         self._abc_blocks: list[bytes] = []
         self._abcs: list[ABC] | None = None
+        self.overrides: dict[int, int] = {}          # char id -> how many times the editor replaced its shape
         frames, labels = self._timeline(r.p, end, top=True)
         self.root = _sprite(0, frame_count, frames, labels)
         self._names = {cid: name for name, cid in self.classes.items()}
@@ -434,6 +435,14 @@ class MovieData:
                 except (ValueError, IndexError, struct.error):
                     continue
         return self._abcs
+
+    def override(self, char_id: int, shape: ShapeDef) -> None:
+        """Show `shape` as character `char_id` from now on (the editor's fast path: the file bytes stay as they are)."""
+        self._chars[char_id] = shape
+        self.overrides[char_id] = self.overrides.get(char_id, 0) + 1
+        stale = [k for k in self.cache if isinstance(k, tuple) and k[:1] == ("geometry",) and k[1:2] == (char_id,)]
+        for key in stale:
+            del self.cache[key]
 
     def character_ids(self) -> list[int]:
         """Every defined character (shapes, morph shapes, sprites), in file order."""

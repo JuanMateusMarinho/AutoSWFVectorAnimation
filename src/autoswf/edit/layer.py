@@ -12,6 +12,7 @@ from autoswf.model.shape import GradientFill, LineTo, Path, QuadTo, Shape, Solid
 RGBA = tuple[int, int, int, int]
 CLOSE_GAP_PX = 3.0
 CHANGE_PX2 = 0.01                  # less than this (px²) is no change
+ROUNDING_PX = 0.06                 # differences thinner than twice this (about a twip each side) are rounding
 REGROW_PX = 1.0                    # the Magic Wand's area grows back this much past its gap-closing shrink
 SLIVER_PX = 0.5                    # kept areas thinner than twice this hold no line back
 NEW_FIXED_COLOR = "New color %s is a fixed color: it does not follow AQW colors."
@@ -167,10 +168,12 @@ class EditLayer:
     # ------------------------------------------------------------ edits
 
     def _changed(self, before: dict[int, Area], after: dict[int, Area]) -> bool:
+        """Whether any fill really changed: slivers thinner than a twip or so are rounding, not an edit."""
         for f in set(before) | set(after):
             a, b = before.get(f, []), after.get(f, [])
-            if area_px(difference(a, b)) > CHANGE_PX2 or area_px(difference(b, a)) > CHANGE_PX2:
-                return True
+            for diff in (difference(a, b), difference(b, a)):
+                if area_px(diff) > CHANGE_PX2 and offset(diff, -ROUNDING_PX):
+                    return True
         return False
 
     def _cut(self, d: Drawing, area: Area, areas: dict[int, Area] | None = None) -> dict[int, Area]:

@@ -146,3 +146,21 @@ def test_kind_of_brave_without_the_quiver_and_the_strap(kind_of_brave, qapp):
     assert kept_before <= set(tags(out.data))                                # every other tag byte-identical
     assert np.allclose(render_class(out.data, "KindOfBraveMChest"),
                        render_class(data, "KindOfBraveMChest", hide_depth=39), atol=1 / 255)
+
+
+def test_replacing_a_shape_changes_only_that_tag():
+    from editor_fixtures import changed_tag_indexes, index_of_shape, rect_area, shape_of
+    data = mini_armor_with_pieces()
+    structure = read_structure(MovieData(data))
+    cid = structure.piece("MShoulder/1").char_id
+    classes = structure.public_classes()
+    new_shape = shape_of({0: rect_area(-5, -5, 5, 5)}, [(1, 2, 3, 255)])
+    out = edit_swf(data, replace_shapes={cid: new_shape})
+    assert changed_tag_indexes(data, out.data) == [index_of_shape(data, cid)]
+    assert validate_item_swf(out.data, classes, original=data).ok and out.replaced_shapes == 1
+    assert MovieData(out.data).character(cid).bounds == (-5.0, 5.0, -5.0, 5.0)
+
+
+def test_replacing_a_shape_that_is_not_in_the_file_is_refused():
+    with pytest.raises(ValueError, match="Shape 9999 is not in the file"):
+        edit_swf(mini_armor_with_pieces(), replace_shapes={9999: None})

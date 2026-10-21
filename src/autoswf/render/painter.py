@@ -60,25 +60,37 @@ def _build(shape: ShapeDef):
     return shape, layers
 
 
+def _version(obj: DisplayObject) -> int:
+    """How many times the editor replaced this character's shape (0 = as in the file)."""
+    return getattr(obj.movie, "overrides", {}).get(obj.char_id, 0)
+
+
+def _shape(obj: ShapeInstance):
+    """The shape to draw: an editor override replaces the one the instance was made with."""
+    return obj.movie.character(obj.char_id) if _version(obj) else obj.shape
+
+
 def _geometry(obj: ShapeInstance):
     """(ShapeDef, layers of (fills, strokes) QPainterPaths), cached per movie (never by id())."""
     cache = obj.movie.cache
-    if isinstance(obj.shape, MorphShapeDef):
+    shape = _shape(obj)
+    if isinstance(shape, MorphShapeDef):
         key = ("morph", obj.char_id, obj.ratio)
         if key not in cache:
-            cache[key] = _build(interpolate_morph(obj.shape, obj.ratio / 65535))
+            cache[key] = _build(interpolate_morph(shape, obj.ratio / 65535))
     else:
-        key = ("geometry", obj.char_id)
+        key = ("geometry", obj.char_id, _version(obj))
         if key not in cache:
-            cache[key] = _build(obj.shape)
+            cache[key] = _build(shape)
     return cache[key]
 
 
 def _shape_bounds(obj: ShapeInstance) -> tuple[float, float, float, float]:
-    if isinstance(obj.shape, MorphShapeDef):
+    shape = _shape(obj)
+    if isinstance(shape, MorphShapeDef):
         t = obj.ratio / 65535
-        return tuple(a + (b - a) * t for a, b in zip(obj.shape.start.bounds, obj.shape.end.bounds))
-    return obj.shape.bounds
+        return tuple(a + (b - a) * t for a, b in zip(shape.start.bounds, shape.end.bounds))
+    return shape.bounds
 
 
 def object_bounds(obj: DisplayObject, matrix: Matrix) -> tuple[float, float, float, float] | None:
@@ -114,7 +126,8 @@ def _q(v: float, step: float = 1e-4) -> float:
 
 def _signature(obj: DisplayObject) -> tuple:
     """Everything that changes how a subtree looks (the objects themselves are part of it, by identity)."""
-    own = (obj, obj.visible, obj.matrix, obj.color, obj.color_custom, obj.ratio, obj.clip_depth, obj.blend, obj.filters)
+    own = (obj, obj.visible, obj.matrix, obj.color, obj.color_custom, obj.ratio, obj.clip_depth, obj.blend, obj.filters,
+           _version(obj))
     if isinstance(obj, ClipInstance):
         return own + (obj.frame, tuple(_signature(c) for c in obj.children))
     return own
@@ -320,7 +333,7 @@ class Renderer:
             return
         ix, iy = math.floor(m.tx), math.floor(m.ty)
         fx, fy = _q(m.tx - ix, 1 / SUBPIXEL), _q(m.ty - iy, 1 / SUBPIXEL)
-        key = ("shape", obj.movie, obj.char_id, obj.ratio if isinstance(obj.shape, MorphShapeDef) else 0,
+        key = ("shape", obj.movie, obj.char_id, _version(obj), obj.ratio if isinstance(obj.shape, MorphShapeDef) else 0,
                _q(m.a), _q(m.b), _q(m.c), _q(m.d), fx, fy, ct)
         hit = self._cache_get(key)
         if hit is None:

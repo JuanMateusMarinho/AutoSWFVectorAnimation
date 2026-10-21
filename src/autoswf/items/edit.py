@@ -15,6 +15,7 @@ SPRITE, SYMBOL_CLASS, EXPORT_ASSETS, SCALING_GRID, DO_ABC, DO_ABC_OLD = 39, 76, 
 PLACE_TAGS, REMOVE_TAGS = (4, 26, 70), (5, 28)
 PRUNABLE = (2, 22, 32, 83, 46, 84, 39)          # shapes, morph shapes, sprites
 BUTTONS = (7, 34)
+SHAPE_TAGS = (2, 22, 32, 83)
 
 
 @dataclass
@@ -24,6 +25,7 @@ class EditResult:
     removed_characters: list[int] = field(default_factory=list)
     renamed: dict[str, str] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
+    replaced_shapes: int = 0
 
 
 @dataclass
@@ -146,9 +148,12 @@ def _sprite_children(tag: _Tag) -> set[int]:
 
 
 def edit_swf(data: bytes, remove: Iterable[PieceRef] = (), *, prune: bool = True,
-             rename: str | None = None) -> EditResult:
+             rename: str | None = None, replace_shapes: dict[int, "Shape"] | None = None) -> EditResult:
+    """`replace_shapes` (the editor's drawings, char id -> Shape) rewrites those DefineShape tags as DefineShape4 at
+    the same place, under the same id."""
     remove = list(dict.fromkeys(remove))
-    if not remove and rename is None:
+    replace_shapes = dict(replace_shapes or {})
+    if not remove and rename is None and not replace_shapes:
         raise ValueError("Nothing to change: no pieces chosen and no new link")
     sig, version, length, body = decompress(bytes(data))
     r = R(body, 0)
@@ -183,6 +188,9 @@ def edit_swf(data: bytes, remove: Iterable[PieceRef] = (), *, prune: bool = True
         if not removed.get(ref.sprite, {}).get(ref.depth):
             raise ValueError("Piece %d/%d is not in the file" % (ref.sprite, ref.depth))
     result.removed_placements = sum(sum(v.values()) for v in removed.values())
+    if replace_shapes:
+        out = _replace_shapes(out, replace_shapes)
+        result.replaced_shapes = len(replace_shapes)
 
     if prune and remove:
         if any(t.code in BUTTONS for t in out):
@@ -198,6 +206,23 @@ def edit_swf(data: bytes, remove: Iterable[PieceRef] = (), *, prune: bool = True
     else:
         result.data = b"CWS" + bytes([version]) + header_length + zlib.compress(new_body, 9)
     return result
+
+
+def _replace_shapes(tags: list[_Tag], shapes: dict) -> list[_Tag]:
+    from autoswf.swf.shape_encoder import encode_define_shape4
+    out, done = [], set()
+    for tag in tags:
+        if tag.code in SHAPE_TAGS:
+            cid = struct.unpack_from("<H", tag.body, 0)[0]
+            if cid in shapes:
+                body = encode_define_shape4(shapes[cid], cid)
+                tag = _Tag(83, _header(83, len(body), True), body)
+                done.add(cid)
+        out.append(tag)
+    missing = sorted(set(shapes) - done)
+    if missing:
+        raise ValueError("Shape %d is not in the file" % missing[0])
+    return out
 
 
 def _prune(tags: list[_Tag]) -> tuple[list[_Tag], list[int]]:

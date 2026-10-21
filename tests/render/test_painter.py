@@ -139,3 +139,16 @@ def test_seam_free_fills_cost_little_more_than_drawing_them_one_by_one(qapp, mon
     runs = [(run_seconds(seamless), run_seconds(one_by_one)) for _ in range(7)]  # interleaved: load changes hit both
     seam_free, plain = min(s for s, _ in runs), min(p for _, p in runs)
     assert seam_free < 3 * plain, (seam_free, plain)
+
+
+def test_an_overridden_shape_is_drawn_fresh(qapp):
+    from autoswf.edit.swf_source import shape_def_of
+    from editor_fixtures import rect_area, shape_of
+    movie = MovieData(swf([shape_tag(1, 1, [("solid", RED)], [], [sq(0, 0, 20, 20)])]))
+    obj = instantiate(movie, 1)
+    renderer = Renderer()
+    before = renderer.render_image(obj, 40, 40, Matrix(), None)
+    movie.override(1, shape_def_of(shape_of({0: rect_area(0, 0, 20, 20)}, [BLUE]), 1))
+    after = renderer.render_image(obj, 40, 40, Matrix(), None)
+    assert rgba(before, 10, 10)[:3] == (255, 0, 0) and rgba(after, 10, 10)[:3] == (0, 0, 255)
+    assert movie.overrides == {1: 1}
