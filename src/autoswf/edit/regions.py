@@ -18,6 +18,7 @@ TWIPS = 20
 FLATTEN_PX = 0.25
 SNAP_TWIPS = 2                     # vertices this close are one vertex after an edit
 RESAMPLE_PX = 0.5                  # spacing of the points a re-fitted run is fitted through
+CORNER_DEGREES = 35.0              # a re-fitted run is broken where it turns more than this
 REFIT = FitSettings(tolerance=FLATTEN_PX, smoothing=0.0)   # vector input: no pixel staircase to smooth
 
 Area = list[list[tuple[int, int]]]
@@ -441,17 +442,55 @@ def _densify(points: list[tuple[float, float]]) -> np.ndarray:
     return np.array(out, np.float64)
 
 
+def _turn(a, b, c) -> float:
+    """Degrees the polyline turns at b."""
+    ux, uy, vx, vy = b[0] - a[0], b[1] - a[1], c[0] - b[0], c[1] - b[1]
+    nu, nv = math.hypot(ux, uy), math.hypot(vx, vy)
+    if nu == 0 or nv == 0:
+        return 0.0
+    return math.degrees(math.acos(max(-1.0, min(1.0, (ux * vx + uy * vy) / (nu * nv)))))
+
+
+def _straight(points) -> bool:
+    (x0, y0), (x1, y1) = points[0], points[-1]
+    length = math.hypot(x1 - x0, y1 - y0)
+    if length == 0:
+        return len(points) <= 2
+    return all(abs((x - x0) * (y1 - y0) - (y - y0) * (x1 - x0)) / length <= FLATTEN_PX for x, y in points[1:-1])
+
+
+def _fit_open(points: list[tuple[float, float]]) -> list:
+    """Segments from points[0] exactly to points[-1], broken at corners (fit_chain would round them)."""
+    cuts = [0] + [i for i in range(1, len(points) - 1) if _turn(points[i - 1], points[i], points[i + 1]) > CORNER_DEGREES]
+    cuts.append(len(points) - 1)
+    segs = []
+    for a, b in zip(cuts, cuts[1:]):
+        piece = points[a:b + 1]
+        if _straight(piece):
+            segs.append(LineTo(*piece[-1]))
+            continue
+        _, raw = fit_chain(_densify(piece), False, REFIT)
+        fitted = [LineTo(r[1], r[2]) if r[0] == "L" else QuadTo(r[1], r[2], r[3], r[4]) for r in raw]
+        last = fitted[-1]
+        fitted[-1] = LineTo(*piece[-1]) if isinstance(last, LineTo) else QuadTo(last.cx, last.cy, *piece[-1])
+        segs.extend(fitted)
+    return segs
+
+
 def _fitted(points: list[tuple[float, float]], closed: bool) -> tuple[tuple[float, float], list]:
-    """Segments through a run of points (px); open runs end exactly at points[-1]."""
-    if not closed and len(points) == 2:
-        return points[0], [LineTo(points[1][0], points[1][1])]
-    start, raw = fit_chain(_densify(points), closed, REFIT)
-    segs = [LineTo(r[1], r[2]) if r[0] == "L" else QuadTo(r[1], r[2], r[3], r[4]) for r in raw]
-    if not closed and segs:
-        last = segs[-1]
-        segs[-1] = LineTo(*points[-1]) if isinstance(last, LineTo) else QuadTo(last.cx, last.cy, *points[-1])
-        start = points[0]
-    return start, segs
+    """Segments through a run of points (px); open runs start at points[0] and end exactly at points[-1]."""
+    pts = [p for i, p in enumerate(points) if i == 0 or p != points[i - 1]]
+    if not closed:
+        return pts[0], _fit_open(pts)
+    if len(pts) > 1 and pts[0] == pts[-1]:
+        pts = pts[:-1]
+    n = len(pts)
+    corners = [i for i in range(n) if _turn(pts[i - 1], pts[i], pts[(i + 1) % n]) > CORNER_DEGREES]
+    if corners:
+        ring = pts[corners[0]:] + pts[:corners[0]]
+        return ring[0], _fit_open(ring + [ring[0]])
+    start, raw = fit_chain(_densify(pts + [pts[0]]), True, REFIT)
+    return start, [LineTo(r[1], r[2]) if r[0] == "L" else QuadTo(r[1], r[2], r[3], r[4]) for r in raw]
 
 
 def _emit(pts: list[TPoint], left, right, original: _Original) -> Path:

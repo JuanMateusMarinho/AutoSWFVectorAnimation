@@ -49,6 +49,98 @@ def painted_two_fills():
     return shape, {0: difference(areas[0], notch), 1: union(areas[1], notch)}
 
 
+# ---------------------------------------------------------------- the face with a strip (the user's case, mockup)
+
+FACE = [(160, 10), (292, 32), (296, 135), (270, 163), (264, 176), (240, 215), (190, 268), (180, 272), (165, 268),
+        (85, 210), (62, 178), (40, 182), (18, 160), (10, 118), (100, 55)]
+STRIP = [(276, 29.33), (292, 32), (296, 135), (270, 163), (264, 176)]      # beyond the correct edge
+SHADOW_BOX = (40, 120, 80, 160)
+SKIN_RGBA, SHADOW_RGBA, LINE_RGBA = (255, 201, 149, 255), (227, 162, 116, 255), (58, 36, 20, 255)
+LINE_WIDTH = 3.0
+STRIP_CENTER = (283, 100)
+RIGHT_OF_EDGE_BOX = (281, 40, 300, 150)
+
+
+def _edge(start_late: float = 0.0):
+    """Brush samples along the correct edge, (276, 29.3) -> (264, 176), starting `start_late` px below the top
+    outline (which it meets almost square)."""
+    from autoswf.edit.brush import Sample
+    (x0, y0), (x1, y1) = (276, 29.33), (264, 176)
+    length = ((x1 - x0) ** 2 + (y1 - y0) ** 2) ** 0.5
+    n = int(length // 2)
+    out = []
+    for k in range(n + 1):
+        t = (start_late + k / n * (length - start_late)) / length
+        out.append(Sample(x0 + (x1 - x0) * t, y0 + (y1 - y0) * t, 1.0))
+    return out
+
+
+CORRECT_EDGE = _edge()
+CORRECT_EDGE_SHORT_BY_2PX = _edge(5.0)        # the cap and the outline's inner half leave a 2 px opening
+CORRECT_EDGE_SHORT_BY_8PX = _edge(11.0)
+
+
+def polygon_area(points):
+    from autoswf.edit.regions import TWIPS, union
+    return union([[(round(x * TWIPS), round(y * TWIPS)) for x, y in points]], [])
+
+
+def shape_of(areas: dict, fills) -> Shape:
+    from autoswf.edit.regions import rebuild_shape
+    return rebuild_shape(Shape([SolidFill(c) for c in fills], []), areas)
+
+
+def face_with_strip(colored_only: bool = False):
+    """An EditLayer: "skin" (base, Skin None), "shadow" (Skin Dark, above it), "line" (a 3 px outline ring)."""
+    from autoswf.edit.layer import Drawing, EditLayer, Tone, ToneRef
+    from autoswf.edit.regions import difference, offset
+    from autoswf.model.geometry import Matrix
+    face = polygon_area(FACE)
+    ring = difference(offset(face, LINE_WIDTH / 2), offset(face, -LINE_WIDTH / 2))
+    drawings = [Drawing("skin", shape_of({0: face}, [SKIN_RGBA]), Matrix(), True),
+                Drawing("shadow", shape_of({0: rect_area(*SHADOW_BOX)}, [SHADOW_RGBA]), Matrix(), True)]
+    tones = [Tone(ToneRef("skin", 0), SKIN_RGBA, ("Skin", "None")), Tone(ToneRef("shadow", 0), SHADOW_RGBA, ("Skin", "Dark"))]
+    line = None
+    if not colored_only:
+        drawings.append(Drawing("line", shape_of({0: ring}, [LINE_RGBA]), Matrix(), False))
+        tones.append(Tone(ToneRef("line", 0), LINE_RGBA, None))
+        line = ToneRef("line", 0)
+    return EditLayer("Skin", drawings, tones, line, LINE_WIDTH)
+
+
+def strip_constants():
+    """(STRIP_AREA, FACE_AREA): the strip's and the whole face's visible base once the correct edge is brushed."""
+    from autoswf.edit.brush import stroke_area
+    from autoswf.edit.regions import area_px, difference, offset, union
+    face = polygon_area(FACE)
+    lines = union(difference(offset(face, LINE_WIDTH / 2), offset(face, -LINE_WIDTH / 2)), stroke_area(CORRECT_EDGE, 3))
+    strip = difference(polygon_area(STRIP), lines)
+    base = difference(difference(face, rect_area(*SHADOW_BOX)), lines)
+    return area_px(strip), area_px(base)
+
+
+def busy_layer(drawings: int = 4, edges_each: int = 360):
+    """A layer of `drawings` wobbly discs of `edges_each` edges each, like an armor piece's drawings."""
+    import math
+    from autoswf.edit.layer import Drawing, EditLayer, Tone, ToneRef
+    from autoswf.model.geometry import Matrix
+    out, tones = [], []
+    for d in range(drawings):
+        r = 120 - 20 * d
+        pts = [(150 + (r + 4 * math.sin(9 * k * 2 * math.pi / edges_each)) * math.cos(2 * math.pi * k / edges_each),
+                150 + (r + 4 * math.sin(9 * k * 2 * math.pi / edges_each)) * math.sin(2 * math.pi * k / edges_each))
+               for k in range(edges_each)]
+        color = (40 * d, 100, 200 - 40 * d, 255)
+        out.append(Drawing("d%d" % d, shape_of({0: polygon_area(pts)}, [color]), Matrix(), False))
+        tones.append(Tone(ToneRef("d%d" % d, 0), color, None))
+    return EditLayer("Busy", out, tones, tones[-1].ref, 3.0)
+
+
+def long_stroke():
+    from autoswf.edit.brush import Sample
+    return [Sample(20 + k * 1.3, 40 + k * 1.1, 0.5 + 0.5 * ((k % 20) / 20)) for k in range(200)]
+
+
 def background_pixels_inside(shape: Shape, scale: float) -> int:
     """Background pixels inside the union of the shape's fills, rendered at `scale` (a 1 px rim excluded)."""
     import numpy as np
