@@ -42,12 +42,18 @@ class ExportDialog(QDialog):
         self.variants_box = QCheckBox("Male and female versions (two files)")
         self.variants_box.setChecked(settings.export.variants)
         self.gender_rows: dict[str, tuple[QLineEdit, QLineEdit]] = {}
+        self._follows: dict[QLineEdit, bool] = {}         # a version name follows the main one until named by hand
         grid = QGridLayout()
         grid.addWidget(QLabel("File"), 0, 1)
         grid.addWidget(QLabel("Link"), 0, 2)
         for row, g in enumerate(("M", "F"), start=1):
-            variant = settings.export.genders.get(g) or default_variant(settings, g)
+            default, saved = default_variant(settings, g), settings.export.genders.get(g)
+            variant = saved or default
             file_edit, link_edit = QLineEdit(variant.file), QLineEdit(variant.link)
+            self._follows[file_edit] = Path(variant.file) == Path(default.file)
+            self._follows[link_edit] = variant.link == default.link
+            for edit_ in (file_edit, link_edit):
+                edit_.textEdited.connect(lambda _text, e=edit_: self._follows.__setitem__(e, False))
             grid.addWidget(QLabel(GENDER_NAMES[g].capitalize()), row, 0)
             grid.addWidget(file_edit, row, 1)
             grid.addWidget(link_edit, row, 2)
@@ -187,9 +193,9 @@ class ExportDialog(QDialog):
         file = Path(self.file_edit.text().strip() or "helm.swf")
         link = self.link_edit.text().strip()
         for g, (file_edit, link_edit) in self.gender_rows.items():
-            if not file_edit.isModified():
+            if self._follows[file_edit]:
                 file_edit.setText(str(file.with_name(file.stem + g + (file.suffix or ".swf"))))
-            if not link_edit.isModified():
+            if self._follows[link_edit]:
                 link_edit.setText(link + g if link else "")
 
     def _on_variants(self, on: bool) -> None:
