@@ -57,6 +57,7 @@ class HelmCanvas(EditableCanvas, QWidget):
         self._align_preview: Matrix | None = None
         self.tool = "select"
         self.pending_layer = None                # an edit not built yet (the editor's layer after it)
+        self.hidden_parts: set[str] = set()      # parts hidden in the editor only (the Layers eye)
         self._tools_init()
         self.pending = None                      # (mask, rgb) of a fix not built yet
         self._cut: list[tuple[float, float]] = []
@@ -321,6 +322,11 @@ class HelmCanvas(EditableCanvas, QWidget):
         variant = self._variant()
         back = self.player.back_at(frame)
         inner = back.children[0] if back is not None and back.children else None
+        for name in self.hidden_parts:
+            placement = build.helm.placements.get(name)
+            child = obj.child_by_name(placement.name) if placement is not None and placement.name else None
+            if child is not None:
+                child.visible = False
         for part, placements in adjust_targets(build.helm, build.layers).items():
             adjust = variant.parts.get(part) if variant is not None else None
             rig = build.rigs.get(part)

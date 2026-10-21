@@ -380,6 +380,88 @@ class MainWindow(QMainWindow):
         self.tool_options.attach(self.helm_tools)
         self.controller.selection_changed.connect(lambda name: self.refresh_helm_layer())
         self.controller.built.connect(lambda build: self.refresh_helm_layer())
+        from autoswf.app.edit_layers import EditLayersPanel
+        self.helm_layers = EditLayersPanel()
+        self.helm_layers.layer_selected.connect(self.controller.select_part)
+        self.helm_layers.visibility_changed.connect(self._on_helm_visibility)
+        self.helm_layers.color_requested.connect(self._on_helm_color)
+        self.helm_layers.new_layer_requested.connect(self._on_helm_new_layer)
+        self.helm_layers.delete_requested.connect(self._on_helm_delete)
+        self.helm_layers.trace_requested.connect(self._on_helm_trace)
+        self.left_tabs.addTab(self.helm_layers, "Edit")
+        self.controller.built.connect(lambda build: self.refresh_helm_rows())
+        self.controller.selection_changed.connect(lambda name: self.refresh_helm_rows())
+
+    def refresh_helm_rows(self) -> None:
+        from autoswf.app.edit_layers import helm_layer_rows
+        self.helm_layers.set_rows(helm_layer_rows(self.controller.helm_build, self.canvas.hidden_parts),
+                                  self.controller.selected_part)
+
+    def _on_helm_visibility(self, part: str, shown: bool) -> None:
+        (self.canvas.hidden_parts.discard if shown else self.canvas.hidden_parts.add)(part)
+        self.canvas.update()
+
+    def _on_helm_color(self, part: str, location: str) -> None:
+        extras = [e.name for e in self.controller.settings.edits.extras] if self.controller.settings else []
+        if part in extras:
+            def edit(s):
+                extra = next(e for e in s.edits.extras if e.name == part)
+                extra.tones = [(shape, location if location != "None" else None, shade)
+                               for shape, _, shade in extra.tones]
+            self.controller.change("Color", edit)
+            return
+        self.controller.change("Color", lambda s: s.corrections.colors.__setitem__(
+            part, location if location != "None" else "none"))
+
+    def _on_helm_new_layer(self) -> None:
+        from autoswf.model.shape import Shape
+        from autoswf.project.edits import ExtraLayer
+        settings = self.controller.settings
+        if settings is None:
+            return
+        taken = {e.name for e in settings.edits.extras}
+        n = 1
+        while "Layer %d" % n in taken:
+            n += 1
+        name = "Layer %d" % n
+        self.controller.change("New layer", lambda s: s.edits.extras.append(ExtraLayer(name, [(Shape([], []), None, "None")])))
+        self.controller.select_part(name)
+
+    def _on_helm_delete(self, part: str) -> None:
+        settings = self.controller.settings
+        if settings is not None and part in {e.name for e in settings.edits.extras}:
+            self.controller.change("Delete layer", lambda s: setattr(
+                s.edits, "extras", [e for e in s.edits.extras if e.name != part]))
+        else:
+            self.statusBar().showMessage("A part found in the drawing stays; erase its art to remove it", 6000)
+
+    def _on_helm_trace(self) -> None:
+        from PySide6.QtWidgets import QFileDialog
+        from autoswf.edit.regions import bounds_px, union
+        from autoswf.edit.trace_png import new_layer_tones, placement, read_png, replace_layer, trace_png
+        from autoswf.project.edits import ExtraLayer
+        path, _ = QFileDialog.getOpenFileName(self, "Trace PNG", "", "PNG images (*.png)")
+        if not path:
+            return
+        try:
+            traced = trace_png(read_png(path))
+        except (OSError, ValueError) as e:
+            self.statusBar().showMessage(str(e), 8000)
+            return
+        layer = self.helm_tools.layer
+        everything = []
+        for area in (layer.visible_areas().values() if layer is not None else []):
+            everything = union(everything, area)
+        matrix = placement(traced.size, target_bounds=bounds_px(everything))
+        if layer is not None and self.swf_editor.ask_trace_target(layer.name) == "replace":
+            edit = replace_layer(layer, traced, matrix)
+            if not edit.empty:
+                self._on_helm_edit(edit, "Trace PNG")
+            return
+        tones = [(shape, binding[0] if binding else None, binding[1] if binding else "None")
+                 for shape, binding in new_layer_tones(traced, matrix, [t for t in (layer.tones if layer else [])
+                                                                       if t.binding])]
+        self.controller.change("Trace PNG", lambda s: s.edits.extras.append(ExtraLayer("Traced layer", tones)))
 
     def active_tools(self):
         return self.swf_editor.edit_tools if self.in_swf_editor() else self.helm_tools

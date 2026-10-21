@@ -12,13 +12,16 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFileDialog, QForm
                                QLineEdit, QPushButton, QSplitter, QTextEdit, QTreeWidget, QTreeWidgetItem,
                                QVBoxLayout, QWidget)
 
+from autoswf.app.edit_layers import EditLayersPanel, swf_layer_rows
 from autoswf.app.edit_tools import EditableCanvas, EditTools
+from autoswf.app.frame_strip import FrameStrip
 from autoswf.aqw.assets import AqwCache
 from autoswf.aqw.contract import check_link, client_class_names
 from autoswf.aqw.validate import validate_item_swf
 from autoswf.edit.swf_source import UneditableDrawing, drawing_uses, shape_def_of, swf_layer
 from autoswf.items.edit import edit_swf
 from autoswf.items.item_edits import ItemEdits
+from autoswf.items.layers import NewLayer
 from autoswf.items.structure import ItemStructure, PieceRef, read_structure
 from autoswf.items.thumbs import piece_image
 from autoswf.model.geometry import Matrix, Point
@@ -159,6 +162,7 @@ class _ItemCanvas(EditableCanvas, QWidget):
             obj.driven = True                       # shown on that frame: its own frame scripts do not move it
             obj.goto(e.frame)
         run_pending_actions(obj, ctx)
+        e.prepare_display(obj, ctx)
         bounds = object_bounds(obj, Matrix())
         if bounds is None and self._box is None:
             p.setPen(QColor(200, 200, 200))
@@ -203,6 +207,8 @@ class SwfEditor(QWidget):
         self._stale = False                             # the edited bytes lag behind drawings shown by override
         self._shared_ok: set[int] = set()               # shared drawings the user agreed to edit everywhere
         self.layer_frame = 0                            # the frame of the selected piece's own timeline
+        self.hidden: set[str] = set()                   # pieces hidden in the editor only (the eye)
+        self._new_layer_part = None                     # "+ New layer" waits for its first stroke here
         self.selected_path: str | None = None
         self.frame = 0
         self.undo_stack = QUndoStack(self)
@@ -216,8 +222,8 @@ class SwfEditor(QWidget):
         self._thumbs: dict[int, QIcon] = {}
 
         self.tree = QTreeWidget()
-        self.tree.setColumnCount(2)
-        self.tree.setHeaderLabels(["Piece", "Kind"])
+        self.tree.setColumnCount(5)
+        self.tree.setHeaderLabels(["Piece", "Kind", "Color", "Note", "Shown"])
         self.tree.setIconSize(QPixmap(THUMB, THUMB).size())
         self.tree.itemChanged.connect(self._on_item_changed)
         self.tree.currentItemChanged.connect(self._on_current)
@@ -227,6 +233,14 @@ class SwfEditor(QWidget):
         self.tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         self.canvas = _ItemCanvas(self)
         self.canvas.edit_tools = self.edit_tools
+        self.frame_strip = FrameStrip()
+        self.frame_strip.frame_changed.connect(self._on_frame)
+        self.layers_panel = EditLayersPanel(with_rows=False)
+        self.layers_panel.part_selected.connect(self.select)
+        self.layers_panel.new_layer_requested.connect(self.new_layer)
+        self.layers_panel.trace_requested.connect(self.trace_png)
+        self.layers_panel.color_requested.connect(self.set_layer_color)
+        self.layers_panel.delete_requested.connect(self.delete_layer)
         self.title = QLabel()
         self.title.setStyleSheet("font-weight: bold;")
         self.kind_box = QComboBox()
@@ -254,6 +268,7 @@ class SwfEditor(QWidget):
         column.setContentsMargins(0, 0, 0, 0)
         column.addLayout(bar)
         column.addWidget(self.canvas, 1)
+        column.addWidget(self.frame_strip)
         column.addWidget(self.message)
         self.right = QWidget()
         right = QVBoxLayout(self.right)
@@ -271,7 +286,13 @@ class SwfEditor(QWidget):
         self._right_layout = right
         self.animated = None
         split = QSplitter(Qt.Orientation.Horizontal)
-        split.addWidget(self.tree)
+        left = QWidget()
+        left_column = QVBoxLayout(left)
+        left_column.setContentsMargins(0, 0, 0, 0)
+        left_column.addWidget(self.layers_panel)
+        left_column.addWidget(self.tree, 1)
+        self.layers_panel.layout().removeWidget(self.layers_panel.tree)
+        split.addWidget(left)
         split.addWidget(center)
         split.addWidget(self.right)
         split.setSizes([380, 660, 260])
@@ -293,6 +314,7 @@ class SwfEditor(QWidget):
             return str(e)
         self.path, self.original, self.movie, self.structure = path, data, movie, structure
         self.edits, self._exported, self.selected_path, self.frame = ItemEdits(), ItemEdits(), None, 0
+        self.hidden, self._new_layer_part = set(), None
         self._structure_key, self._stale, self._shared_ok, self.layer_frame = self.edits.structure_key(), False, set(), 0
         self.undo_stack.clear()
         self._thumbs = {}
@@ -321,10 +343,14 @@ class SwfEditor(QWidget):
 
     def _add_pieces(self, parent: QTreeWidgetItem, pieces) -> None:
         for piece in pieces:
-            item = QTreeWidgetItem(parent, [piece.label, piece.kind + (" (changes)" if piece.changes else "")])
+            from autoswf.app.edit_layers import color_tag, piece_note
+            item = QTreeWidgetItem(parent, [piece.label, piece.kind + (" (changes)" if piece.changes else ""),
+                                            color_tag(piece.color[0] if piece.color else None) or "",
+                                            piece_note(self.movie, piece) or "", ""])
             item.setData(0, PATH_ROLE, piece.path)
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
             item.setCheckState(0, Qt.CheckState.Unchecked if piece.ref in self.removed else Qt.CheckState.Checked)
+            item.setCheckState(4, Qt.CheckState.Unchecked if piece.path in self.hidden else Qt.CheckState.Checked)
             self._items[piece.path] = item
             self._add_pieces(item, piece.children)
 
@@ -403,8 +429,173 @@ class SwfEditor(QWidget):
         if self.current_part() is not old_part:
             self.canvas.fit()
         self.layer_frame = 0
+        self.layers_panel.current = path
+        part = self.current_part()
+        if part is not None:
+            self.layers_panel.set_parts([(p.key, p.label) for p in self.structure.parts], part.key)
         self.refresh_layer()
+        self.update_strip()
         self.canvas.update()
+
+    # ------------------------------------------------------------ layers (Plan 7)
+
+    def layer_rows(self):
+        part = self.current_part()
+        return swf_layer_rows(self.movie, self.structure, part.key, self.hidden) if part is not None else []
+
+    def _strip_target(self):
+        """("layer", sprite) when the selected piece is a clip with its own frames, else ("part", sprite)."""
+        from autoswf.swf.decode import SpriteDef
+        path = self.selected_path
+        if path and "/" in path:
+            piece = self.structure.piece(path)
+            sprite = self.movie.character(piece.char_id) if piece.kind == "clip" else None
+            if isinstance(sprite, SpriteDef) and sprite.frame_count > 1:
+                return "layer", sprite
+        part = self.current_part()
+        sprite = self.movie.character(part.char_id) if part is not None and part.char_id else None
+        return "part", sprite if isinstance(sprite, SpriteDef) else None
+
+    def update_strip(self) -> None:
+        from autoswf.edit.swf_source import drawing_frames
+        mode, sprite = self._strip_target()
+        if sprite is None:
+            self.frame_strip.set_frames(1, 0)
+            return
+        current = self.layer_frame if mode == "layer" else self.frame
+        self.frame_strip.set_frames(sprite.frame_count, current, sprite.labels)
+        marks = []
+        layer = self.edit_tools.layer
+        if mode == "layer" and layer is not None and layer.drawings:
+            try:
+                marks = drawing_frames(self.edited_movie, self.structure, self.selected_path,
+                                       int(layer.drawings[0].key.split("#")[0]))
+            except (ValueError, KeyError):
+                marks = []
+        self.frame_strip.set_marks(marks)
+
+    def _on_frame(self, frame: int) -> None:
+        mode, _ = self._strip_target()
+        if mode == "layer":
+            self.layer_frame = frame
+        else:
+            self.frame = frame
+        self.refresh_layer()
+        self.update_strip()
+        self.canvas.update()
+
+    def _child(self, obj, path: str):
+        for comp in path.split("/")[1:]:
+            if not hasattr(obj, "child_at_depth"):
+                return None
+            obj = obj.child_at_depth(int(comp.split(".")[0]))
+            if obj is None:
+                return None
+        return obj
+
+    def prepare_display(self, obj, ctx) -> None:
+        """The canvas's part as the editor shows it: the selected clip at its own frame, hidden pieces hidden."""
+        path = self.selected_path
+        if self.layer_frame and path and "/" in path:
+            target = self._child(obj, path)
+            if isinstance(target, ClipInstance):
+                target.driven = True
+                target.goto(self.layer_frame)
+                run_pending_actions(obj, ctx)
+        part = self.current_part()
+        for hidden in self.hidden:
+            if part is not None and hidden.split("/")[0] == part.key:
+                target = self._child(obj, hidden)
+                if target is not None:
+                    target.visible = False
+
+    def set_hidden(self, path: str, hidden: bool) -> None:
+        (self.hidden.add if hidden else self.hidden.discard)(path)
+        item = self._items.get(path)
+        if item is not None:
+            self.tree.blockSignals(True)
+            item.setCheckState(4, Qt.CheckState.Unchecked if hidden else Qt.CheckState.Checked)
+            self.tree.blockSignals(False)
+        self.canvas.update()
+
+    def delete_layer(self, path: str) -> None:
+        if path and "/" in path:
+            self.set_removed(self.structure.piece(path).ref, True)
+
+    def set_layer_color(self, path: str, location: str) -> None:
+        """The AQW color of every colorable clip in the layer (their shades kept)."""
+        if location == "None":
+            self.message.setText("An AQW color cannot be taken off a clip yet; pick another color")
+            return
+        targets = [p for p in self.structure.walk() if (p.path == path or p.path.startswith(path + "/"))
+                   and p.color and p.class_name]
+        if not targets:
+            self.message.setText("This layer has no AQW-colored clip")
+            return
+        after = self.edits.copy()
+        for p in targets:
+            after.rebinds[p.class_name] = (location, p.color[1])
+        self.push_edit("Color", after)
+
+    def new_layer(self) -> None:
+        from autoswf.edit.layer import Drawing, EditLayer
+        from autoswf.model.shape import Shape
+        part = self.current_part()
+        if part is None:
+            return
+        self._new_layer_part = part
+        self.edit_tools.set_layer(EditLayer("New layer", [Drawing("new", Shape([], []), Matrix(), False)], [], None, 1.0))
+        self.message.setText("New layer: paint on it (pick a color first with New color… or Alt+click)")
+
+    def ask_png_path(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Trace PNG", "", "PNG images (*.png)")
+        return path or None
+
+    def ask_trace_target(self, layer_name: str) -> str | None:
+        box = QMessageBox(QMessageBox.Icon.Question, "Trace PNG", "Use the PNG to replace this layer, or as a new one?",
+                          parent=self)
+        replace = box.addButton('Replace "%s"' % layer_name, QMessageBox.ButtonRole.AcceptRole)
+        new = box.addButton("New layer", QMessageBox.ButtonRole.ActionRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.exec()
+        return {id(replace): "replace", id(new): "new"}.get(id(box.clickedButton()))
+
+    def place_png(self, size, layer_bounds):
+        from autoswf.edit.trace_png import placement
+        return placement(size, target_bounds=layer_bounds)
+
+    def trace_png(self) -> None:
+        from autoswf.edit.regions import bounds_px, union
+        from autoswf.edit.trace_png import new_layer_tones, read_png, replace_layer, trace_png
+        path = self.ask_png_path()
+        if not path:
+            return
+        try:
+            traced = trace_png(read_png(path))
+        except (OSError, ValueError) as e:
+            self.message.setText(str(e))
+            return
+        layer = self.edit_tools.layer
+        name = layer.name.rpartition("/")[2] if layer is not None else "this part"
+        target = self.ask_trace_target(name)
+        if target is None:
+            return
+        everything = []
+        for area in (layer.visible_areas().values() if layer is not None else []):
+            everything = union(everything, area)
+        matrix = self.place_png(traced.size, bounds_px(everything))
+        if target == "replace" and layer is not None:
+            edit = replace_layer(layer, traced, matrix)
+            for note in edit.notes:
+                self.message.setText(note)
+            if not edit.empty:
+                self._on_layer_edit(edit, "Trace PNG")
+            return
+        bound = [t for t in (layer.tones if layer is not None else []) if t.binding]
+        after = self.edits.copy()
+        after.layers.append(NewLayer(self.current_part().char_id, "Traced layer",
+                                     new_layer_tones(traced, matrix, bound)))
+        self.push_edit("Trace PNG", after)
 
     def refresh_layer(self, keep_selection: bool = False) -> None:
         """The selected piece (or part) as the tools' layer, from the file as edited."""
@@ -457,6 +648,9 @@ class SwfEditor(QWidget):
         path = item.data(0, PATH_ROLE)
         if path is None or "/" not in path:
             return
+        if column == 4:
+            self.set_hidden(path, item.checkState(4) == Qt.CheckState.Unchecked)
+            return
         ref = self.structure.piece(path).ref
         removed = item.checkState(0) == Qt.CheckState.Unchecked
         if removed != (ref in self.removed):
@@ -477,9 +671,20 @@ class SwfEditor(QWidget):
         """Show these edits: drawings at once through the movie's overrides, structure changes by rewriting the file."""
         previous, self.edits = self.edits, edits
         if edits.structure_key() != self._structure_key:
+            grew = (edits.layers, edits.rebinds) != (previous.layers, previous.rebinds)
             self._structure_key = edits.structure_key()
             self._set_edited(self.edits.apply(self.original))
             self._stale = False
+            if grew:
+                shown = ItemEdits([], dict(edits.shapes), list(edits.layers), dict(edits.rebinds))
+                self.structure = read_structure(MovieData(shown.apply(self.original)), self.path.name if self.path else "")
+                selected = self.selected_path
+                self._fill_tree()
+                if selected and (selected in self._items):
+                    item = self._items[selected]
+                    self.tree.blockSignals(True)
+                    self.tree.setCurrentItem(item)
+                    self.tree.blockSignals(False)
         else:
             for cid in set(previous.shapes) | set(edits.shapes):
                 shape = edits.shapes.get(cid)
@@ -517,6 +722,15 @@ class SwfEditor(QWidget):
 
     def _on_layer_edit(self, edit, label: str) -> None:
         path = self.selected_path or self.structure.parts[0].key
+        if "new" in edit.shapes and self._new_layer_part is not None:
+            part, self._new_layer_part = self._new_layer_part, None
+            after = self.edits.copy()
+            after.layers.append(NewLayer(part.char_id, "New layer", [(edit.shapes["new"], None)]))
+            self.push_edit("New layer", after)
+            newest = part_pieces = next(p for p in self.structure.parts if p.key == part.key).pieces
+            if part_pieces:
+                self.select(newest[-1].path)
+            return
         shapes = {}
         for key, shape in edit.shapes.items():
             cid = int(key.split("#")[0])

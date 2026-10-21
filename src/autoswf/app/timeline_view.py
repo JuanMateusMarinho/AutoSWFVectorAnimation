@@ -47,6 +47,8 @@ class _Area(QWidget):
             p.setFont(weight)
             label = "%s  (%s, %d frames)" % (row.part, row.preset, row.length) if row.target is None else "   " + row.target
             p.drawText(QRectF(4, y, NAME_W - 6, ROW_H), Qt.AlignmentFlag.AlignVCenter, label)
+            for f in v.marks.get(row.part, []) if row.target is None else []:
+                p.fillRect(NAME_W + f * FRAME_W + 2, y + ROW_H - 4, FRAME_W - 4, 3, QColor(110, 160, 255))
             every = len(row.keys) >= row.length > 1
             if every:
                 p.fillRect(NAME_W, y + 7, row.length * FRAME_W, ROW_H - 14, QColor(90, 90, 110))
@@ -89,6 +91,7 @@ class TimelineView(QWidget):
         super().__init__(parent)
         self.controller = controller
         self.rows: list[TimelineRow] = []
+        self.marks: dict[str, list[int]] = {}       # part -> frames showing the drawing being edited
         self.playhead, self.selected, self.selected_key = 0, None, None
         self.playing, self.loop, self.onion = False, True, False
         self.play_button = QPushButton("Play")
@@ -121,6 +124,10 @@ class TimelineView(QWidget):
         controller.built.connect(lambda build: self.refresh())
         controller.selection_changed.connect(self._on_part_selected)
         self.refresh()
+
+    def set_marks(self, part: str, frames: list[int]) -> None:
+        self.marks[part] = list(frames)
+        self.area.update()
 
     def length(self) -> int:
         return max((r.length for r in self.rows), default=1)
