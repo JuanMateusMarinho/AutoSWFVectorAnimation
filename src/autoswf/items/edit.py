@@ -4,7 +4,7 @@ import lzma
 import struct
 import zlib
 from dataclasses import dataclass, field
-from typing import Iterable
+from typing import Iterable, Sequence
 
 from autoswf.abc.code import u30
 from autoswf.aqw.contract import check_link
@@ -16,6 +16,8 @@ PLACE_TAGS, REMOVE_TAGS = (4, 26, 70), (5, 28)
 PRUNABLE = (2, 22, 32, 83, 46, 84, 39)          # shapes, morph shapes, sprites
 BUTTONS = (7, 34)
 SHAPE_TAGS = (2, 22, 32, 83)
+SHOW_FRAME = 1
+DEFINITIONS = (2, 6, 7, 10, 11, 14, 20, 21, 22, 32, 33, 34, 35, 36, 37, 39, 46, 48, 60, 75, 83, 84, 87, 90, 91)
 
 
 @dataclass
@@ -26,6 +28,7 @@ class EditResult:
     renamed: dict[str, str] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
     replaced_shapes: int = 0
+    added_layers: list[tuple[int, int]] = field(default_factory=list)      # (part sprite, depth) per new layer
 
 
 @dataclass
@@ -148,12 +151,15 @@ def _sprite_children(tag: _Tag) -> set[int]:
 
 
 def edit_swf(data: bytes, remove: Iterable[PieceRef] = (), *, prune: bool = True,
-             rename: str | None = None, replace_shapes: dict[int, "Shape"] | None = None) -> EditResult:
+             rename: str | None = None, replace_shapes: dict[int, "Shape"] | None = None,
+             add_layers: Sequence["NewLayer"] = (), rebind: dict[str, tuple[str, str]] | None = None) -> EditResult:
     """`replace_shapes` (the editor's drawings, char id -> Shape) rewrites those DefineShape tags as DefineShape4 at
-    the same place, under the same id."""
+    the same place, under the same id; `add_layers` puts new layers on top of parts; `rebind` (class name ->
+    (location, shade)) changes the AQW color those clips take."""
     remove = list(dict.fromkeys(remove))
     replace_shapes = dict(replace_shapes or {})
-    if not remove and rename is None and not replace_shapes:
+    add_layers, rebind = list(add_layers), dict(rebind or {})
+    if not remove and rename is None and not replace_shapes and not add_layers and not rebind:
         raise ValueError("Nothing to change: no pieces chosen and no new link")
     sig, version, length, body = decompress(bytes(data))
     r = R(body, 0)
@@ -191,6 +197,10 @@ def edit_swf(data: bytes, remove: Iterable[PieceRef] = (), *, prune: bool = True
     if replace_shapes:
         out = _replace_shapes(out, replace_shapes)
         result.replaced_shapes = len(replace_shapes)
+    if add_layers:
+        out, result.added_layers = _add_layers(out, add_layers, data)
+    if rebind:
+        out = _rebind(out, rebind)
 
     if prune and remove:
         if any(t.code in BUTTONS for t in out):
@@ -222,6 +232,82 @@ def _replace_shapes(tags: list[_Tag], shapes: dict) -> list[_Tag]:
     missing = sorted(set(shapes) - done)
     if missing:
         raise ValueError("Shape %d is not in the file" % missing[0])
+    return out
+
+
+def _first_show_frame(tags: list[_Tag]) -> int:
+    return next((i for i, t in enumerate(tags) if t.code in (SHOW_FRAME, 0)), len(tags))
+
+
+def _add_layers(out: list[_Tag], layers: list, data: bytes) -> tuple[list[_Tag], list[tuple[int, int]]]:
+    from autoswf.abc.movieclip_classes import build_abc
+    from autoswf.items.layers import free_number, layer_tags, place
+    from autoswf.items.structure import find_armor_link
+    from autoswf.swf.decode import MovieData
+    movie = MovieData(data)
+    names = set(movie.classes) | {abc.mname(x["name"]) for abc in movie.abcs for x in abc.instances}
+    try:
+        package = find_armor_link(movie)[0]
+    except ValueError:
+        package = next((n for n in movie.classes if "." not in n), "AutoSWF")
+    next_id = max([struct.unpack_from("<H", t.body, 0)[0] for t in out if t.code in DEFINITIONS] + [0]) + 1
+    specs, symbols, added, used = [], {}, [], {}
+    for layer in layers:
+        defs, layer_specs, layer_symbols, layer_id, next_id = layer_tags(layer, next_id, package,
+                                                                          free_number(names, package))
+        names |= set(layer_symbols.values())
+        specs += layer_specs
+        symbols.update(layer_symbols)
+        new_defs = [t for raw in defs for t in _split(raw, 0, len(raw))]
+        sprite = movie.character(layer.part_char) if layer.part_char else movie.root
+        depth = used.get(layer.part_char) or max([c.depth for f in sprite.frames for c in f] + [0])
+        depth += 1
+        used[layer.part_char] = depth
+        placement = _split(place(depth, layer_id), 0, len(place(depth, layer_id)))
+        if layer.part_char:
+            i = next(k for k, t in enumerate(out)
+                     if t.code == SPRITE and struct.unpack_from("<H", t.body, 0)[0] == layer.part_char)
+            part = out[i]
+            inner = _split(part.body, 4, len(part.body))
+            j = _first_show_frame(inner)
+            inner[j:j] = placement
+            body = part.body[:4] + b"".join(t.encode() for t in inner)
+            out[i] = _Tag(SPRITE, _header(SPRITE, len(body), len(part.header) == 6), body)
+            out[i:i] = new_defs
+        else:
+            j = _first_show_frame(out)
+            out[j:j] = new_defs + placement
+        added.append((layer.part_char, depth))
+    if specs:
+        abc = struct.pack("<I", 1) + b"\0" + build_abc(specs)
+        entries = b"".join(struct.pack("<H", cid) + name.encode("utf-8") + b"\0" for cid, name in symbols.items())
+        table = struct.pack("<H", len(symbols)) + entries
+        j = _first_show_frame(out)
+        out[j:j] = [_Tag(DO_ABC, _header(DO_ABC, len(abc), True), abc),
+                    _Tag(SYMBOL_CLASS, _header(SYMBOL_CLASS, len(table), True), table)]
+    return out, added
+
+
+def _rebind(out: list[_Tag], rebind: dict[str, tuple[str, str]]) -> list[_Tag]:
+    from autoswf.abc.rebind import has_class, rebind_setcolor
+    done = set()
+    for i, t in enumerate(out):
+        if t.code not in (DO_ABC, DO_ABC_OLD):
+            continue
+        cut = t.body.index(b"\0", 4) + 1 if t.code == DO_ABC else 0
+        head, abc = t.body[:cut], t.body[cut:]
+        changed = False
+        for class_name, (location, shade) in rebind.items():
+            if class_name not in done and has_class(abc, class_name):
+                abc = rebind_setcolor(abc, class_name, location, shade)
+                done.add(class_name)
+                changed = True
+        if changed:
+            body = head + abc
+            out[i] = _Tag(t.code, _header(t.code, len(body), len(t.header) == 6), body)
+    missing = sorted(set(rebind) - done)
+    if missing:
+        raise ValueError("Class %s is not in the file" % missing[0])
     return out
 
 

@@ -67,11 +67,14 @@ class ABC:
         for _ in range(self.u30()):
             init = self.u30(); self.scripts.append({"init": init, "traits": self.traits()})
         self.bodies = {}; self.body_info = {}
+        self.body_pos = {}          # method -> (start of code_length, end of the exception table) in the data
         for _ in range(self.u30()):
             m = self.u30(); self.body_info[m] = (self.u30(), self.u30(), self.u30(), self.u30())
+            start = self.p
             cl = self.u30(); code = self.d[self.p:self.p + cl]; self.p += cl
             for _ in range(self.u30()):
                 self.u30(); self.u30(); self.u30(); self.u30(); self.u30()
+            self.body_pos[m] = (start, self.p)
             self.traits()
             self.bodies[m] = code
 

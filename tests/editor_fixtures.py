@@ -213,6 +213,40 @@ def index_of_shape(data: bytes, cid: int) -> int:
                 if code in (2, 22, 32, 83) and struct.unpack_from("<H", raw, 6 if (struct.unpack_from("<H", raw, 0)[0] & 0x3F) == 0x3F else 2)[0] == cid)
 
 
+def setcolor_of(abc: bytes, class_name: str):
+    """(location, shade) of the class's frame-1 mcSetColor call, read back from the ABC."""
+    from autoswf.abc.reader import ABC
+    from autoswf.render.scripts import SetColor, class_frame_actions
+    action = next(a for a in class_frame_actions([ABC(abc)], class_name).get(0, []) if isinstance(a, SetColor))
+    return action.location, action.shade
+
+
+def part_by_key(structure, key: str):
+    return next(p for p in structure.parts if p.key == key)
+
+
+def depth_is_top(movie, part, piece) -> bool:
+    from autoswf.swf.decode import PlaceCommand
+    sprite = movie.character(part.char_id)
+    depths = [c.depth for frame in sprite.frames for c in frame if isinstance(c, PlaceCommand)]
+    return piece.ref.depth == max(depths)
+
+
+def unchanged_tags_identical(before: bytes, after: bytes, allowed: dict) -> bool:
+    """Every tag of `before` is still in `after`, byte for byte and in order, except the DefineSprite tags whose ids are
+    in allowed["DefineSprite"]; `after` may hold new tags in between."""
+    import struct
+    skip = set(allowed.get("DefineSprite", []))
+    old = [raw for code, raw in swf_tags(before)
+           if not (code == 39 and struct.unpack_from("<H", raw, 6 if (raw[0] & 0x3F) == 0x3F else 2)[0] in skip)]
+    new = [raw for _, raw in swf_tags(after)]
+    i = 0
+    for raw in new:
+        if i < len(old) and raw == old[i]:
+            i += 1
+    return i == len(old)
+
+
 def edges_in_twips(shape_def) -> list:
     return sorted((e.start, e.control, e.end, e.fill0, e.fill1) for e in shape_def.edges)
 
