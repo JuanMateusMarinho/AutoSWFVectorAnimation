@@ -92,6 +92,36 @@ file is checked against the AQW format (the official script variants included). 
 character that plays its own walk, attack and idle) show which game animation plays which of theirs, and the preview
 plays them as the game does.
 
+## Editing art
+
+Fix or change the art of a helm or of an opened SWF without leaving AutoSWF, with Photoshop's tools and shortcuts.
+Everything stays vector, keeps its AQW colors and its animation, and only what you touch changes.
+
+| Tool | Key | What it does |
+|---|---|---|
+| Move | V | Drags the selection, or the whole layer when nothing is selected. Ctrl+T scales and turns it (Enter applies, Esc cancels). |
+| Brush | B | Paints with the layer's colors (the lineart's by default). Pen pressure changes the width only. `[` and `]` change the size. |
+| Magic Wand | W | Selects a closed area of one color; **Close gap** closes a line that stops just short. Shift adds, Alt subtracts, Ctrl+D deselects. |
+| Eraser | E | Cuts every color of the layer under it. |
+| Eyedropper | I | Picks a color of the layer (Alt+click does it with any tool). |
+
+To fix a wrong edge: brush the line where the edge should be, click the leftover with the Magic Wand, press Delete — the
+old outline that would be left floating goes with it. Every step can be undone (Ctrl+Z).
+
+The **Layers** list shows each element with the AQW color it takes (Hair, Skin, Eye…) and a note when it changes over
+time ("96 frames", "blink"); the eye hides a layer while you work. **Color ▾** binds a layer to another AQW color,
+**+ New layer** adds one, **Delete layer** removes one, and **Trace PNG…** brings a piece exported from Clip Studio (a PNG
+with a transparent background) into the item — replacing the selected layer (its colors matched to the layer's, so the
+AQW colors and the animation stay) or as a new layer. An edit changes the drawing shown at the current frame wherever
+that drawing appears; the frame strip marks where. An opened SWF with its edits saves as an `.aswf` project.
+
+## AI settings
+
+**Edit › Preferences…** (Ctrl+K) › **AI**: paste your NVIDIA API key (from build.nvidia.com), pick the model
+(**Nemotron 3.5 Super VL** is preselected) and **Test connection**. The key is kept by Windows' credential store, never in
+projects or settings files. The AI features that use it come in a later version. **Tablet**: switch to Wintab when
+your tablet's pressure does not reach AutoSWF through Windows Ink.
+
 ## Roadmap
 
 | Phase | Items |

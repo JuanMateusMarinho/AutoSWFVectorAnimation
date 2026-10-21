@@ -56,3 +56,9 @@ def test_without_inno_setup_the_build_writes_a_zip(tmp_path, monkeypatch):
 def test_the_installer_script_installs_per_user():
     text = (ROOT / "packaging" / "autoswf.iss").read_text(encoding="utf-8")
     assert "PrivilegesRequired=lowest" in text and r"{localappdata}\Programs\AutoSWF" in text
+
+
+def test_packaging_lists_the_new_hidden_imports():
+    from pathlib import Path
+    spec = (Path(__file__).resolve().parents[1] / "packaging" / "autoswf.spec").read_text(encoding="utf-8")
+    assert '"keyring.backends.Windows"' in spec and '"pyclipper"' in spec
