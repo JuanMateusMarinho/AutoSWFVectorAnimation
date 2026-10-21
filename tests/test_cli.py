@@ -295,3 +295,8 @@ def test_item_export_never_overwrites_the_original(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     assert main(["edit-swf", str(src), "--remove", "Chest/5", "-o", "./A.swf"]) == 1
     assert src.read_bytes() == before
+
+
+def test_convert_refuses_a_gradient_layer_that_is_no_tone(helm_psd, tmp_path, capsys):
+    code = main(["convert", str(helm_psd.path), "-o", str(tmp_path / "h.swf"), "--gradient", "Glow"])
+    assert code == 1 and "No tone layer named 'Glow'" in capsys.readouterr().out

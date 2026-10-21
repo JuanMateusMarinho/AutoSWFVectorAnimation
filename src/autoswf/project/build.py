@@ -18,7 +18,7 @@ from autoswf.aqw.template import Alignment, choose_alignment
 from autoswf.drawing.layers import DrawingError
 from autoswf.drawing.passes import extract_passes
 from autoswf.drawing.readers import read_drawing
-from autoswf.drawing.roles import assign_roles
+from autoswf.drawing.roles import TONE_ROLES, assign_roles, layer_keys
 from autoswf.model.geometry import Point
 from autoswf.parts.assemble import AssembledHelm, assemble_helm
 from autoswf.parts.detect import apply_color_slots, detect_parts
@@ -55,6 +55,7 @@ class Build:
     rigs: dict = field(default_factory=dict)
     timeline: Timeline | None = None
     animation_notes: list[str] = field(default_factory=list)
+    settings_notes: list[str] = field(default_factory=list)      # choices that name layers the drawing lost
     still: bytes | None = None
     swf: bytes | None = None
     error: str | None = None
@@ -62,7 +63,7 @@ class Build:
 
     @property
     def notes(self) -> list[str]:
-        out = list(self.art.notes) if self.art is not None else []
+        out = list(self.settings_notes) + (list(self.art.notes) if self.art is not None else [])
         if self.parts is not None:
             out += self.parts.notes
         return out + self.animation_notes
@@ -142,10 +143,20 @@ class HelmBuilder:
         s = b.settings
         b._passes_key = (b._read_key, _json(s.roles), tuple(s.gradient))
 
+        keys = layer_keys(b.drawing)
+        overrides = {k: v for k, v in s.roles.items() if k in keys}
+        b.settings_notes = ["There is no layer '%s' in the drawing (chosen as %s); that choice is not used" % (k, v)
+                            for k, v in s.roles.items() if k not in keys]
+
         def make():
-            roles = assign_roles(b.drawing, dict(s.roles))
-            return roles, extract_passes(b.drawing, roles, gradient_layers=frozenset(s.gradient))
+            roles = assign_roles(b.drawing, overrides)
+            tones = {n.name for n, r in roles.items() if r.role in TONE_ROLES}
+            gradient = frozenset(g for g in s.gradient if g in tones)
+            return roles, extract_passes(b.drawing, roles, gradient_layers=gradient)
         b.roles, b.passes = self._run("passes", "passes", b._passes_key, make)
+        tones = {n.name for n, r in b.roles.items() if r.role in TONE_ROLES}
+        b.settings_notes += ["'%s' is not a shadow, occlusion or light layer (any more); it is drawn without a gradient"
+                             % g for g in s.gradient if g not in tones]
         ys, xs = np.nonzero(b.passes.full[..., 3] > 0)
         override = Alignment.parse(s.align) if s.align else None
         b.alignment, b.alignment_reason = choose_alignment(b.drawing, (xs.min(), xs.max() + 1, ys.min(), ys.max() + 1),

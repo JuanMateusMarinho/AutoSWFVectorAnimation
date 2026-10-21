@@ -70,6 +70,12 @@ def _layers(drawing: Drawing) -> list[tuple[LayerNode, tuple[LayerNode, ...]]]:
     return [(n, anc) for n, anc in drawing.walk() if n.kind != "group"]
 
 
+def layer_keys(drawing: Drawing) -> set[str]:
+    """What a role choice may name: each layer's name and its "Folder/Layer" path."""
+    layers = _layers(drawing)
+    return {n.name for n, _ in layers} | {"/".join([a.name for a in anc] + [n.name]) for n, anc in layers}
+
+
 def _check_overrides(drawing: Drawing, overrides: dict[str, str]) -> None:
     layers = _layers(drawing)
     names = list(dict.fromkeys(n.name for n, _ in layers))

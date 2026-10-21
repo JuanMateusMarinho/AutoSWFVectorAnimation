@@ -212,7 +212,7 @@ def _parse_roles(items: list[str]) -> dict[str, str]:
 
 def _cmd_convert(args) -> int:
     from autoswf.aqw.template import Alignment
-    from autoswf.drawing.roles import IGNORE, assign_roles, role_reason
+    from autoswf.drawing.roles import IGNORE, TONE_ROLES, assign_roles, role_reason
     from autoswf.project.build import HelmBuilder
     from autoswf.project.settings import HelmSettings
     from autoswf.vectorize.metrics import quality_report
@@ -260,6 +260,12 @@ def _cmd_convert(args) -> int:
         roles = assign_roles(drawing, overrides)
     except ValueError as e:
         print(e)
+        return 1
+    tones = {n.name for n, r in roles.items() if r.role in TONE_ROLES}
+    missing = [g for g in args.gradient if g not in tones]
+    if missing:                                    # typed by hand: an error here (the app keeps it as a note)
+        print("No tone layer named '%s' to draw with gradients (only shadow, occlusion and light layers can be "
+              "gradients)" % missing[0])
         return 1
     layers = [(n, a) for n, a in drawing.walk() if n.kind != "group"]
     print("Opened %s (%d x %d, %d layers)" % (Path(args.drawing).name, drawing.width, drawing.height, len(layers)))

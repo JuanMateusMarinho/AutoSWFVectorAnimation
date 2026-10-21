@@ -44,8 +44,16 @@ def test_reopen_with_a_renamed_layer_and_a_missing_drawing(helm_psd, tmp_path):
     loaded = load_project(tmp_path / "p.aswf", tmp_path / "cache")
     assert "using the copy saved in the project" in loaded.notes[0]
     assert Path(loaded.settings.source).read_bytes() == helm_psd.path.read_bytes()
-    built = HelmBuilder().build(loaded.settings)
-    assert built.error and "Old layer name" in built.error
+    built = HelmBuilder().build(loaded.settings)                 # what still matches is kept, the rest is a note
+    assert built.complete and any("Old layer name" in note for note in built.notes)
+
+
+def test_a_gradient_on_a_layer_that_is_no_tone_any_more_is_a_note(helm_psd):
+    from autoswf.project.settings import HelmSettings
+    s = HelmSettings(source=str(helm_psd.path), align=helm_psd.align, gradient=["Light", "Gone"])
+    s.roles["Light"] = "line"
+    built = HelmBuilder().build(s)
+    assert built.complete and sum("gradient" in note for note in built.notes) == 2
 
 
 def test_bad_project_files_are_clear_errors(tmp_path):
