@@ -2,11 +2,12 @@
 aligns it, and the overlays of the current stage. Coordinates: head units (helm space) → widget pixels by `view`."""
 import math
 
-from PySide6.QtCore import QPointF, Qt, Signal
+from PySide6.QtCore import QEvent, QPointF, Qt, Signal
 import numpy as np
 from PySide6.QtGui import QAction, QColor, QImage, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QMenu, QPushButton, QWidget
 
+from autoswf.app.edit_tools import EditableCanvas, area_path
 from autoswf.aqw.assets import DEFAULT_ARMOR, AqwCache
 from autoswf.model.geometry import Matrix, Point
 from autoswf.parts.assemble import head_to_backhair
@@ -31,7 +32,7 @@ PIVOT_RADIUS = 7                         # px: the pivot circle (and how near a 
 MISSING_TEXT = "AQW reference files are not downloaded: the head guide and the body preview need them."
 
 
-class HelmCanvas(QWidget):
+class HelmCanvas(EditableCanvas, QWidget):
     download_requested = Signal()
     view_changed = Signal()
 
@@ -55,6 +56,8 @@ class HelmCanvas(QWidget):
         self._drag = None
         self._align_preview: Matrix | None = None
         self.tool = "select"
+        self.pending_layer = None                # an edit not built yet (the editor's layer after it)
+        self._tools_init()
         self.pending = None                      # (mask, rgb) of a fix not built yet
         self._cut: list[tuple[float, float]] = []
         self._overlay_key, self._overlay_image = None, None
@@ -157,6 +160,8 @@ class HelmCanvas(QWidget):
 
     def _on_built(self, build) -> None:
         self.pending = None
+        if build is not None and build.complete:
+            self.pending_layer = None
         helm = self.controller.helm_build
         if helm is not None and helm is not self._player_build:
             self._player_build = helm
@@ -181,6 +186,17 @@ class HelmCanvas(QWidget):
             return self.zoom
         w, h = width or self.width(), height or self.height()
         return max(MIN_ZOOM, min(w / FIT_SIZE[0], h / FIT_SIZE[1]))
+
+    def layer_matrix(self) -> Matrix:
+        """The editor's layer px (the helm's own space) -> widget pixels, as the shown version draws it."""
+        return self.view() @ self.whole_adjust()
+
+    def pan_by(self, dx: float, dy: float) -> None:
+        self._pan += QPointF(dx, dy)
+        self.update()
+
+    def zoom_100(self) -> None:
+        self.set_zoom(1.0)
 
     def view(self, width: int | None = None, height: int | None = None) -> Matrix:
         """Head units -> widget pixels."""
@@ -321,7 +337,21 @@ class HelmCanvas(QWidget):
         return obj
 
     def paint_overlays(self, p: QPainter, view: Matrix) -> None:
-        """Stage overlays: the parts, a fix not built yet and the cut being drawn (Parts)."""
+        """Stage overlays: the parts, a fix not built yet and the cut being drawn (Parts); an edit not built yet and
+        the editor's tools."""
+        if self.pending_layer is not None or self.edit_tools is not None:
+            layer_view = view @ self.whole_adjust()
+            if self.pending_layer is not None:
+                p.save()
+                p.setPen(Qt.PenStyle.NoPen)
+                colors = {t.ref: t.color for t in self.pending_layer.tones}
+                for ref, area in self.pending_layer.visible_areas().items():
+                    c = colors.get(ref, (128, 128, 128, 255))
+                    p.setBrush(QColor(*c[:3]))
+                    p.drawPath(area_path(area, layer_view))
+                p.restore()
+            if self.edit_tools is not None:
+                self.edit_tools.paint_overlay(p, layer_view)
         if self.stage == "Animate":
             pivot = self.pivot_point()
             if pivot is not None:
@@ -404,12 +434,17 @@ class HelmCanvas(QWidget):
         self.set_zoom(self.current_zoom() * math.pow(1.15, steps), event.position())
 
     def mousePressEvent(self, event) -> None:
+        self.setFocus()
+        if event.button() != Qt.MouseButton.MiddleButton and self.tool_mouse(event, "press"):
+            return
         if event.button() == Qt.MouseButton.MiddleButton:
             self._drag = ("pan", event.position(), QPointF(self._pan))
         elif event.button() == Qt.MouseButton.LeftButton:
             self.left_press(event)
 
     def mouseMoveEvent(self, event) -> None:
+        if self._drag is None and self.tool_mouse(event, "move"):
+            return
         if self._drag is None:
             return
         if self._drag[0] == "pan":
@@ -422,6 +457,8 @@ class HelmCanvas(QWidget):
             self.left_move(event)
 
     def mouseReleaseEvent(self, event) -> None:
+        if self._drag is None and self.tool_mouse(event, "release"):
+            return
         if self._drag is None:
             return
         kind = self._drag[0]
@@ -535,7 +572,18 @@ class HelmCanvas(QWidget):
         """Show a menu at a canvas point and return the action picked (tests replace this)."""
         return menu.exec(self.mapToGlobal(pos.toPoint()))
 
+    def keyReleaseEvent(self, event) -> None:
+        if not self.tool_key_release(event):
+            super().keyReleaseEvent(event)
+
+    def event(self, event) -> bool:
+        if event.type() == QEvent.Type.ShortcutOverride and self.tool_shortcut_override(event):
+            return True
+        return super().event(event)
+
     def keyPressEvent(self, event) -> None:
+        if self.tool_key(event):
+            return
         if event.key() == Qt.Key.Key_C and self.stage == "Parts":
             self.set_tool("select" if self.tool == "cut" else "cut")
         elif event.key() == Qt.Key.Key_Escape:

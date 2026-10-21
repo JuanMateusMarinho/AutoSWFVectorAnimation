@@ -163,6 +163,7 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.workspace)
         self.swf_editor = SwfEditor(self.cache)
         self.undo_group.addStack(self.swf_editor.undo_stack)
+        self._make_edit_tools()
         self.stack.addWidget(self.swf_editor)
         self.setCentralWidget(self.stack)
         self.timeline = TimelineView(self.controller)
@@ -307,6 +308,7 @@ class MainWindow(QMainWindow):
             self._add_recent(path)
             self.stack.setCurrentWidget(self.swf_editor)
             self._stage_action.setVisible(False)
+            self.tool_options.attach(self.swf_editor.edit_tools)
             self.undo_group.setActiveStack(self.swf_editor.undo_stack)
             self.setWindowTitle("AutoSWF — %s" % path.name)
             return None
@@ -354,9 +356,81 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------ actions (later tasks fill the empty ones)
 
+    # ------------------------------------------------------------ the editor's tools (Plan 7)
+
+    def _make_edit_tools(self) -> None:
+        from autoswf.app.edit_tools import EditTools
+        from autoswf.app.tool_bars import ToolOptionsBar, ToolsColumn
+        self.helm_tools = EditTools(self)
+        self.helm_tools.undo_stack = self.controller.undo_stack
+        self.helm_tools.edit_ready.connect(self._on_helm_edit)
+        self.helm_tools.message.connect(lambda text: self.statusBar().showMessage(text, 6000))
+        self.helm_tools.changed.connect(self.canvas.update)
+        self.canvas.edit_tools = self.helm_tools
+        self.tools_column = ToolsColumn(self)
+        self.tools_column.tool_picked.connect(self.pick_tool)
+        self.edit_actions = self.tools_column.actions_by_tool
+        self.addToolBar(Qt.ToolBarArea.LeftToolBarArea, self.tools_column)
+        self.tool_options = ToolOptionsBar()
+        options = QToolBar("Tool options")
+        options.setMovable(False)
+        options.addWidget(self.tool_options)
+        self.addToolBarBreak()
+        self.addToolBar(options)
+        self.tool_options.attach(self.helm_tools)
+        self.controller.selection_changed.connect(lambda name: self.refresh_helm_layer())
+        self.controller.built.connect(lambda build: self.refresh_helm_layer())
+
+    def active_tools(self):
+        return self.swf_editor.edit_tools if self.in_swf_editor() else self.helm_tools
+
+    def pick_tool(self, tool: str) -> None:
+        tools = self.active_tools()
+        tools.set_tool(tool)
+        self.tools_column.show_tool(tool)
+        self.tool_options.attach(tools)
+        if tools is self.helm_tools:
+            self.refresh_helm_layer()
+
+    def refresh_helm_layer(self) -> None:
+        from autoswf.edit.project_source import extra_layer, project_layer
+        build, part = self.controller.helm_build, self.controller.selected_part
+        layer = None
+        if build is not None and part is not None and build.art is not None:
+            extras = {e.name for e in build.settings.edits.extras}
+            if part in extras:
+                layer = extra_layer(build, part)
+            else:
+                candidate = project_layer(build, part)
+                layer = candidate if candidate.drawings else None
+        self.helm_tools.set_layer(layer, keep_selection=layer is not None and self.helm_tools.layer is not None
+                                  and self.helm_tools.layer.name == layer.name)
+
+    def _on_helm_edit(self, edit, label: str) -> None:
+        build, layer = self.controller.helm_build, self.helm_tools.layer
+        if build is None or layer is None:
+            return
+        parts = {t.name: t.part for t in build.art.layers}
+        extras = [e.name for e in build.settings.edits.extras]
+
+        def apply(s):
+            if layer.name in extras:
+                extra = next(e for e in s.edits.extras if e.name == layer.name)
+                for key, shape in edit.shapes.items():
+                    k = int(key[len("tone"):])
+                    _, location, shade = extra.tones[k]
+                    extra.tones[k] = (shape, location, shade)
+                return
+            for key, shape in edit.shapes.items():
+                s.edits.set_shape(parts.get(key, layer.name), key, shape)
+        self.canvas.pending_layer = layer.applied(edit)
+        self.canvas.update()
+        self.controller.change(label, apply)
+
     def _show_helm_workspace(self) -> None:
         self.stack.setCurrentWidget(self.workspace)
         self._stage_action.setVisible(True)
+        self.tool_options.attach(self.helm_tools)
         self.undo_group.setActiveStack(self.controller.undo_stack)
         self.set_stage("Import")
 

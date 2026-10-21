@@ -1,22 +1,27 @@
 """The Open SWF workspace (added 2026-10-18 by the user): any AQW item SWF shown the way AQW splits it — parts, and
 under each part its sub-pieces with thumbnails; unchecking a sub-piece removes it (a surgical edit: everything else
 stays byte for byte); the result previews on the AQW body (armors, helms) and exports as a validated SWF."""
+import math
 import os
 from pathlib import Path
 
-from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtCore import QEvent, QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QIcon, QImage, QPainter, QPen, QPixmap, QUndoCommand, QUndoStack
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout, QHBoxLayout, QHeaderView, QLabel,
+                               QMessageBox,
                                QLineEdit, QPushButton, QSplitter, QTextEdit, QTreeWidget, QTreeWidgetItem,
                                QVBoxLayout, QWidget)
 
+from autoswf.app.edit_tools import EditableCanvas, EditTools
 from autoswf.aqw.assets import AqwCache
 from autoswf.aqw.contract import check_link, client_class_names
 from autoswf.aqw.validate import validate_item_swf
+from autoswf.edit.swf_source import UneditableDrawing, drawing_uses, shape_def_of, swf_layer
 from autoswf.items.edit import edit_swf
+from autoswf.items.item_edits import ItemEdits
 from autoswf.items.structure import ItemStructure, PieceRef, read_structure
 from autoswf.items.thumbs import piece_image
-from autoswf.model.geometry import Matrix
+from autoswf.model.geometry import Matrix, Point
 from autoswf.render.colors import PlayerColors
 from autoswf.render.display import ClipInstance, ScriptContext, instantiate, run_pending_actions
 from autoswf.render.painter import Renderer, object_bounds
@@ -29,27 +34,98 @@ KINDS_ON_HEAD = ("Helm", "Weapon", "Cape", "Pet")
 OVERWRITE = "The output would overwrite the file being edited; choose another name"
 
 
-class _RemoveCommand(QUndoCommand):
-    def __init__(self, editor: "SwfEditor", ref: PieceRef, removed: bool):
-        super().__init__("Remove piece" if removed else "Restore piece")
-        self.editor, self.ref, self.removed = editor, ref, removed
+class _EditCommand(QUndoCommand):
+    """One change of the item: its ItemEdits before and after."""
+
+    def __init__(self, editor: "SwfEditor", label: str, before: ItemEdits, after: ItemEdits):
+        super().__init__(label)
+        self.editor, self.before, self.after = editor, before, after
 
     def redo(self) -> None:
-        self.editor._apply(self.ref, self.removed)
+        self.editor.apply_edits(self.after.copy())
 
     def undo(self) -> None:
-        self.editor._apply(self.ref, not self.removed)
+        self.editor.apply_edits(self.before.copy())
 
 
-class _ItemCanvas(QWidget):
-    """The selected part of the edited file, fitted, with the selected piece outlined."""
+class _ItemCanvas(EditableCanvas, QWidget):
+    """The selected part of the edited file, fitted (or zoomed and panned), with the selected piece outlined; the
+    editor's tools work on it."""
 
     def __init__(self, editor: "SwfEditor"):
         super().__init__()
         self.editor = editor
         self.setMinimumSize(320, 280)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.renderer = Renderer()
         self.colors = PlayerColors()
+        self.zoom: float | None = None           # None = fitted
+        self._pan = QPointF(0, 0)
+        self._box = None                         # the part's bounds the view is fitted to
+        self._view: Matrix | None = None
+        self._tools_init()
+
+    # ------------------------------------------------------------ view
+
+    def fit(self) -> None:
+        self.zoom, self._pan, self._box = None, QPointF(0, 0), None
+        self.update()
+
+    def zoom_100(self) -> None:
+        self.zoom = 1.0
+        self.update()
+
+    def pan_by(self, dx: float, dy: float) -> None:
+        self._pan += QPointF(dx, dy)
+        self.update()
+
+    def view_for(self, width: int, height: int, bounds) -> Matrix:
+        if self._box is None:
+            self._box = bounds
+        x0, x1, y0, y1 = self._box
+        fitted = min((width - 40) / max(x1 - x0, 1e-3), (height - 40) / max(y1 - y0, 1e-3))
+        z = self.zoom if self.zoom is not None else fitted
+        return (Matrix.translate(width / 2 + self._pan.x(), height / 2 + self._pan.y()) @ Matrix.scale(z, z)
+                @ Matrix.translate(-(x0 + x1) / 2, -(y0 + y1) / 2))
+
+    def layer_matrix(self) -> Matrix:
+        if self._view is None:
+            self.render_image(max(self.width(), 1), max(self.height(), 1))
+        return self._view or Matrix()
+
+    # ------------------------------------------------------------ events
+
+    def mousePressEvent(self, event) -> None:
+        self.setFocus()
+        if event.button() == Qt.MouseButton.MiddleButton:
+            self._pan_drag = event.position()
+            return
+        self.tool_mouse(event, "press")
+
+    def mouseMoveEvent(self, event) -> None:
+        self.tool_mouse(event, "move")
+
+    def mouseReleaseEvent(self, event) -> None:
+        self.tool_mouse(event, "release")
+
+    def wheelEvent(self, event) -> None:
+        steps = (event.angleDelta().y() or event.angleDelta().x()) / 120
+        current = self.zoom if self.zoom is not None else math.hypot(self.layer_matrix().a, self.layer_matrix().b)
+        self.zoom = max(0.05, min(64.0, current * math.pow(1.15, steps)))
+        self.update()
+
+    def keyPressEvent(self, event) -> None:
+        if not self.tool_key(event):
+            super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event) -> None:
+        if not self.tool_key_release(event):
+            super().keyReleaseEvent(event)
+
+    def event(self, event) -> bool:
+        if event.type() == QEvent.Type.ShortcutOverride and self.tool_shortcut_override(event):
+            return True
+        return super().event(event)
 
     def paintEvent(self, event) -> None:
         p = QPainter(self)
@@ -84,16 +160,17 @@ class _ItemCanvas(QWidget):
             obj.goto(e.frame)
         run_pending_actions(obj, ctx)
         bounds = object_bounds(obj, Matrix())
-        if bounds is None:
+        if bounds is None and self._box is None:
             p.setPen(QColor(200, 200, 200))
             p.drawText(QRectF(0, 0, width, height), Qt.AlignmentFlag.AlignCenter,
                        e.canvas_message() or "This part is empty")
             return
-        x0, x1, y0, y1 = bounds
-        scale = min((width - 40) / max(x1 - x0, 1e-3), (height - 40) / max(y1 - y0, 1e-3))
-        view = Matrix.translate(width / 2, height / 2) @ Matrix.scale(scale, scale) @ Matrix.translate(
-            -(x0 + x1) / 2, -(y0 + y1) / 2)
+        view = self.view_for(width, height, bounds)
+        self._view = view
+        scale = math.hypot(view.a, view.b)
         self.renderer.draw(p, obj, view, self.colors, filter_scale=scale)
+        if self.edit_tools is not None:
+            self.edit_tools.paint_overlay(p, view)
         selected = e.selected_path
         if selected is None or "/" not in selected:
             return
@@ -120,11 +197,20 @@ class SwfEditor(QWidget):
         self.edited_movie: MovieData | None = None
         self.movie: MovieData | None = None
         self.structure: ItemStructure | None = None
-        self.removed: set[PieceRef] = set()
-        self._exported: set[PieceRef] = set()          # the removals of the last export
+        self.edits = ItemEdits()
+        self._exported = ItemEdits()                    # the edits of the last export
+        self._structure_key = self.edits.structure_key()
+        self._stale = False                             # the edited bytes lag behind drawings shown by override
+        self._shared_ok: set[int] = set()               # shared drawings the user agreed to edit everywhere
+        self.layer_frame = 0                            # the frame of the selected piece's own timeline
         self.selected_path: str | None = None
         self.frame = 0
         self.undo_stack = QUndoStack(self)
+        self.edit_tools = EditTools(self)
+        self.edit_tools.undo_stack = self.undo_stack
+        self.edit_tools.edit_ready.connect(self._on_layer_edit)
+        self.edit_tools.message.connect(lambda text: self.message.setText(text))
+        self.edit_tools.changed.connect(lambda: self.canvas.update())
         self._items: dict[str, QTreeWidgetItem] = {}
         self._preview = None
         self._thumbs: dict[int, QIcon] = {}
@@ -140,6 +226,7 @@ class SwfEditor(QWidget):
         self.tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         self.canvas = _ItemCanvas(self)
+        self.canvas.edit_tools = self.edit_tools
         self.title = QLabel()
         self.title.setStyleSheet("font-weight: bold;")
         self.kind_box = QComboBox()
@@ -205,7 +292,8 @@ class SwfEditor(QWidget):
         except ValueError as e:
             return str(e)
         self.path, self.original, self.movie, self.structure = path, data, movie, structure
-        self.removed, self._exported, self.selected_path, self.frame = set(), set(), None, 0
+        self.edits, self._exported, self.selected_path, self.frame = ItemEdits(), ItemEdits(), None, 0
+        self._structure_key, self._stale, self._shared_ok, self.layer_frame = self.edits.structure_key(), False, set(), 0
         self.undo_stack.clear()
         self._thumbs = {}
         self._set_edited(data)
@@ -297,7 +385,12 @@ class SwfEditor(QWidget):
             return "This part is empty: the armor draws its whole character in its Head"
         return "This part is empty"
 
+    @property
+    def removed(self) -> set[PieceRef]:
+        return set(self.edits.removed)
+
     def select(self, path: str) -> None:
+        old_part = self.current_part()
         self.selected_path = path
         top = "/".join(path.split("/")[:2]) if path and "/" in path else None
         self.frame = self.structure.piece(top).frame if top else 0
@@ -307,7 +400,24 @@ class SwfEditor(QWidget):
             self.tree.setCurrentItem(item)
             self.tree.blockSignals(False)
         self._refresh_info()
+        if self.current_part() is not old_part:
+            self.canvas.fit()
+        self.layer_frame = 0
+        self.refresh_layer()
         self.canvas.update()
+
+    def refresh_layer(self, keep_selection: bool = False) -> None:
+        """The selected piece (or part) as the tools' layer, from the file as edited."""
+        path = self.selected_path or (self.structure.parts[0].key if self.structure and self.structure.parts else None)
+        layer = None
+        if path is not None and self.edited_movie is not None:
+            try:
+                layer = swf_layer(self.edited_movie, self.structure, path, self.layer_frame, self.canvas.colors)
+            except UneditableDrawing as e:
+                self.message.setText(str(e))
+            except (ValueError, KeyError):
+                layer = None
+        self.edit_tools.set_layer(layer, keep_selection=keep_selection)
 
     def _on_current(self, current, previous) -> None:
         if current is not None:
@@ -356,23 +466,69 @@ class SwfEditor(QWidget):
         """Remove (or restore) a placement: one undo step; every instance of it in the tree follows."""
         if removed == (ref in self.removed):
             return
-        self.undo_stack.push(_RemoveCommand(self, ref, removed))
+        after = self.edits.copy()
+        after.removed = [r for r in after.removed if r != ref] + ([ref] if removed else [])
+        self.push_edit("Remove piece" if removed else "Restore piece", after)
 
-    def _apply(self, ref: PieceRef, removed: bool) -> None:
-        (self.removed.add if removed else self.removed.discard)(ref)
-        self._set_edited(edit_swf(self.original, sorted(self.removed, key=lambda r: (r.sprite, r.depth)),
-                                  prune=False).data if self.removed else self.original)
+    def push_edit(self, label: str, after: ItemEdits) -> None:
+        self.undo_stack.push(_EditCommand(self, label, self.edits.copy(), after))
+
+    def apply_edits(self, edits: ItemEdits) -> None:
+        """Show these edits: drawings at once through the movie's overrides, structure changes by rewriting the file."""
+        previous, self.edits = self.edits, edits
+        if edits.structure_key() != self._structure_key:
+            self._structure_key = edits.structure_key()
+            self._set_edited(self.edits.apply(self.original))
+            self._stale = False
+        else:
+            for cid in set(previous.shapes) | set(edits.shapes):
+                shape = edits.shapes.get(cid)
+                if shape is previous.shapes.get(cid):
+                    continue
+                original = self.movie.character(cid)
+                self.edited_movie.override(cid, shape_def_of(shape, cid) if shape is not None else original)
+                self._stale = True
         self.tree.blockSignals(True)
-        for path in self.structure.instances(ref):
-            item = self._items.get(path)
-            if item is not None:
-                item.setCheckState(0, Qt.CheckState.Unchecked if removed else Qt.CheckState.Checked)
+        for path, item in self._items.items():
+            if "/" in path:
+                ref = self.structure.piece(path).ref
+                item.setCheckState(0, Qt.CheckState.Unchecked if ref in self.removed else Qt.CheckState.Checked)
         self.tree.blockSignals(False)
-        self.message.setText("%d piece%s removed" % (len(self.removed), "" if len(self.removed) == 1 else "s")
-                             if self.removed else "")
+        n = len(self.edits.removed)
+        self.message.setText("%d piece%s removed" % (n, "" if n == 1 else "s") if n else "")
+        self.refresh_layer(keep_selection=True)
         self.canvas.update()
         if self._preview is not None and self._preview.isVisible():
             self.preview()
+
+    def current_data(self) -> bytes:
+        """The file with every edit, written out (drawings shown by override are written here)."""
+        if self._stale:
+            self._set_edited(self.edits.apply(self.original))
+            self._stale = False
+            self.refresh_layer(keep_selection=True)
+        return self.edited
+
+    def ask_shared_edit(self, places: list[str]) -> bool:
+        labels = list(dict.fromkeys(self.structure.part_of(p).label + " (" + p + ")" for p in places))
+        answer = QMessageBox.question(self, "Shared drawing", "This drawing also shows in:\n%s\n\nEdit it everywhere?"
+                                      % "\n".join(labels[:8]))
+        return answer == QMessageBox.StandardButton.Yes
+
+    def _on_layer_edit(self, edit, label: str) -> None:
+        path = self.selected_path or self.structure.parts[0].key
+        shapes = {}
+        for key, shape in edit.shapes.items():
+            cid = int(key.split("#")[0])
+            if cid not in self._shared_ok:
+                places = drawing_uses(self.edited_movie, self.structure, path, cid)
+                if places and not self.ask_shared_edit(places):
+                    return
+                self._shared_ok.add(cid)
+            shapes[cid] = shape
+        after = self.edits.copy()
+        after.shapes.update(shapes)
+        self.push_edit(label, after)
 
     def _set_edited(self, data: bytes) -> None:
         self.edited = data
@@ -394,9 +550,9 @@ class SwfEditor(QWidget):
         if self._preview is None or self._preview.scene is None:
             try:
                 if kind == "armor":
-                    scene = PreviewScene.from_cache(self.cache, None, armor_data=self.edited)
+                    scene = PreviewScene.from_cache(self.cache, None, armor_data=self.current_data())
                 else:
-                    scene = PreviewScene.from_cache(self.cache, self.edited, link=helm_link)
+                    scene = PreviewScene.from_cache(self.cache, self.current_data(), link=helm_link)
                 problem = None
             except (MissingReferenceFiles, ValueError) as e:
                 scene, problem = None, str(e)
@@ -404,17 +560,20 @@ class SwfEditor(QWidget):
             if problem:
                 self._preview.empty_message = problem
         elif kind == "armor":
-            self._preview.set_armor_data(self.edited)
+            self._preview.set_armor_data(self.current_data())
         else:
-            self._preview.set_helm_data(self.edited, helm_link)
+            self._preview.set_helm_data(self.current_data(), helm_link)
         self._preview.resize(1000, 700)
         self._preview.show()
         return self._preview
 
     @property
     def dirty(self) -> bool:
-        """Pieces are unchecked and not exported that way yet."""
-        return bool(self.removed) and self.removed != self._exported
+        """Edits that were not exported that way yet."""
+        e, x = self.edits, self._exported
+        same = (set(e.removed) == set(x.removed) and e.shapes == x.shapes and e.layers == x.layers
+                and e.rebinds == x.rebinds)
+        return not e.empty and not same
 
     def export_dialog(self) -> "ItemExportDialog":
         return ItemExportDialog(self, self)
@@ -498,7 +657,7 @@ class ItemExportDialog(QDialog):
             elif check.warning:
                 link_problem = check.warning
         self.link_message.setText(link_problem)
-        changes = bool(self.editor.removed) or self.rename_box.isChecked()
+        changes = not self.editor.edits.empty or self.rename_box.isChecked()
         self.export_button.setEnabled(not file_problem and not link_problem and changes)
         if not changes:
             self.file_message.setText(file_problem or "Uncheck a piece (or give a new link) to export.")
@@ -514,7 +673,8 @@ class ItemExportDialog(QDialog):
         rename = self.link_edit.text().strip() if self.rename_box.isChecked() else None
         try:
             result = edit_swf(e.original, sorted(e.removed, key=lambda r: (r.sprite, r.depth)),
-                              prune=not self.keep_unused_box.isChecked(), rename=rename)
+                              prune=not self.keep_unused_box.isChecked(), rename=rename,
+                              replace_shapes=e.edits.shapes, add_layers=e.edits.layers, rebind=e.edits.rebinds)
         except ValueError as error:
             self.report.setPlainText(str(error))
             return
@@ -531,7 +691,7 @@ class ItemExportDialog(QDialog):
                 tmp.unlink()
             self.report.setPlainText("Could not write %s: %s" % (out, error.strerror or error))
             return
-        e._exported = set(e.removed)
+        e._exported = e.edits.copy()
         expected = [result.renamed.get(c, c) for c in e.structure.public_classes()]
         try:
             report = validate_item_swf(result.data, expected, e.original)
