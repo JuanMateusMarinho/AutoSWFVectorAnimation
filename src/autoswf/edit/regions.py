@@ -160,6 +160,12 @@ def transform_area(a: Area, m: Matrix) -> Area:
     return union(out, [])
 
 
+def stroke_width_px(a: Area) -> float:
+    """The average width of a line-like area: twice its area over its outline's length."""
+    perimeter = sum(math.hypot(p[i][0] - p[i - 1][0], p[i][1] - p[i - 1][1]) for p in a for i in range(len(p))) / TWIPS
+    return 2 * area_px(a) / perimeter if perimeter > 0 else 0.0
+
+
 def bounds_px(a: Area) -> tuple[float, float, float, float] | None:
     pts = [pt for p in a for pt in p]
     if not pts:

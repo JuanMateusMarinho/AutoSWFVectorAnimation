@@ -20,16 +20,18 @@ from autoswf.drawing.passes import extract_passes
 from autoswf.drawing.readers import read_drawing
 from autoswf.drawing.roles import TONE_ROLES, assign_roles, layer_keys
 from autoswf.model.geometry import Point
-from autoswf.parts.assemble import AssembledHelm, assemble_helm
+from autoswf.parts.assemble import AssembledHelm, assemble_helm, with_extra_layers
 from autoswf.parts.detect import apply_color_slots, detect_parts
 from autoswf.parts.hidden import layered_passes, split_passes, with_locations
 from autoswf.parts.model import Corrections
+from autoswf.project.edits import apply_art_edits
 from autoswf.project.settings import HelmSettings
 from autoswf.vectorize.art import VectorizeSettings, helm_from_art, vectorize
 
-STAGES = ("read", "passes", "parts", "split", "art", "helm", "animation", "swf")
+STAGES = ("read", "passes", "parts", "split", "art", "edits", "helm", "animation", "swf")
 STAGE_LABELS = {"read": "Reading the drawing", "passes": "Sorting the layers", "parts": "Finding the parts",
-                "split": "Filling behind moving parts", "art": "Vectorizing", "helm": "Building the helm",
+                "split": "Filling behind moving parts", "art": "Vectorizing", "edits": "Applying your edits",
+                "helm": "Building the helm",
                 "animation": "Animating", "swf": "Writing the SWF"}
 CACHE_SIZE = 3
 
@@ -56,6 +58,7 @@ class Build:
     timeline: Timeline | None = None
     animation_notes: list[str] = field(default_factory=list)
     settings_notes: list[str] = field(default_factory=list)      # choices that name layers the drawing lost
+    edit_notes: list[str] = field(default_factory=list)          # hand edits whose part is gone
     still: bytes | None = None
     swf: bytes | None = None
     error: str | None = None
@@ -63,7 +66,7 @@ class Build:
 
     @property
     def notes(self) -> list[str]:
-        out = list(self.settings_notes) + (list(self.art.notes) if self.art is not None else [])
+        out = list(self.settings_notes) + (list(self.art.notes) if self.art is not None else []) + self.edit_notes
         if self.parts is not None:
             out += self.parts.notes
         return out + self.animation_notes
@@ -95,13 +98,20 @@ def _json(value) -> str:
     return json.dumps(value, sort_keys=True, ensure_ascii=False)
 
 
+def art_key(settings: HelmSettings) -> str:
+    """What the traced art depends on: a change here traces the drawing again (and would replace hand edits)."""
+    c = settings.corrections.to_dict()
+    return _json([settings.source, settings.roles, list(settings.gradient), settings.align, settings.detail,
+                  c["assign"], c["cuts"]])
+
+
 class HelmBuilder:
     """`suggest`: animate the suggested parts by default (the CLI; the app waits for the user to accept them).
     `use_parts`: find parts (False = one static shape set). `animate`: bake the animation (False = a still helm)."""
 
     def __init__(self, suggest: bool = False, use_parts: bool = True, animate: bool = True):
         self.suggest, self.use_parts, self.animate = suggest, use_parts, animate
-        self._caches = {name: _Lru() for name in ("read", "passes", "parts", "split", "art", "helm")}
+        self._caches = {name: _Lru() for name in ("read", "passes", "parts", "split", "art", "edits", "helm")}
 
     # ------------------------------------------------------------ stages
 
@@ -191,10 +201,17 @@ class HelmBuilder:
             b.art = self._run("art", "art", b._art_key,
                               lambda: vectorize(layered_passes(b.passes, b.layers), b.alignment, settings))
 
+    def _edits(self, b: Build) -> None:
+        edits = b.settings.edits
+        b._edits_key = (b._art_key, _json(edits.to_dict()) if edits.shapes or edits.extras else "")
+        if not edits.shapes:
+            return
+        b.art, b.edit_notes = self._run("edits", "edits", b._edits_key, lambda: apply_art_edits(b.art, edits))
+
     def _helm(self, b: Build) -> None:
         s = b.settings
         b.link = s.export_link()
-        key = (b._art_key, _json(s.corrections.colors), b.link, s.separate_tones)
+        key = (b._edits_key, _json(s.corrections.colors), b.link, s.separate_tones)
         b._helm_key = key
 
         def make():
@@ -220,8 +237,10 @@ class HelmBuilder:
     def _assemble(self, b: Build, link: str) -> AssembledHelm:
         if b.parts is None:
             item = helm_from_art(b.art, link, separate_tones=b.settings.separate_tones)
-            return AssembledHelm(item, {}, {}, [])
-        return assemble_helm(b.art, b.layers, link, separate_tones=b.settings.separate_tones)
+            helm = AssembledHelm(item, {}, {}, [])
+        else:
+            helm = assemble_helm(b.art, b.layers, link, separate_tones=b.settings.separate_tones)
+        return with_extra_layers(helm, b.settings.edits.extras)
 
     @staticmethod
     def _with_pivots(rigs: dict, pivots: dict) -> dict:

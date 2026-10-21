@@ -55,6 +55,7 @@ class MainWindow(QMainWindow):
         self._make_actions()
         self._make_menus()
         self._make_layout()
+        controller.ask_edits_policy = lambda parts: self.ask_edits_policy(parts)
         controller.built.connect(self._on_built)
         controller.progress.connect(self._on_progress)
         controller.settings_changed.connect(self._refresh)
@@ -458,6 +459,18 @@ class MainWindow(QMainWindow):
                                       | QMessageBox.StandardButton.Cancel)
         return {QMessageBox.StandardButton.Save: "save",
                 QMessageBox.StandardButton.Discard: "discard"}.get(answer, "cancel")
+
+    def ask_edits_policy(self, parts: list[str]) -> str | None:
+        """Before tracing the drawing again over parts edited by hand: "replace", "keep" or None (cancel)."""
+        box = QMessageBox(QMessageBox.Icon.Question, "Edited parts",
+                          "This change traces the drawing again. You edited %s by hand.\n\n"
+                          "Replace your edits with the new tracing, or keep them on top?" % ", ".join(parts),
+                          parent=self)
+        replace = box.addButton("Replace edits", QMessageBox.ButtonRole.DestructiveRole)
+        keep = box.addButton("Keep edits", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.exec()
+        return {id(replace): "replace", id(keep): "keep"}.get(id(box.clickedButton()))
 
     def ask_discard_edits(self) -> bool:
         """True to drop the pieces removed in Open SWF and not exported."""

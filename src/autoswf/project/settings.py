@@ -10,12 +10,13 @@ from autoswf.aqw.contract import sanitize_link
 from autoswf.aqw.template import Alignment
 from autoswf.drawing.roles import IGNORE, ROLES
 from autoswf.parts.model import Corrections
+from autoswf.project.edits import ArtEdits
 from autoswf.render.colors import LOCATION_FIELDS
 
 GENDERS = ("M", "F")
 SCALE_RANGE = (0.1, 10.0)
 KEYS = ("source", "roles", "align", "detail", "gradient", "separate_tones", "corrections", "animation", "pivots",
-        "export", "colors", "dismissed")
+        "export", "colors", "dismissed", "edits")
 EXPORT_KEYS = ("file", "link", "morph", "back_hair", "variants", "genders")
 VARIANT_KEYS = ("file", "link", "helm", "parts")
 
@@ -104,13 +105,15 @@ class HelmSettings:
     export: ExportSettings = field(default_factory=ExportSettings)
     colors: dict[str, int] = field(default_factory=dict)          # player colors for the canvas and preview
     dismissed: list[str] = field(default_factory=list)            # suggestions skipped that are not animations
+    edits: ArtEdits = field(default_factory=ArtEdits)             # hand edits of the art (the editor, Plan 7)
 
     def to_dict(self) -> dict:
         return {"source": self.source, "roles": dict(self.roles), "align": self.align, "detail": self.detail,
                 "gradient": list(self.gradient), "separate_tones": self.separate_tones,
                 "corrections": self.corrections.to_dict(), "animation": self.animation.to_dict(),
                 "pivots": {name: [p[0], p[1]] for name, p in self.pivots.items()}, "export": self.export.to_dict(),
-                "colors": {loc: "%06X" % rgb for loc, rgb in self.colors.items()}, "dismissed": list(self.dismissed)}
+                "colors": {loc: "%06X" % rgb for loc, rgb in self.colors.items()}, "dismissed": list(self.dismissed),
+                "edits": self.edits.to_dict()}
 
     @classmethod
     def from_dict(cls, data, source: str = "project") -> "HelmSettings":
@@ -160,7 +163,7 @@ class HelmSettings:
                    corrections=Corrections.from_dict(data.get("corrections", {}), "corrections"),
                    animation=AnimationSettings.from_dict(data.get("animation", {}), "animation"),
                    pivots=pivots, export=ExportSettings.from_dict(data.get("export", {})), colors=colors,
-                   dismissed=list(dismissed))
+                   dismissed=list(dismissed), edits=ArtEdits.from_dict(data.get("edits", {})))
 
     def copy(self) -> "HelmSettings":
         return copy.deepcopy(self)

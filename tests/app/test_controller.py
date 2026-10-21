@@ -131,3 +131,25 @@ def test_saving_before_the_re_import_still_offers_it_on_reopening(qapp, helm_psd
     reports = []
     c2.reimport_drawing(reports.append)
     assert reports[0].renamed["Lock 2"] == "Lock 3"
+
+
+def test_the_window_asks_before_retracing_edited_parts(qapp, helm_psd, app_cache, tmp_path):
+    from app_helpers import window
+    from editor_fixtures import rect_area
+    from autoswf.edit.project_source import project_layer
+    from autoswf.project.edits import ArtEdits
+    w = window(app_cache, tmp_path)
+    c = w.controller
+    c.import_drawing(helm_psd.path, align=helm_psd.align)
+    layer = project_layer(c.build, "Face")
+    edits = ArtEdits()
+    for name, shape in layer.paint(rect_area(240, 150, 250, 160), layer.line_tone).shapes.items():
+        edits.set_shape("Face", name, shape)
+    c.change("Brush", lambda s: setattr(s, "edits", edits))
+    asked = []
+    w.ask_edits_policy = lambda parts: asked.append(parts)
+    c.change("Detail", lambda s: setattr(s, "detail", 70))
+    assert asked == [["Face"]] and c.settings.detail == 50
+    w.ask_edits_policy = lambda parts: "keep"
+    c.change("Detail", lambda s: setattr(s, "detail", 70))
+    assert c.settings.detail == 70 and "Face" in c.settings.edits.parts()

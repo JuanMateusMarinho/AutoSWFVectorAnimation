@@ -8,8 +8,16 @@ from PySide6.QtCore import QCoreApplication, QEventLoop, QObject, Signal
 from PySide6.QtGui import QUndoCommand, QUndoStack
 
 from autoswf.aqw.assets import AqwCache
-from autoswf.project.build import Build, HelmBuilder
+from autoswf.project.build import Build, HelmBuilder, art_key
 from autoswf.project.settings import HelmSettings
+
+
+class EditedArtError(Exception):
+    """A change would trace the drawing again over parts edited by hand."""
+
+    def __init__(self, parts: list[str]):
+        super().__init__("Tracing the drawing again would replace your edits of %s" % ", ".join(parts))
+        self.parts = parts
 
 
 class SettingsCommand(QUndoCommand):
@@ -49,6 +57,7 @@ class ProjectController(QObject):
         self.busy = False
         self.exported_settings: dict | None = None     # the settings of the last successful export
         self.selected_part: str | None = None
+        self.ask_edits_policy: Callable[[list[str]], str | None] | None = None
         self.project_path: Path | None = None
         self.signatures: list = []                     # the parts of the saved project (re-import matches them)
         self.saved_copy: Path | None = None
@@ -80,14 +89,28 @@ class ProjectController(QObject):
         self.settings_changed.emit()
         self._request_build()
 
-    def change(self, label: str, edit: Callable[[HelmSettings], None]) -> None:
-        """Apply `edit` to the settings as one undo step and rebuild (an edit that changes nothing leaves no step)."""
+    def change(self, label: str, edit: Callable[[HelmSettings], None], *, edits_policy: str | None = None) -> None:
+        """Apply `edit` to the settings as one undo step and rebuild (an edit that changes nothing leaves no step).
+        When it would trace the drawing again over parts edited by hand (spec §8.6), `edits_policy` — or the answer
+        of `ask_edits_policy` — says "keep" (the edits stay on top) or "replace" (they go, in the same step); no
+        answer cancels the change, and with nobody to ask EditedArtError is raised."""
         if self.settings is None:
             return
         before, after = self.settings.copy(), self.settings.copy()
         edit(after)
         if after.to_dict() == before.to_dict():
             return
+        edited = sorted(before.edits.parts())
+        if edited and art_key(after) != art_key(before):
+            policy = edits_policy
+            if policy is None:
+                if self.ask_edits_policy is None:
+                    raise EditedArtError(edited)
+                policy = self.ask_edits_policy(edited)
+            if policy is None:
+                return
+            if policy == "replace":
+                after.edits = after.edits.without_parts(edited)
         self.settings = after
         self.undo_stack.push(SettingsCommand(self, label, before, after.copy()))
         self.settings_changed.emit()

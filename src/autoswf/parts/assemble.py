@@ -231,6 +231,38 @@ def assemble_helm(art: VectorArt, layers: list[PartLayer], link: str, *, separat
     return AssembledHelm(HelmItem(link, root, backhair), wrappers, placements, colorable)
 
 
+def with_extra_layers(helm: AssembledHelm, extras) -> AssembledHelm:
+    """Hand-made layers (the editor's ExtraLayer) on new top depths of the root, one wrapper each: fixed tones as
+    shapes, AQW-colored tones in their own colorable clips."""
+    if not extras:
+        return helm
+    root = helm.item.root.frames[0]
+    wrappers, placements, colorable = dict(helm.wrappers), dict(helm.placements), list(helm.colorable)
+    taken = {p.name for p in root.placements if p.name}
+    for extra in extras:
+        items = []
+        for shape, location, shade in extra.tones:
+            if not shape.paths:
+                continue
+            if location:
+                items.append(Symbol("%s %s %s" % (extra.name, location, shade), [Frame([Placement(shape, 1)])],
+                                    color_custom=ColorCustom(location, shade)))
+                colorable.append((extra.name, location, shade))
+            else:
+                items.append(shape)
+        if not items:
+            continue
+        wrapper = Symbol(extra.name, [Frame([Placement(item, k + 1) for k, item in enumerate(items)])])
+        name, k = instance_name(extra.name), 2
+        while name in taken:
+            name, k = "%s%d" % (instance_name(extra.name), k), k + 1
+        taken.add(name)
+        p = Placement(wrapper, max((q.depth for q in root.placements), default=0) + 1, name=name)
+        root.placements.append(p)
+        wrappers[extra.name], placements[extra.name] = wrapper, p
+    return AssembledHelm(helm.item, wrappers, placements, colorable)
+
+
 def colorable_summary(helm: AssembledHelm) -> str:
     pairs = {(loc, shade) for _, loc, shade in helm.colorable}
     ordered = [(loc, shade) for loc in LOCATIONS for shade in SHADES if (loc, shade) in pairs]
