@@ -100,3 +100,29 @@ def test_closing_with_unsaved_changes_asks(qapp, helm_psd, app_cache, tmp_path, 
     w.ask_save = lambda: answers.pop(0)
     assert w.close() is False and answers == ["discard"]
     assert w.close() is True
+
+
+def test_a_second_download_waits_for_the_first(qapp, tmp_path, app_cache, monkeypatch):
+    import threading
+    import time
+    from autoswf.preview import window as preview_window
+    started, release = [], threading.Event()
+
+    def slow_download(*args, **kwargs):
+        started.append(1)
+        release.wait(10)
+    monkeypatch.setattr(preview_window, "download_reference_files", slow_download)
+    w = window(app_cache, tmp_path)
+    w._start_download()
+    w._start_download()                              # the welcome page, the banner and the Help menu all offer it
+    time.sleep(0.2)
+    assert started == [1] and "already" in w.statusBar().currentMessage()
+    release.set()
+    deadline = time.time() + 5
+    while w._downloading and time.time() < deadline:
+        qapp.processEvents()
+        time.sleep(0.01)
+    w._start_download()
+    time.sleep(0.2)
+    assert started == [1, 1]
+    w.close()

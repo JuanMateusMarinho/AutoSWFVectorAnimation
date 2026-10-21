@@ -46,6 +46,7 @@ class MainWindow(QMainWindow):
         self._preview: PreviewWindow | None = None
         self._busy_stage: str | None = None
         self._download_worker = None
+        self._downloading = False
         self.undo_group = QUndoGroup(self)
         self.undo_group.addStack(controller.undo_stack)
         self.undo_group.setActiveStack(controller.undo_stack)
@@ -594,12 +595,19 @@ class MainWindow(QMainWindow):
             self._start_download()
 
     def _start_download(self) -> None:
+        if self._downloading:
+            self.statusBar().showMessage("The AQW files are already being downloaded")
+            return
+        # The worker is kept until the next download: its thread may still hold it when it reports, and a QObject
+        # must not be freed on that thread.
+        self._downloading = True
         self._download_worker = Downloader(self.cache, DEFAULT_ARMOR)
         self._download_worker.progress.connect(self.statusBar().showMessage)
         self._download_worker.finished.connect(self._on_downloaded)
         threading.Thread(target=self._download_worker.run, name="aqw-download", daemon=True).start()
 
     def _on_downloaded(self, error: str) -> None:
+        self._downloading = False
         if error:
             QMessageBox.warning(self, "Download failed", error + "\n\nAutoSWF still works without these files; only the "
                                 "head guide and the body preview need them.")
