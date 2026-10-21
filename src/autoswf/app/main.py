@@ -6,8 +6,11 @@ import json
 import os
 import sys
 import tempfile
+import threading
+import time
 import traceback
 from pathlib import Path
+from typing import Callable
 
 
 def smoke_drawing(path: Path) -> None:
@@ -73,6 +76,37 @@ def run_smoke_test(out: Path) -> int:
     return 0 if result["ok"] else 1
 
 
+def log_folder() -> Path:
+    return Path(os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()) / "AutoSWF" / "logs"
+
+
+def install_error_report(folder: Path, show: Callable[[str], None] | None = None) -> None:
+    """An unexpected error never passes silently (the packaged app has no console): it is written to
+    FOLDER/autoswf.log and, on the GUI thread, shown in a message."""
+    log = Path(folder) / "autoswf.log"
+
+    def show_box(text: str) -> None:
+        from PySide6.QtWidgets import QMessageBox
+        QMessageBox.critical(None, "Unexpected error", text)
+
+    def report(kind, value, tb) -> None:
+        details = "".join(traceback.format_exception(kind, value, tb))
+        try:
+            log.parent.mkdir(parents=True, exist_ok=True)
+            with open(log, "a", encoding="utf-8") as f:
+                f.write("%s AutoSWF\n%s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), details))
+        except OSError:
+            pass
+        if sys.stderr is not None:
+            sys.stderr.write(details)
+        if threading.current_thread() is threading.main_thread():
+            (show or show_box)("AutoSWF hit an unexpected error and the last action may not have finished:\n\n"
+                               "%s: %s\n\nThe details were written to %s" % (kind.__name__, value, log))
+
+    sys.excepthook = report
+    threading.excepthook = lambda args: report(args.exc_type, args.exc_value, args.exc_traceback)
+
+
 def run_app(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="AutoSWF", description="AutoSWF: turn drawings into AQW items")
     parser.add_argument("file", nargs="?", help="a drawing, an AutoSWF project (.aswf) or a SWF to open")
@@ -92,6 +126,7 @@ def run_app(argv: list[str]) -> int:
     app.setOrganizationName("AutoSWF")
     collector = GuiThreadCollector(app)             # Qt objects in cycles are never freed on the build thread
     collector.start()
+    install_error_report(log_folder())
     apply_dark_theme(app)
     cache = AqwCache(default_cache_dir())
     window = MainWindow(ProjectController(cache), cache)
