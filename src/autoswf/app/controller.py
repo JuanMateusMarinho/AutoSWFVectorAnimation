@@ -330,7 +330,8 @@ class ProjectController(QObject):
         path = Path(path) if path is not None else self.project_path
         if path is None:
             raise ValueError("Choose where to save the project")
-        save_project(path, self.settings, self.helm_build)
+        save_project(path, self.settings, self.helm_build, signatures=self.signatures or None,
+                     pending=self.source_changed_on_disk)
         self.project_path = path
         self._saved = self.settings.to_dict()
         self.settings_changed.emit()
@@ -344,6 +345,7 @@ class ProjectController(QObject):
         self.project_path = Path(path)
         self.signatures = loaded.signatures
         self.saved_copy = loaded.saved_copy
+        self.source_changed_on_disk = loaded.source_changed      # until re-imported: builds keep these signatures
         self.build = self.helm_build = None
         if loaded.swf is not None:
             self.helm_build = Build(loaded.settings.copy(), link=loaded.settings.export_link(), swf=loaded.swf,
@@ -359,17 +361,18 @@ class ProjectController(QObject):
         """Work from the drawing saved inside the project instead of the changed one on disk."""
         if self.saved_copy is not None:
             self.settings.source = str(self.saved_copy)
+            self.source_changed_on_disk = False
             self._saved = self.settings.to_dict()
             self._watch()
             self._request_build()
 
     def reimport_drawing(self, on_done: Callable | None = None) -> None:
-        """Read the changed drawing again and move the work onto the parts that still match (one undo step)."""
+        """Read the changed drawing again and move the work onto the parts that still match (one undo step). The parts
+        are matched with those the settings were made for (the last build before the drawing changed, or the saved
+        project's), never with a build of the changed drawing."""
         from autoswf.project.aswf import part_signatures, reimport
-        old = part_signatures(self.helm_build) if self.helm_build is not None and self.helm_build.parts is not None \
-            else list(self.signatures)
+        old = list(self.signatures) or part_signatures(self.helm_build)
         snapshot, builder = self.settings.copy(), self.builder
-        self.source_changed_on_disk = False
 
         def job(progress, cancelled):
             return builder.build(snapshot, progress=progress)
@@ -378,9 +381,10 @@ class ProjectController(QObject):
             if isinstance(build, Exception) or build.parts is None:
                 report = None
             else:
-                moved, report = reimport(snapshot, old, build)
-                self.change("Re-import drawing", lambda s: s.__dict__.update(moved.copy().__dict__))
+                moved, report = reimport(self.settings.copy(), old, build)      # edits made meanwhile move too
+                self.source_changed_on_disk = False
                 self.signatures = part_signatures(build)
+                self.change("Re-import drawing", lambda s: s.__dict__.update(moved.copy().__dict__))
             if not self.busy:
                 self._request_build()
             self.settings_changed.emit()
@@ -478,6 +482,9 @@ class ProjectController(QObject):
         self.build = result
         if result.complete:
             self.helm_build = result
+            if result.parts is not None and not self.source_changed_on_disk:
+                from autoswf.project.aswf import part_signatures
+                self.signatures = part_signatures(result)       # the parts the settings are made for
         self.built.emit(result)
 
     def wait(self, timeout: float = 180.0) -> Build | None:

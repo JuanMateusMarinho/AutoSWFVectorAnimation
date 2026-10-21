@@ -1,4 +1,6 @@
 # tests/app/test_controller.py
+import pytest
+
 from autoswf.app.controller import ProjectController
 from autoswf.aqw.validate import validate_helm_swf
 
@@ -73,3 +75,59 @@ def test_rerunning_a_preset_asks_before_replacing_hand_made_keys(qapp, helm_psd,
     assert len([k for k in c.settings.animation.keys if k.part == "Lock 2"]) == 1
     c.set_animation("Lock 2", "Twitch", edits="replace")
     assert [k for k in c.settings.animation.keys if k.part == "Lock 2"] == []
+
+
+def _lock_project(helm_psd, app_cache, tmp_path, threaded):
+    """A saved project whose Lock 2 sways with amplitude 20, then a lock drawn on the left (Lock 2 becomes Lock 3)."""
+    from drawings import add_lock_on_the_left
+    from autoswf.drawing.writers import write_psd
+    drawing = tmp_path / "Helm.psd"
+    drawing.write_bytes(helm_psd.path.read_bytes())
+    c = ProjectController(app_cache, threaded=threaded)
+    c.import_drawing(drawing, align=helm_psd.align)
+    c.wait()
+    c.set_animation("Lock 2", "Sway", {"amplitude": 20})
+    c.wait()
+    c.save(tmp_path / "p.aswf")
+    return c, drawing, lambda: write_psd(drawing, helm_psd.t.width, helm_psd.t.height, add_lock_on_the_left(helm_psd.t))
+
+
+@pytest.mark.parametrize("threaded", [False, True])
+def test_reopening_a_changed_drawing_moves_the_work_onto_the_renamed_parts(qapp, helm_psd, app_cache, tmp_path,
+                                                                           threaded):
+    c, drawing, change_drawing = _lock_project(helm_psd, app_cache, tmp_path, threaded)
+    c.close()
+    change_drawing()
+    c2 = ProjectController(app_cache, threaded=threaded)
+    assert c2.open_project(tmp_path / "p.aswf").source_changed
+    c2.wait()                                       # the build of the changed drawing ends before the user answers
+    reports = []
+    c2.reimport_drawing(reports.append)
+    c2.wait()
+    assert reports[0].renamed["Lock 2"] == "Lock 3"
+    assert c2.settings.animation.parts["Lock 3"] == ("Sway", {"amplitude": 20})
+    c2.close()
+
+
+def test_a_drawing_changed_while_open_is_matched_with_the_parts_before_the_change(qapp, helm_psd, app_cache, tmp_path):
+    c, drawing, change_drawing = _lock_project(helm_psd, app_cache, tmp_path, False)
+    change_drawing()
+    c._on_source_changed(str(drawing))              # what the file watcher does
+    c.set_color_slot("Eye L", "Eye")                # an edit rebuilds from the changed drawing
+    reports = []
+    c.reimport_drawing(reports.append)
+    assert reports[0].renamed["Lock 2"] == "Lock 3"
+    assert c.settings.animation.parts["Lock 3"] == ("Sway", {"amplitude": 20}) and "Lock 7" not in reports[0].kept
+
+
+def test_saving_before_the_re_import_still_offers_it_on_reopening(qapp, helm_psd, app_cache, tmp_path):
+    c, drawing, change_drawing = _lock_project(helm_psd, app_cache, tmp_path, False)
+    change_drawing()
+    c._on_source_changed(str(drawing))
+    c.set_color_slot("Eye L", "Eye")
+    c.save()                                        # the work still names the parts of the drawing before the change
+    c2 = ProjectController(app_cache, threaded=False)
+    assert c2.open_project(tmp_path / "p.aswf").source_changed
+    reports = []
+    c2.reimport_drawing(reports.append)
+    assert reports[0].renamed["Lock 2"] == "Lock 3"
