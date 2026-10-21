@@ -22,6 +22,13 @@ def rect_area(x0: float, y0: float, x1: float, y1: float):
     return [[(round(x * TWIPS), round(y * TWIPS)) for x, y in pts]]
 
 
+def height_at(area, x: float) -> float:
+    """The area's vertical extent (px) on the line at x."""
+    from autoswf.edit.regions import bounds_px, intersection
+    box = bounds_px(intersection(area, rect_area(x - 0.05, -10000, x + 0.05, 10000)))
+    return 0.0 if box is None else box[3] - box[2]
+
+
 BASE, SHADE = (230, 180, 140, 255), (40, 90, 200, 255)
 
 
