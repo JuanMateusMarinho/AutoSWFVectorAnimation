@@ -18,8 +18,9 @@ from autoswf.swf.decode import MovieData, SpriteDef
 THIS, OTHER, NULL = ("this",), ("other",), ("null",)
 PRIMITIVES = ("bool", "int", "str", "null")
 OBJECTS = ("this", "method", "array", "matrix")
-MAX_STEPS = 50000
+MAX_STEPS = 20000
 MAX_CALL_DEPTH = 16
+MAX_ITEMS = 10000                # longest string or array a script may build
 CALLS = ("callproperty", "callpropvoid", "callproplex")
 NEUTRAL = {"nop", "label", "coerce", "coerce_a", "coerce_s", "coerce_i", "coerce_d", "coerce_u", "coerce_o", "convert_s",
            "convert_i", "convert_d", "convert_u", "convert_o", "astype", "checkfilter", "debug", "debugline",
@@ -32,7 +33,7 @@ AVATAR_MEMBERS = frozenset({"addAnimationListener", "removeAnimationListener", "
 EVENTS = {"ADDED_TO_STAGE": "addedToStage", "ENTER_FRAME": "enterFrame", "REMOVED_FROM_STAGE": "removedFromStage",
           "ADDED": "added", "REMOVED": "removed"}
 HEAD, SKELETON, AVATAR = (1, ()), (2, ()), (3, ())         # places around the armor's head clip (see locate)
-FIELD_DEFAULTS = {"Boolean": ("bool", False), "int": ("int", 0), "uint": ("int", 0), "Number": ("int", 0)}
+FIELD_DEFAULTS = {"Boolean": ("bool", False), "int": ("int", 0.0), "uint": ("int", 0.0), "Number": ("int", 0.0)}
 NOT_READ = ("Which game animation plays which of its animations cannot be read from its scripts; the preview plays "
             "them by name")
 
@@ -98,13 +99,29 @@ def _int(op: str, text: str) -> int:
 
 
 def _value(v) -> tuple:
+    """A Python value as a script value; numbers are AS3 Numbers (floats), so they never grow without bound."""
     if v is None:
         return NULL
     if isinstance(v, bool):
         return ("bool", v)
     if isinstance(v, (int, float)):
-        return ("int", v)
+        return ("int", float(v))
     return ("str", str(v))
+
+
+def _index(v) -> int | None:
+    """A number used as a frame or an array index, when it is one."""
+    if v[0] != "int" or not math.isfinite(v[1]) or not float(v[1]).is_integer():
+        return None
+    return int(v[1])
+
+
+def _text(v) -> str:
+    if v[0] == "null":
+        return "null"
+    if v[0] == "int" and math.isfinite(v[1]) and float(v[1]).is_integer():
+        return str(int(v[1]))
+    return str(v[1])
 
 
 def locate(path: tuple) -> tuple[int, tuple[str, ...]] | None:
@@ -171,15 +188,19 @@ class HeadClass:
     _code: dict = field(default_factory=dict, repr=False)
 
     def code(self, method: int):
+        """The method's instructions and their index by offset, or (None, None) when its bytecode cannot be read."""
         if method not in self._code:
-            instrs = disassemble(self.abc, self.abc.bodies.get(method, b""))
-            self._code[method] = (instrs, {i.offset: k for k, i in enumerate(instrs)})
+            try:
+                instrs = disassemble(self.abc, self.abc.bodies.get(method, b""))
+                self._code[method] = (instrs, {i.offset: k for k, i in enumerate(instrs)})
+            except Exception:
+                self._code[method] = (None, None)
         return self._code[method]
 
     def calls(self, name: str) -> bool:
         """Whether any of its code calls a function of this name."""
         return any(i.op in CALLS and _short(i.args[0]) == name
-                   for method in (self.iinit, *self.methods.values()) for i in self.code(method)[0])
+                   for method in (self.iinit, *self.methods.values()) for i in (self.code(method)[0] or ()))
 
 
 class _Stop(Exception):
@@ -274,7 +295,7 @@ class _Machine:
         if obj[0] == "path":
             return self.resolve(("path", obj[1] + (name,)))
         if obj[0] == "array" and name == "length":
-            return ("int", len(obj[1]))
+            return ("int", float(len(obj[1])))
         return OTHER
 
     def set(self, obj, name: str, value) -> None:
@@ -310,8 +331,9 @@ class _Machine:
             else:
                 self.effects.append(Unread())
             return NULL
-        if name in ("gotoAndPlay", "gotoAndStop") and len(args) == 1 and args[0][0] in ("str", "int"):
-            target = args[0][1] if args[0][0] == "str" else int(args[0][1]) - 1
+        if name in ("gotoAndPlay", "gotoAndStop") and len(args) == 1 and (
+                args[0][0] == "str" or _index(args[0]) is not None):
+            target = args[0][1] if args[0][0] == "str" else _index(args[0]) - 1
             if mine:
                 self.effects.append(Goto(target, name == "gotoAndPlay"))
             elif receiver[0] == "path" and locate(receiver[1]) == SKELETON and args[0][0] == "str":
@@ -344,14 +366,18 @@ class _Machine:
             receiver[2] = not receiver[2]
             return NULL
         if name == "push" and receiver[0] == "array":
+            if len(receiver[1]) + len(args) > MAX_ITEMS:
+                raise _Stop("stopped on an array too long")
             receiver[1].extend(args)
-            return ("int", len(receiver[1]))
+            return ("int", float(len(receiver[1])))
         return OTHER
 
     def call(self, method: int, args: tuple = (), depth: int = 0):
         if depth > MAX_CALL_DEPTH:
             raise _Stop("stopped on calls nested too deep")
         instrs, index = self.head.code(method)
+        if instrs is None:
+            raise _Stop("stopped on code it cannot read")
         info = self.head.abc.method_info[method] if method < len(self.head.abc.method_info) else {}
         params, optional = len(info.get("params", ())), info.get("optional", [])
         regs = {0: THIS}
@@ -363,6 +389,12 @@ class _Machine:
 
         def pop():
             return stack.pop() if stack else OTHER
+
+        def pops(n: int) -> list:
+            """The top n values, oldest first (a count larger than the stack is damaged code)."""
+            if n > len(stack) + 2:
+                raise _Stop("stopped on code it cannot follow (offset %d)" % i.offset)
+            return [pop() for _ in range(n)][::-1]
 
         def target(arg: str) -> int:
             return index.get(int(arg[2:]), len(instrs))
@@ -386,7 +418,7 @@ class _Machine:
                 regs[int(a[0])] = NULL
             elif op in ("inclocal", "inclocal_i", "declocal", "declocal_i"):
                 v = regs.get(int(a[0]), NULL)
-                regs[int(a[0])] = ("int", v[1] + (1 if op.startswith("inc") else -1)) if v[0] == "int" else OTHER
+                regs[int(a[0])] = ("int", v[1] + (1.0 if op.startswith("inc") else -1.0)) if v[0] == "int" else OTHER
             elif op in ("pushscope", "pushwith", "pop"):
                 pop()
             elif op == "getscopeobject":
@@ -401,17 +433,18 @@ class _Machine:
             elif op == "getproperty":
                 if a[0].startswith("["):
                     key, obj = pop(), pop()
+                    at = _index(key)
                     items = obj[1] if obj[0] == "array" else None
-                    stack.append(items[key[1]] if items is not None and key[0] == "int" and 0 <= key[1] < len(items)
-                                 else OTHER)
+                    stack.append(items[at] if items is not None and at is not None and 0 <= at < len(items) else OTHER)
                 else:
                     stack.append(self.get(pop(), _short(a[0])))
             elif op in ("setproperty", "initproperty"):
                 value = pop()
                 if a[0].startswith("["):
                     key, obj = pop(), pop()
-                    if obj[0] == "array" and key[0] == "int" and 0 <= key[1] < len(obj[1]):
-                        obj[1][key[1]] = value
+                    at = _index(key)
+                    if obj[0] == "array" and at is not None and 0 <= at < len(obj[1]):
+                        obj[1][at] = value
                 else:
                     self.set(pop(), _short(a[0]), value)
             elif op == "deleteproperty":
@@ -420,32 +453,35 @@ class _Machine:
                 pop()
                 stack.append(("bool", True))
             elif op in CALLS:
-                args_ = [pop() for _ in range(int(a[1]))][::-1]
+                args_ = pops(int(a[1]))
                 if a[0].startswith("["):
                     pop()
                 result = self.invoke(pop(), _short(a[0]), args_, depth)
                 if op != "callpropvoid":
                     stack.append(result)
             elif op in ("callsuper", "callsupervoid", "constructprop"):
-                [pop() for _ in range(int(a[1]) + 1)]
+                pops(int(a[1]) + 1)
                 if op != "callsupervoid":
                     stack.append(OTHER)
             elif op in ("call", "construct", "constructsuper"):
-                [pop() for _ in range(int(a[0]) + (2 if op == "call" else 1))]
+                pops(int(a[0]) + (2 if op == "call" else 1))
                 if op != "constructsuper":
                     stack.append(OTHER)
             elif op == "newarray":
-                stack.append(("array", [pop() for _ in range(int(a[0]))][::-1]))
+                stack.append(("array", pops(int(a[0]))))
             elif op == "newobject":
-                [pop() for _ in range(2 * int(a[0]))]
+                pops(2 * int(a[0]))
                 stack.append(OTHER)
             elif op == "newclass":
                 pop()
                 stack.append(OTHER)
             elif op == "pushstring":
-                stack.append(("str", ast.literal_eval(a[0])))
+                try:
+                    stack.append(("str", str(ast.literal_eval(a[0]))))
+                except (ValueError, SyntaxError):
+                    stack.append(OTHER)
             elif op in ("pushbyte", "pushshort", "pushint", "pushuint"):
-                stack.append(("int", _int(op, a[0])))
+                stack.append(("int", float(_int(op, a[0]))))
             elif op == "pushdouble":
                 stack.append(("int", float(a[0])))
             elif op == "pushnan":
@@ -478,18 +514,26 @@ class _Machine:
             elif op in ("add", "add_i", "subtract", "subtract_i", "multiply", "multiply_i", "divide", "modulo"):
                 y, x = self.resolve(pop()), self.resolve(pop())
                 if x[0] == y[0] == "int":
-                    stack.append(("int", {"add": x[1] + y[1], "subtract": x[1] - y[1], "multiply": x[1] * y[1],
-                                          "divide": x[1] / y[1] if y[1] else math.nan,
-                                          "modulo": x[1] % y[1] if y[1] else math.nan}[op.replace("_i", "")]))
+                    kind = op.replace("_i", "")
+                    if kind in ("divide", "modulo") and not y[1]:
+                        result = math.nan
+                    elif kind == "modulo":
+                        result = math.fmod(x[1], y[1]) if math.isfinite(x[1]) else math.nan
+                    else:
+                        result = {"add": x[1] + y[1], "subtract": x[1] - y[1], "multiply": x[1] * y[1],
+                                  "divide": x[1] / y[1] if y[1] else math.nan}[kind]
+                    stack.append(("int", result))
                 elif op == "add" and "str" in (x[0], y[0]) and x[0] in PRIMITIVES and y[0] in PRIMITIVES:
-                    stack.append(("str", "%s%s" % (x[1] if x[0] != "null" else "null",
-                                                   y[1] if y[0] != "null" else "null")))
+                    text = _text(x) + _text(y)
+                    if len(text) > MAX_ITEMS:
+                        raise _Stop("stopped on a string too long")
+                    stack.append(("str", text))
                 else:
                     stack.append(OTHER)
             elif op in ("increment", "increment_i", "decrement", "decrement_i", "negate", "negate_i"):
                 v = self.resolve(pop())
                 if v[0] == "int":
-                    stack.append(("int", -v[1] if op.startswith("negate") else v[1] + (1 if op.startswith("inc") else -1)))
+                    stack.append(("int", -v[1] if op.startswith("negate") else v[1] + (1.0 if op.startswith("inc") else -1.0)))
                 else:
                     stack.append(OTHER)
             elif op == "astypelate":
@@ -507,9 +551,9 @@ class _Machine:
             elif op == "hasnext2":
                 obj_reg, index_reg = int(a[0]), int(a[1])
                 obj, at = regs.get(obj_reg, NULL), regs.get(index_reg, NULL)
-                if obj[0] == "array" and at[0] == "int":
-                    more = at[1] < len(obj[1])
-                    regs[index_reg] = ("int", at[1] + 1) if more else at
+                if obj[0] == "array" and _index(at) is not None:
+                    more = _index(at) < len(obj[1])
+                    regs[index_reg] = ("int", at[1] + 1.0) if more else at
                     if not more:
                         regs[obj_reg] = NULL
                     stack.append(("bool", more))
@@ -519,8 +563,9 @@ class _Machine:
                     raise _Stop("stopped on a loop over something it cannot read (offset %d)" % i.offset)
             elif op in ("nextvalue", "nextname"):
                 at, obj = pop(), pop()
-                if obj[0] == "array" and at[0] == "int" and 1 <= at[1] <= len(obj[1]):
-                    stack.append(obj[1][at[1] - 1] if op == "nextvalue" else ("int", at[1] - 1))
+                k = _index(at)
+                if obj[0] == "array" and k is not None and 1 <= k <= len(obj[1]):
+                    stack.append(obj[1][k - 1] if op == "nextvalue" else ("int", float(k - 1)))
                 else:
                     stack.append(OTHER)
             elif op in ("iftrue", "iffalse"):
@@ -571,6 +616,8 @@ def run_method(head: HeadClass, method: int, state: dict, host: Host, args: tupl
         machine.call(method, args)
     except _Stop as e:
         return machine.effects, str(e)
+    except Exception as e:                           # damaged code from any file: a note, never an error
+        return machine.effects, "stopped on code it cannot follow (%s)" % type(e).__name__
     return machine.effects, None
 
 
@@ -708,11 +755,12 @@ def read_animated_armor(movie: MovieData, gender: str | None = None) -> Animated
         if not isinstance(sprite, SpriteDef):
             continue
         for abc in movie.abcs:
-            inst = next((x for x in abc.instances if abc.mname(x["name"]) == name), None)
-            if inst is None:
-                continue
-            head = head_class(abc, inst, name)
-            if not head.calls("addAnimationListener"):
+            try:
+                inst = next((x for x in abc.instances if abc.mname(x["name"]) == name), None)
+                head = head_class(abc, inst, name) if inst is not None else None
+            except Exception:                        # a class this reader cannot make sense of is not animated
+                head = None
+            if head is None or not head.calls("addAnimationListener"):
                 continue
             scripts = HeadScripts(head, Host({"bitWalk": True}))
             scripts.construct()
