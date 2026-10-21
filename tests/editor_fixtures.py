@@ -141,6 +141,74 @@ def long_stroke():
     return [Sample(20 + k * 1.3, 40 + k * 1.1, 0.5 + 0.5 * ((k % 20) / 20)) for k in range(200)]
 
 
+# ---------------------------------------------------------------- the AI settings (fakes, no network)
+
+MODELS = ["meta/llama-3.3-70b-instruct", "nvidia/nemotron-3-ultra-550b-a55b", "nvidia/nemotron-3.5-super-vl-120b-a12b"]
+
+
+def memory_keyring_class():
+    import keyring.backend
+
+    class MemoryKeyring(keyring.backend.KeyringBackend):
+        priority = 1
+
+        def __init__(self):
+            super().__init__()
+            self.store = {}
+
+        def get_password(self, service, username):
+            return self.store.get((service, username))
+
+        def set_password(self, service, username, password):
+            self.store[(service, username)] = password
+
+        def delete_password(self, service, username):
+            import keyring.errors
+            if (service, username) not in self.store:
+                raise keyring.errors.PasswordDeleteError("not found")
+            del self.store[(service, username)]
+    return MemoryKeyring
+
+
+def start_fake_nvidia():
+    """A local stand-in for build.nvidia.com's API: /v1/models and /v1/chat/completions (status chosen by the test)."""
+    import json
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def _send(self, status, body):
+            data = json.dumps(body).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_GET(self):
+            self.server.auth.append(self.headers.get("Authorization"))
+            if self.path.endswith("/models"):
+                self._send(200, {"data": [{"id": m} for m in MODELS]})
+            else:
+                self._send(404, {})
+
+        def do_POST(self):
+            self.server.auth.append(self.headers.get("Authorization"))
+            length = int(self.headers.get("Content-Length", 0))
+            self.server.bodies.append(json.loads(self.rfile.read(length) or b"{}"))
+            self._send(self.server.status, {"choices": [{"message": {"content": "p"}}]} if self.server.status == 200
+                       else {"error": "no"})
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server.status, server.auth, server.bodies = 200, [], []
+    server.url = "http://127.0.0.1:%d/v1" % server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
 # ---------------------------------------------------------------- PNGs from Clip Studio
 
 def _image(width: int, height: int, draw) -> "np.ndarray":

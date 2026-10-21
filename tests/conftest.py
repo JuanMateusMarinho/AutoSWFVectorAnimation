@@ -158,3 +158,24 @@ def the_sword_hero():
     if not path.exists():
         pytest.skip("the animated armor is not in %s" % path)
     return path.read_bytes()
+
+
+@pytest.fixture
+def fake_nvidia():
+    """A local fake of NVIDIA's API (no network)."""
+    from editor_fixtures import start_fake_nvidia
+    server = start_fake_nvidia()
+    yield server
+    server.shutdown()
+
+
+@pytest.fixture
+def memory_keyring():
+    """Windows' credential store replaced by memory for the test."""
+    import keyring
+    from editor_fixtures import memory_keyring_class
+    previous = keyring.get_keyring()
+    backend = memory_keyring_class()()
+    keyring.set_keyring(backend)
+    yield backend
+    keyring.set_keyring(previous)

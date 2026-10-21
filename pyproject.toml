@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Turn layered cel-shaded art into AQW-ready vector SWF items"
 requires-python = ">=3.12"
 dependencies = ["PySide6>=6.8", "numpy>=2.1", "psd-tools>=1.25", "clipparse>=0.2", "scipy>=1.14", "Pillow>=11",
-                "pyclipper>=1.3"]
+                "pyclipper>=1.3", "keyring>=25"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]

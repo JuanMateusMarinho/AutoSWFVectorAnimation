@@ -13,6 +13,14 @@ from pathlib import Path
 from typing import Callable
 
 
+def qt_arguments(argv: list[str], settings) -> list[str]:
+    """Qt's arguments: Wintab tablet input instead of Windows Ink when the user chose it (Preferences › Tablet)."""
+    out = list(argv)
+    if "-platform" not in out and str(settings.value("tablet/wintab", False)).lower() in ("true", "1"):
+        out += ["-platform", "windows:wintab"]
+    return out
+
+
 def smoke_drawing(path: Path) -> None:
     """A small layered helm drawing (flats, shadow, line art) written as a PSD."""
     import numpy as np
@@ -121,7 +129,8 @@ def run_app(argv: list[str]) -> int:
     from autoswf.app.window import MainWindow
     from autoswf.aqw.assets import AqwCache, default_cache_dir
     from autoswf.qt_gc import GuiThreadCollector
-    app = QApplication.instance() or QApplication(["AutoSWF"])
+    from PySide6.QtCore import QSettings
+    app = QApplication.instance() or QApplication(qt_arguments(["AutoSWF"], QSettings("AutoSWF", "AutoSWF")))
     app.setApplicationName("AutoSWF")
     app.setOrganizationName("AutoSWF")
     collector = GuiThreadCollector(app)             # Qt objects in cycles are never freed on the build thread

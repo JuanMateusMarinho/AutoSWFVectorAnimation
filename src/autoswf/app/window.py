@@ -35,6 +35,7 @@ SHORTCUTS = {
     "timeline": ("&Timeline", "Ctrl+Alt+T"), "zoom_in": ("Zoom &in", "Ctrl+="), "zoom_out": ("Zoom &out", "Ctrl+-"),
     "fit": ("&Fit", "Ctrl+2"), "toggle_gender": ("Male / &female head", "Ctrl+M"),
     "download": ("&Download AQW files…", None), "about": ("&About AutoSWF", None),
+    "preferences": ("&Preferences…", "Ctrl+K"),
 }
 
 
@@ -88,7 +89,8 @@ class MainWindow(QMainWindow):
                     "zoom_in": lambda: self.canvas.set_zoom(self.canvas.current_zoom() * 1.25),
                     "zoom_out": lambda: self.canvas.set_zoom(self.canvas.current_zoom() / 1.25),
                     "fit": lambda: self.canvas.fit(), "toggle_gender": self._on_toggle_gender,
-                    "download": self.download_reference_files, "about": self._on_about}
+                    "download": self.download_reference_files, "about": self._on_about,
+                    "preferences": self._on_preferences}
         for name, handler in handlers.items():
             self.actions[name].triggered.connect(lambda _=False, h=handler: h())
         for name, action in self.actions.items():
@@ -102,7 +104,7 @@ class MainWindow(QMainWindow):
         a = self.actions
         for title, names in (("&File", ("import", "open", "open_swf", None, "save", "save_as", "reimport", None, "export", None,
                                        "quit")),
-                             ("&Edit", ("undo", "redo")),
+                             ("&Edit", ("undo", "redo", None, "preferences")),
                              ("&View", ("zoom_in", "zoom_out", "fit", None, "toggle_gender", "timeline")),
                              ("&Control", ("play", "preview")),
                              ("&Insert", ("insert_frame", "remove_frame", "insert_keyframe", "clear_keyframe")),
@@ -515,6 +517,10 @@ class MainWindow(QMainWindow):
         self.canvas.pending_layer = layer.applied(edit)
         self.canvas.update()
         self.controller.change(label, apply)
+
+    def _on_preferences(self) -> None:
+        from autoswf.app.preferences import PreferencesDialog
+        PreferencesDialog(self.settings_store, self).exec()
 
     def _show_helm_workspace(self) -> None:
         self.stack.setCurrentWidget(self.workspace)
