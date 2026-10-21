@@ -141,6 +141,48 @@ def long_stroke():
     return [Sample(20 + k * 1.3, 40 + k * 1.1, 0.5 + 0.5 * ((k % 20) / 20)) for k in range(200)]
 
 
+# ---------------------------------------------------------------- PNGs from Clip Studio
+
+def _image(width: int, height: int, draw) -> "np.ndarray":
+    import numpy as np
+    from PIL import Image, ImageDraw
+    img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    draw(ImageDraw.Draw(img))
+    return np.array(img)
+
+
+def three_color_disc():
+    """A 120 px disc: base, a shadow crescent and a dark 3 px outline, on transparency."""
+    def draw(d):
+        d.ellipse((10, 10, 110, 110), fill=SKIN_RGBA)
+        d.ellipse((50, 20, 105, 100), fill=SHADOW_RGBA)
+        d.ellipse((10, 10, 110, 110), outline=LINE_RGBA, width=3)
+    return _image(120, 120, draw)
+
+
+FACE_FIXED = [FACE[0], (276, 29.33), FACE[4]] + FACE[5:]          # the face as it should be: no strip
+
+
+def face_like_png():
+    """The face of face_with_strip() as it should be (no strip), in its own colors at layer coordinates."""
+    def draw(d):
+        d.polygon(FACE_FIXED, fill=SKIN_RGBA)
+        d.rectangle(SHADOW_BOX, fill=SHADOW_RGBA)
+        d.line(FACE_FIXED + FACE_FIXED[:1], fill=LINE_RGBA, width=3)
+    return _image(320, 290, draw)
+
+
+def green_patch_png():
+    def draw(d):
+        d.polygon(FACE, fill=SKIN_RGBA)
+        d.rectangle((120, 120, 160, 160), fill=(0, 255, 0, 255))
+    return _image(320, 290, draw)
+
+
+def hair_colored_png():
+    return _image(60, 40, lambda d: d.ellipse((5, 5, 55, 35), fill=(112, 58, 31, 255)))
+
+
 # ---------------------------------------------------------------- SWF look-alikes
 
 HAIR_RGBA = (110, 60, 30, 255)

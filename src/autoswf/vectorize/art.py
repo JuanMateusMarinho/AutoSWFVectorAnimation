@@ -245,6 +245,18 @@ def _simple(rgba: np.ndarray, ds: DetailSettings, origin, soft: np.ndarray):
     return labels, [FaceStyle(c, None) for c in colors]
 
 
+def vectorize_image(rgba: np.ndarray, detail: int = 50) -> TracedLayer | None:
+    """One flat image (lines and colors together, e.g. a piece exported from Clip Studio) traced like a details pass:
+    one face per color, in the image's px; None when nothing is drawn."""
+    ds = detail_settings(detail)
+    result = _simple(rgba, ds, (0, 0), np.zeros(rgba.shape[:2], bool))
+    if result is None:
+        return None
+    labels, styles = result
+    shape = trace_shape(labels, [SolidFill(s.color) for s in styles], ds.fit, Matrix())
+    return TracedLayer("Image", "details", None, shape, styles, labels, Matrix(), ds.fit)
+
+
 def _gradient_layer(part: PartPasses, tone, ds: DetailSettings, matrix: Matrix, soft: np.ndarray,
                     notes: list[str], prefix: str) -> TracedLayer | None:
     """A soft tone layer drawn as one gradient-filled shape over the fills (which leave it out), in normal blend."""
