@@ -297,6 +297,8 @@ class MainWindow(QMainWindow):
         """Open a drawing (new project) or a project (.aswf); returns an error message when it cannot be opened."""
         path = Path(path)
         if path.suffix.lower() == ".swf":
+            if not self._may_leave_swf():
+                return None                      # the user kept the pieces removed in Open SWF
             error = self.swf_editor.open(path)
             if error:
                 return error
@@ -456,6 +458,18 @@ class MainWindow(QMainWindow):
         return {QMessageBox.StandardButton.Save: "save",
                 QMessageBox.StandardButton.Discard: "discard"}.get(answer, "cancel")
 
+    def ask_discard_edits(self) -> bool:
+        """True to drop the pieces removed in Open SWF and not exported."""
+        n = len(self.swf_editor.removed)
+        answer = QMessageBox.question(
+            self, "Pieces not exported", "%d removed piece%s %s not exported yet. Discard %s?"
+            % (n, "" if n == 1 else "s", "is" if n == 1 else "are", "it" if n == 1 else "them"),
+            QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel)
+        return answer == QMessageBox.StandardButton.Discard
+
+    def _may_leave_swf(self) -> bool:
+        return not self.swf_editor.dirty or self.ask_discard_edits()
+
     def _may_leave(self) -> bool:
         """True when the current project may be closed (saved, discarded or clean)."""
         if not self.controller.dirty:
@@ -595,7 +609,7 @@ class MainWindow(QMainWindow):
         self._refresh()
 
     def closeEvent(self, event) -> None:
-        if not self._may_leave():
+        if not self._may_leave() or not self._may_leave_swf():
             event.ignore()
             return
         if self._preview is not None:

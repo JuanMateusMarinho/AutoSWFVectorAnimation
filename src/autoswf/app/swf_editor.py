@@ -121,6 +121,7 @@ class SwfEditor(QWidget):
         self.movie: MovieData | None = None
         self.structure: ItemStructure | None = None
         self.removed: set[PieceRef] = set()
+        self._exported: set[PieceRef] = set()          # the removals of the last export
         self.selected_path: str | None = None
         self.frame = 0
         self.undo_stack = QUndoStack(self)
@@ -204,7 +205,7 @@ class SwfEditor(QWidget):
         except ValueError as e:
             return str(e)
         self.path, self.original, self.movie, self.structure = path, data, movie, structure
-        self.removed, self.selected_path, self.frame = set(), None, 0
+        self.removed, self._exported, self.selected_path, self.frame = set(), set(), None, 0
         self.undo_stack.clear()
         self._thumbs = {}
         self._set_edited(data)
@@ -408,6 +409,11 @@ class SwfEditor(QWidget):
         self._preview.show()
         return self._preview
 
+    @property
+    def dirty(self) -> bool:
+        """Pieces are unchecked and not exported that way yet."""
+        return bool(self.removed) and self.removed != self._exported
+
     def export_dialog(self) -> "ItemExportDialog":
         return ItemExportDialog(self, self)
 
@@ -510,6 +516,9 @@ class ItemExportDialog(QDialog):
         except ValueError as error:
             self.report.setPlainText(str(error))
             return
+        except Exception as error:                  # a damaged file: say so, never lose the window
+            self.report.setPlainText("Could not edit this file (%s: %s)" % (type(error).__name__, error))
+            return
         tmp = out.with_name(out.name + ".part")
         try:
             out.parent.mkdir(parents=True, exist_ok=True)
@@ -520,8 +529,14 @@ class ItemExportDialog(QDialog):
                 tmp.unlink()
             self.report.setPlainText("Could not write %s: %s" % (out, error.strerror or error))
             return
+        e._exported = set(e.removed)
         expected = [result.renamed.get(c, c) for c in e.structure.public_classes()]
-        report = validate_item_swf(result.data, expected, e.original)
+        try:
+            report = validate_item_swf(result.data, expected, e.original)
+        except Exception as error:
+            self.report.setPlainText("Wrote %s, but it could not be checked (%s: %s)"
+                                     % (out.name, type(error).__name__, error))
+            return
         n, k = result.removed_placements, len(result.removed_characters)
         lines = ["Wrote %s (%.1f KB, %d placement%s removed, %d unused shape%s dropped)%s"
                  % (out.name, len(result.data) / 1024, n, "" if n == 1 else "s", k, "" if k == 1 else "s",

@@ -105,3 +105,21 @@ def test_an_armor_that_registers_from_methods_shows_its_motions(qapp, tmp_path):
     assert e.frame == 2                                                     # the canvas shows the head on its Walk frame
     e.select("MChest")
     assert "draws its whole character in its Head" in e.canvas_message()
+
+
+def test_removals_not_exported_ask_before_they_are_lost(qapp, tmp_path, app_cache):
+    w = window(app_cache, tmp_path)
+    path = tmp_path / "Armor.swf"
+    path.write_bytes(mini_armor_with_pieces("M"))
+    assert w.open_path(path) is None and not w.swf_editor.dirty
+    w.swf_editor.set_removed(w.swf_editor.structure.piece("MChest/5").ref, True)
+    asked = []
+    answers = [False, False, True]
+    w.ask_discard_edits = lambda: asked.append(1) or answers.pop(0)
+    assert w.open_path(path) is None and w.swf_editor.removed           # the user kept the edits
+    assert w.close() is False
+    d = w.swf_editor.export_dialog()
+    d.file_edit.setText(str(tmp_path / "Out.swf"))
+    d.export_button.click()
+    assert not w.swf_editor.dirty and len(asked) == 2
+    assert w.close() is True and len(asked) == 2                         # exported: nothing to lose

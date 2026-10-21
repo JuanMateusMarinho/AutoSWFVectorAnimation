@@ -10,6 +10,7 @@ def window(cache, tmp_path, threaded=False):
     w = MainWindow(ProjectController(cache, threaded=threaded), cache,
                    settings_store=QSettings(str(tmp_path / "ui.ini"), QSettings.Format.IniFormat))
     w.ask_save = lambda: "discard"
+    w.ask_discard_edits = lambda: True
     return w
 
 
