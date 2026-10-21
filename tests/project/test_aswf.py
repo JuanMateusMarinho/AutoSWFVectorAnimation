@@ -61,8 +61,8 @@ def test_bad_project_files_are_clear_errors(tmp_path):
     with pytest.raises(ValueError, match="x.aswf is not an AutoSWF project"):
         load_project(tmp_path / "x.aswf", tmp_path)
     with zipfile.ZipFile(tmp_path / "y.aswf", "w") as z:
-        z.writestr("project.json", json.dumps({"format": "autoswf-project", "version": 2}))
-    with pytest.raises(ValueError, match=r"made by a newer AutoSWF \(project version 2\)"):
+        z.writestr("project.json", json.dumps({"format": "autoswf-project", "version": 3}))
+    with pytest.raises(ValueError, match=r"made by a newer AutoSWF \(project version 3\)"):
         load_project(tmp_path / "y.aswf", tmp_path)
 
 

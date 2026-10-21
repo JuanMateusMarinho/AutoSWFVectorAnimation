@@ -17,7 +17,7 @@ from autoswf import __version__
 from autoswf.project.settings import HelmSettings
 
 FORMAT = "autoswf-project"
-VERSION = 1
+VERSION = 2                       # 2 (Plan 7): "kind" helm or item; item projects hold an opened SWF
 MATCH_LIMIT = 1.5
 
 
@@ -75,7 +75,7 @@ def save_project(path: Path, settings: HelmSettings, build, *, signatures: list 
         relative = os.path.relpath(source.resolve(), path.parent.resolve())
     except ValueError:                   # another drive
         relative = None
-    doc = {"format": FORMAT, "version": VERSION, "app_version": __version__,
+    doc = {"format": FORMAT, "version": VERSION, "kind": "helm", "app_version": __version__,
            "source": {"name": source.name, "path": str(source.resolve()), "relative": relative,
                       "sha256": "" if pending else _sha(drawing)},
            "settings": settings.to_dict(),
@@ -122,6 +122,8 @@ def load_project(path: Path, cache_root: Path) -> LoadedProject:
         raise ValueError("%s is not an AutoSWF project" % path.name) from None
     if not isinstance(doc, dict) or doc.get("format") != FORMAT:
         raise ValueError("%s is not an AutoSWF project" % path.name)
+    if doc.get("kind", "helm") != "helm":
+        raise ValueError("%s is a project of an opened SWF, not of a drawing" % path.name)
     version = doc.get("version")
     if not isinstance(version, int) or version > VERSION:
         raise ValueError("%s was made by a newer AutoSWF (project version %s)" % (path.name, version))
@@ -157,6 +159,81 @@ def load_project(path: Path, cache_root: Path) -> LoadedProject:
     else:
         notes.append("The drawing was not found at %s and the project holds no copy of it." % source.get("path"))
     return LoadedProject(settings, signatures, swf, changed, notes, saved_copy)
+
+
+def _write_zip(path: Path, entries: dict[str, bytes | str]) -> None:
+    """Writes the zip atomically; nothing is left half-written when it fails (ValueError with the reason)."""
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as z:
+        for name, data in entries.items():
+            z.writestr(name, data)
+    tmp = path.with_name(path.name + ".part")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_bytes(buffer.getvalue())
+        os.replace(tmp, path)
+    except OSError as e:
+        if tmp.exists():
+            tmp.unlink()
+        raise ValueError("Could not save %s: %s" % (path.name, e.strerror or e)) from None
+
+
+def _read_doc(path: Path):
+    try:
+        with zipfile.ZipFile(path) as z:
+            doc = json.loads(z.read("project.json").decode("utf-8"))
+            names = set(z.namelist())
+            return doc, names, z
+    except (zipfile.BadZipFile, KeyError, ValueError, OSError, UnicodeDecodeError):
+        raise ValueError("%s is not an AutoSWF project" % Path(path).name) from None
+
+
+def project_kind(path: Path) -> str:
+    """"helm" (a project made from a drawing; every version 1 file) or "item" (an opened SWF)."""
+    doc, _, _ = _read_doc(Path(path))
+    if not isinstance(doc, dict) or doc.get("format") != FORMAT:
+        raise ValueError("%s is not an AutoSWF project" % Path(path).name)
+    return "item" if doc.get("kind") == "item" else "helm"
+
+
+def save_item_project(path: Path, original: bytes, name: str, edits) -> None:
+    """An opened SWF and what the user changed in it: the original bytes and the edits (applied again on open)."""
+    path, safe = Path(path), _file_name(name) or "item.swf"
+    doc = {"format": FORMAT, "version": VERSION, "kind": "item", "app_version": __version__,
+           "item": {"name": safe, "sha256": _sha(original)}, "edits": edits.to_dict()}
+    _write_zip(path, {"project.json": json.dumps(doc, indent=1, ensure_ascii=False), "item/" + safe: original})
+
+
+@dataclass
+class LoadedItemProject:
+    original: bytes
+    name: str
+    edits: object                        # ItemEdits
+    notes: list[str] = field(default_factory=list)
+
+
+def load_item_project(path: Path) -> LoadedItemProject:
+    from autoswf.items.item_edits import ItemEdits
+    path = Path(path)
+    try:
+        with zipfile.ZipFile(path) as z:
+            doc = json.loads(z.read("project.json").decode("utf-8"))
+            if not isinstance(doc, dict) or doc.get("format") != FORMAT:
+                raise ValueError("%s is not an AutoSWF project" % path.name)
+            version = doc.get("version")
+            if not isinstance(version, int) or version > VERSION:
+                raise ValueError("%s was made by a newer AutoSWF (project version %s)" % (path.name, version))
+            if doc.get("kind") != "item":
+                raise ValueError("%s is a project of a drawing, not of an opened SWF" % path.name)
+            item = doc.get("item", {})
+            name = _file_name(item.get("name", "")) or "item.swf"
+            original = z.read("item/" + name)
+    except (zipfile.BadZipFile, KeyError, OSError, UnicodeDecodeError, json.JSONDecodeError):
+        raise ValueError("%s is not an AutoSWF project" % path.name) from None
+    notes = []
+    if item.get("sha256") and item["sha256"] != _sha(original):
+        notes.append("The SWF saved in %s is damaged" % path.name)
+    return LoadedItemProject(original, name, ItemEdits.from_dict(doc.get("edits", {})), notes)
 
 
 def _cost(a: PartSignature, b: PartSignature) -> float:

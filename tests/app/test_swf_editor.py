@@ -123,3 +123,21 @@ def test_removals_not_exported_ask_before_they_are_lost(qapp, tmp_path, app_cach
     d.export_button.click()
     assert not w.swf_editor.dirty and len(asked) == 2
     assert w.close() is True and len(asked) == 2                         # exported: nothing to lose
+
+
+def test_save_and_reopen_an_edited_swf(qapp, tmp_path, app_cache):
+    from editor_fixtures import rect_area, strip_face_armor
+    w = window(app_cache, tmp_path)
+    f = tmp_path / "StripHero.swf"
+    f.write_bytes(strip_face_armor())
+    assert w.open_path(f) is None
+    e = w.swf_editor
+    e.select("MHead/1")
+    layer = e.edit_tools.layer
+    e._on_layer_edit(layer.paint(rect_area(100, 100, 120, 120), layer.line_tone), "Brush")
+    e.set_removed(e.structure.piece("MHead/2").ref, True)
+    edited = e.current_data()
+    assert w._save(tmp_path / "work.aswf")
+    w2 = window(app_cache, tmp_path / "again")
+    assert w2.open_path(tmp_path / "work.aswf") is None and w2.in_swf_editor()
+    assert w2.swf_editor.current_data() == edited and w2.swf_editor.undo_stack.count() == 0

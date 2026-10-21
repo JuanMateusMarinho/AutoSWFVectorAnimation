@@ -203,6 +203,7 @@ class SwfEditor(QWidget):
         self.structure: ItemStructure | None = None
         self.edits = ItemEdits()
         self._exported = ItemEdits()                    # the edits of the last export
+        self.project_path: Path | None = None           # the .aswf this item was saved to or opened from
         self._structure_key = self.edits.structure_key()
         self._stale = False                             # the edited bytes lag behind drawings shown by override
         self._shared_ok: set[int] = set()               # shared drawings the user agreed to edit everywhere
@@ -306,10 +307,16 @@ class SwfEditor(QWidget):
         path = Path(path)
         try:
             data = path.read_bytes()
-            movie = MovieData(data)
-            structure = read_structure(movie, path.name)
         except OSError as e:
             return "Could not read %s: %s" % (path, e.strerror or e)
+        self.project_path = None
+        return self.open_data(data, path)
+
+    def open_data(self, data: bytes, path: Path, edits: ItemEdits | None = None) -> str | None:
+        """An item from its bytes (a file, or the copy in an item project) with the edits saved for it."""
+        try:
+            movie = MovieData(data)
+            structure = read_structure(movie, path.name)
         except ValueError as e:
             return str(e)
         self.path, self.original, self.movie, self.structure = path, data, movie, structure
@@ -328,7 +335,15 @@ class SwfEditor(QWidget):
             self.select(structure.parts[0].key)
         if structure.notes:
             self.message.setText(" ".join(structure.notes))
+        if edits is not None and not edits.empty:
+            self.apply_edits(edits)
+            self.undo_stack.clear()
         return None
+
+    def save_project(self, path: Path) -> None:
+        from autoswf.project.aswf import save_item_project
+        save_item_project(path, self.original, self.path.name if self.path else "item.swf", self.edits)
+        self.project_path = Path(path)
 
     def _fill_tree(self) -> None:
         self.tree.blockSignals(True)

@@ -315,6 +315,13 @@ class MainWindow(QMainWindow):
         if path.suffix.lower() in DRAWING_SUFFIXES + (".aswf",) and not self._may_leave():
             return None                      # the user kept the current project
         if path.suffix.lower() == ".aswf":
+            from autoswf.project.aswf import project_kind
+            try:
+                kind = project_kind(path)
+            except ValueError as e:
+                return str(e)
+            if kind == "item":
+                return self.open_item_project(path)
             return self.open_project(path)
         if path.suffix.lower() in DRAWING_SUFFIXES:
             if not path.exists():
@@ -519,6 +526,28 @@ class MainWindow(QMainWindow):
     def in_swf_editor(self) -> bool:
         return self.stack.currentWidget() is self.swf_editor
 
+    def open_item_project(self, path: Path) -> str | None:
+        from autoswf.project.aswf import load_item_project
+        if not self._may_leave_swf():
+            return None
+        try:
+            loaded = load_item_project(path)
+        except ValueError as e:
+            return str(e)
+        error = self.swf_editor.open_data(loaded.original, Path(path).with_name(loaded.name), loaded.edits)
+        if error:
+            return error
+        self.swf_editor.project_path = Path(path)
+        self._add_recent(path)
+        self.stack.setCurrentWidget(self.swf_editor)
+        self._stage_action.setVisible(False)
+        self.tool_options.attach(self.swf_editor.edit_tools)
+        self.undo_group.setActiveStack(self.swf_editor.undo_stack)
+        self.setWindowTitle("AutoSWF — %s" % Path(path).name)
+        for note in loaded.notes:
+            self.statusBar().showMessage(note)
+        return None
+
     def open_project(self, path: Path) -> str | None:
         try:
             loaded = self.controller.open_project(path)
@@ -584,6 +613,10 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Open", error)
 
     def _on_save(self) -> bool:
+        if self.in_swf_editor():
+            if self.swf_editor.project_path is None:
+                return self._on_save_as()
+            return self._save(self.swf_editor.project_path)
         if self.controller.settings is None:
             return False
         if self.controller.project_path is None:
@@ -591,6 +624,12 @@ class MainWindow(QMainWindow):
         return self._save(self.controller.project_path)
 
     def _on_save_as(self) -> bool:
+        if self.in_swf_editor():
+            if self.swf_editor.path is None:
+                return False
+            default = str(self.swf_editor.path.with_suffix(".aswf"))
+            path, _ = QFileDialog.getSaveFileName(self, "Save project", default, "AutoSWF projects (*.aswf)")
+            return self._save(Path(path)) if path else False
         if self.controller.settings is None:
             return False
         default = str(Path(self.controller.settings.source).with_suffix(".aswf"))
@@ -599,7 +638,10 @@ class MainWindow(QMainWindow):
 
     def _save(self, path: Path) -> bool:
         try:
-            self.controller.save(path)
+            if self.in_swf_editor():
+                self.swf_editor.save_project(path)
+            else:
+                self.controller.save(path)
         except ValueError as e:
             QMessageBox.warning(self, "Save project", str(e))
             return False
