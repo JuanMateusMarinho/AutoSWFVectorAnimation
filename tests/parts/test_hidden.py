@@ -223,6 +223,30 @@ def test_hidden_fills_continue_the_head_outline_under_a_lid():
     assert ((fills[outside] < 0.05) | lines[outside]).all()
 
 
+def test_nothing_of_a_lid_stays_floating_past_the_head():
+    """The rim of a lid's thick line past the head's outline (its corners, its blended edge) moves with the lid: the face
+    keeps no line art there to float over the empty canvas when the eye blinks."""
+    pm, layers, t = _eye_at_the_silhouette()
+    lines = of(layers["Face"], "lines", t)[..., 3] > 0.5
+    ys, xs = np.mgrid[0:t.height, 0:t.width]
+    r = np.hypot(xs + 0.5 - 120, ys + 0.5 - 130)
+    assert not lines[(ys >= 100) & (ys <= 120) & (r >= 92.5)].any()
+
+
+def test_a_blink_shows_the_head_outline_beside_the_eye_as_wide_as_drawn():
+    """Hidden fills continue the head's outline under the lid but do not draw it again beside the eye, where the face has
+    it already: there the face's outline is no wider than the drawn one, for a thin outline and a thick one."""
+    pm, layers, t = _eye_at_the_silhouette()                                  # 2 px, from r 89 to 91
+    _, _, _, _, thick_layers = _eye_on_the_edge()                              # 5 px, from r 88 to 93
+    ys, xs = np.mgrid[0:t.height, 0:t.width]
+    r = np.hypot(xs + 0.5 - 120, ys + 0.5 - 130)
+    beside = (xs > 185) & (ys >= 120) & (ys <= 155)                          # below the lids, beside the eyes
+    for split, solid, inner in ((layers, (89.3, 90.7), 88.5), (thick_layers, (88.5, 92.5), 87.5)):
+        lines = of(split["Face"], "lines", t)[..., 3] > 0.5
+        assert lines[beside & (r >= solid[0]) & (r <= solid[1])].mean() >= 0.95       # the outline is there
+        assert not lines[beside & (r < inner)].any()                                  # and no wider
+
+
 def test_hidden_fills_continue_a_shadow_edge_under_an_eye():
     """The face's shadow ends in a straight edge running under an eye: when the eye closes the edge goes on straight
     instead of bulging toward the eye's center (each hidden pixel copying the nearest one would bend it)."""

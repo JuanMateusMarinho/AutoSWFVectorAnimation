@@ -130,19 +130,28 @@ def _continued(codes: np.ndarray, hole: np.ndarray, band: float, strokes: np.nda
 
 def _continued_strokes(strokes: np.ndarray, hole: np.ndarray, band: float) -> tuple[np.ndarray, list]:
     """The hole's pixels where line art (`strokes`, outside the hole) goes on under it: each stroke that runs into the
-    hole head-on is joined to another one across it by a smooth curve as wide as the strokes. Also returns the joined
-    ends (point, direction, -1, -1, half width)."""
+    hole head-on is joined to another one across it by a smooth curve as wide as the strokes, drawn where the strokes
+    do not draw it already (an outline going on along the hole's border, which the curve follows there). Also returns
+    the joined ends (point, direction, -1, -1, half width)."""
     ys, xs = np.nonzero(strokes)
     ends = []
     for at, direction in _entries(strokes, hole, band):
-        near = np.count_nonzero(np.hypot(xs - at[0], ys - at[1]) <= band)   # a stroke w px wide crosses about
-        ends.append((at, direction, -1, -1, near / (2 * band)))           # w * band of these pixels
+        behind = (xs - at[0]) * direction[0] + (ys - at[1]) * direction[1] <= 0
+        near = np.count_nonzero(behind & (np.hypot(xs - at[0], ys - at[1]) <= band))  # a stroke w px wide crosses
+        ends.append((at, direction, -1, -1, near / (2 * band)))           # about w * band of these before its end
     out = np.zeros_like(hole)
     joined = []
+    cover = ndimage.distance_transform_edt(~strokes)
     for a, b in _joined(ends, band, hole):
-        curve = _curve(ends[a], ends[b], hole.shape)
         half = max(0.5, (ends[a][4] + ends[b][4]) / 2)                # the strokes' half width
-        out |= ndimage.distance_transform_edt(~curve) <= half
+        cy, cx = _curve_points(ends[a], ends[b], hole.shape)
+        off, _ = ndimage.label(cover[cy, cx] > half)                  # stretches off the strokes as drawn that leave
+        gaps = np.unique(off[cover[cy, cx] > half + 1])               # them, not ones wobbling beside them
+        bare = np.isin(off, gaps[gaps > 0])
+        if bare.any():
+            curve = np.zeros_like(hole)
+            curve[cy[bare], cx[bare]] = True
+            out |= ndimage.distance_transform_edt(~curve) <= half
         joined += [ends[a], ends[b]]
     return out & hole, joined
 
@@ -485,10 +494,10 @@ class _Splitter:
         return width
 
     def _outline_band(self, o: int, owner: np.ndarray, lines: np.ndarray, silhouette: np.ndarray, box,
-                      r: int) -> np.ndarray:
+                      r: int) -> tuple[np.ndarray, np.ndarray]:
         """In the box, eye o's line pixels on the head's outline: inside the silhouette opened by a disk of radius r
         (what pokes out past it cut off) and no deeper than the drawing's outline. Line art outside that opened
-        silhouette and touching eye o's lines (a lash's tip) becomes eye o's."""
+        silhouette and touching eye o's lines (a lash's tip) becomes eye o's; returned second."""
         x0, y0, x1, y1 = box
         yy, xx = np.mgrid[-r:r + 1, -r:r + 1]
         pad = r + 1
@@ -499,10 +508,12 @@ class _Splitter:
         local_lines, local_owner = lines[y0:y1, x0:x1], owner[y0:y1, x0:x1]
         mine = local_lines & (local_owner == o)
         tips, count = ndimage.label(local_lines & ~opened, structure=np.ones((3, 3)))
+        taken = np.zeros_like(mine)
         if count:
             touching = np.unique(tips[ndimage.binary_dilation(mine, iterations=2)])
-            local_owner[np.isin(tips, touching[touching > 0])] = o
-        return mine & opened & (depth <= self.outline + 1)
+            taken = np.isin(tips, touching[touching > 0])
+            local_owner[taken] = o
+        return mine & opened & (depth <= self.outline + 1), taken
 
     def _silhouette(self, owner: np.ndarray, lines: np.ndarray, owner_of_unit: np.ndarray) -> np.ndarray:
         """Eyes sit inside the face, so a thin line squeezed between an eye (its ball, or the part it lies on) and the
@@ -528,11 +539,11 @@ class _Splitter:
             if box is None:
                 continue
             x0, y0, x1, y1 = box
-            band = self._outline_band(o, owner, lines, silhouette, box, r)
+            band, tips = self._outline_band(o, owner, lines, silhouette, box, r)
             d_out = ndimage.distance_transform_edt(~outside[y0:y1, x0:x1])
             d_in = np.minimum(ndimage.distance_transform_edt(~self.own(units[0], box)),
                               ndimage.distance_transform_edt(~stays[y0:y1, x0:x1]))
-            thin = mine[y0:y1, x0:x1] & ~_thick(lines[y0:y1, x0:x1], width) & (d_out + d_in <= width + 1)
+            thin = mine[y0:y1, x0:x1] & ~_thick(lines[y0:y1, x0:x1], width) & (d_out + d_in <= width + 1) & ~tips
             outline = thin | band
             if not outline.any():
                 continue
@@ -548,9 +559,11 @@ class _Splitter:
         """A thick stroke is one piece: where an eye owns most of a stroke thicker than SILHOUETTE_UNITS and than the
         drawing's outline with its blended fringe (a lid and its tip poking out past the face, farther from the eye's
         pixels than line ownership reaches), the rest of it is the eye's too, so it moves with the lid instead of
-        staying behind with the part under the eye. Where it crosses the head's outline it is the eye's as well (the
-        outline goes on under it in the hidden fills)."""
+        staying behind with the part under the eye, its rim included (the blended edge and the corners that measuring
+        it rounds off), but not thin lines going on away from it. Where it crosses the head's outline it is the eye's
+        as well (the outline goes on under it in the hidden fills)."""
         width = max(SILHOUETTE_UNITS * self.graph.scale, self.outline + 2)
+        rim = int(np.ceil((np.sqrt(2) - 1) * max(1, round(width / 2)))) + 1   # px past what _thick keeps of a stroke
         stay = [k for k, units in enumerate(self.owners) if self.units[units[0]].part.kind in PROVIDERS]
         lower = None
         for o, units in enumerate(self.owners):
@@ -570,7 +583,11 @@ class _Splitter:
             theirs = np.bincount(strokes[lower[y0:y1, x0:x1]], minlength=count + 1)
             ours[0] = 0
             taken = np.nonzero((ours > 0) & (ours >= theirs))[0]
-            take = np.isin(strokes, taken) & lower[y0:y1, x0:x1]
+            core = np.isin(strokes, taken)
+            rest, _ = ndimage.label(lines[y0:y1, x0:x1] & ~core & lower[y0:y1, x0:x1], structure=np.ones((3, 3)))
+            near = ndimage.binary_dilation(core, structure=np.ones((3, 3)), iterations=rim)
+            away = np.unique(rest[(rest > 0) & ~near])                # thin lines going on away from the stroke
+            take = (core & lower[y0:y1, x0:x1]) | ((rest > 0) & ~np.isin(rest, away))
             owner[y0:y1, x0:x1][take] = o
             self.silhouette[y0:y1, x0:x1][take] = False
 
