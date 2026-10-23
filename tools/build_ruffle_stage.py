@@ -3,11 +3,12 @@ compiler, on the developer's machine (users never need Java or FFDec). Run it af
 
     python tools/build_ruffle_stage.py [--ffdec DIR] [--java EXE]
 
-FFDec compiles the sources into a stub SWF whose classes have the same names (the way
-tools/the_sword_hero_release/build_final.py compiles TheSwordHero's classes); its single ABC is kept."""
+FFDec (its folder in AUTOSWF_FFDEC, as for the fidelity checks) compiles the sources into a stub SWF whose classes have
+the same names; its single ABC is kept. Java: AUTOSWF_JAVA, else java on PATH, else Android Studio's."""
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -22,8 +23,14 @@ from autoswf.ruffle.stagecode import ABC_FILE, RECORD_FILE, STAGE_DIR, sources_d
 from autoswf.swf.decode import MovieData  # noqa: E402
 from autoswf.swf.movie import build_swf  # noqa: E402
 
-DEFAULT_FFDEC = r"C:\Users\juan-\Downloads\ffdec_26.3.0"
-DEFAULT_JAVA = r"C:\Program Files\Android\Android Studio\jbr\bin\java.exe"
+ANDROID_STUDIO_JAVA = Path(os.environ.get("ProgramFiles", r"C:\Program Files"), "Android", "Android Studio", "jbr", "bin",
+                           "java.exe")
+
+
+def default_java() -> str | None:
+    if os.environ.get("AUTOSWF_JAVA"):
+        return os.environ["AUTOSWF_JAVA"]
+    return shutil.which("java") or (str(ANDROID_STUDIO_JAVA) if ANDROID_STUDIO_JAVA.exists() else None)
 
 
 def compile_stage(ffdec_dir: Path, java: str) -> bytes:
@@ -53,9 +60,12 @@ def compile_stage(ffdec_dir: Path, java: str) -> bytes:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--ffdec", default=os.environ.get("AUTOSWF_FFDEC", DEFAULT_FFDEC))
-    parser.add_argument("--java", default=os.environ.get("AUTOSWF_JAVA", DEFAULT_JAVA))
+    parser.add_argument("--ffdec", default=os.environ.get("AUTOSWF_FFDEC"), help="FFDec's folder (has ffdec-cli.jar)")
+    parser.add_argument("--java", default=default_java())
     args = parser.parse_args()
+    if not args.ffdec or not args.java:
+        parser.error("set AUTOSWF_FFDEC to FFDec's folder (or pass --ffdec) and make Java available (AUTOSWF_JAVA, "
+                     "PATH or Android Studio)")
     abc = compile_stage(Path(args.ffdec), args.java)
     print("Built %s (%d bytes)" % (ABC_FILE, len(abc)))
     return 0

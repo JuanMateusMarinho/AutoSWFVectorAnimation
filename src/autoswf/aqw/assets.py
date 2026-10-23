@@ -145,7 +145,13 @@ def download_reference_files(cache: AqwCache, *, armor: str = DEFAULT_ARMOR, sam
     for rel in wanted:
         target = cache.file_path(rel)
         if refresh or not target.exists():
-            _fetch(cache, rel, base, timeout, progress)
+            try:
+                _fetch(cache, rel, base, timeout, progress)
+            except DownloadError as e:
+                if rel != DUMMY_FILE:
+                    raise
+                progress("Could not download AQW's Training Dummy (%s); Open in Ruffle draws its own." % e)
+                continue
             written.append(target)
         if rel == client:
             _save(cache.version_file(), answer)     # only now: a failed update keeps the previous client usable

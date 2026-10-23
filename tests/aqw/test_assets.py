@@ -68,6 +68,17 @@ def test_bad_responses_raise_and_leave_nothing_behind(tmp_path, server):
     with pytest.raises(DownloadError, match="Nope.swf"):
         download_reference_files(AqwCache(tmp_path), armor="Nope", base_url=url, **QUIET)
 
+def test_a_missing_training_dummy_never_fails_the_reference_download(tmp_path, server):
+    # the dummy is optional (the Ruffle stage draws its own): the client and armors still count as downloaded
+    files, hits, url = server; publish(files)
+    del files["/game/gamefiles/mon/TrainingDummy.swf"]
+    said = []
+    cache = AqwCache(tmp_path)
+    got = download_reference_files(cache, armor="TestArmor", base_url=url, progress=said.append)
+    assert len(got) == 3 and cache.missing("TestArmor") == [] and not cache.dummy_path().exists()
+    assert any("Training Dummy" in line for line in said)
+
+
 def test_the_training_dummy_alone_can_be_downloaded(tmp_path, server):
     from autoswf.aqw.assets import download_dummy
     files, hits, url = server; publish(files)

@@ -31,6 +31,16 @@ def test_spec_leaves_out_what_the_app_does_not_use():
         assert name in text
 
 
+def test_no_personal_paths_in_the_code():
+    # the repository is public: no Windows user folder in what is committed
+    for folder in ("src", "packaging"):
+        files = [p for p in (ROOT / folder).rglob("*") if p.suffix in (".py", ".spec", ".as", ".iss")]
+        files += list((ROOT / "tools").glob("*.py"))
+        for path in files:
+            text = path.read_text(encoding="utf-8", errors="replace")
+            assert "\\Users\\" not in text and "/Users/" not in text, path
+
+
 def test_the_spec_ships_the_ruffle_test_stage():
     text = (ROOT / "packaging" / "autoswf.spec").read_text(encoding="utf-8")
     assert '"stage.abc"' in text and '"autoswf/ruffle"' in text
