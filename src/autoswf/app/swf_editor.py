@@ -183,9 +183,11 @@ class _ItemCanvas(EditableCanvas, QWidget):
 
 
 class SwfEditor(QWidget):
-    def __init__(self, cache: AqwCache, parent=None):
+    def __init__(self, cache: AqwCache, parent=None, *, settings_store=None):
         super().__init__(parent)
         self.cache = cache
+        self.settings_store = settings_store            # QSettings: the Ruffle the user chose (None: not remembered)
+        self._ruffle_watchers = []
         self.path: Path | None = None
         self.original = b""
         self.edited = b""
@@ -244,6 +246,11 @@ class SwfEditor(QWidget):
         self.kind_box.setToolTip("What this one-class item is (it changes only how the preview shows it)")
         self.preview_button = QPushButton("Preview on AQW body")
         self.preview_button.clicked.connect(self.preview)
+        self.ruffle_button = QPushButton("Open in Ruffle")
+        self.ruffle_button.setToolTip("Play every animation of this armor in Ruffle, on a stand-in of the AQW avatar, "
+                                      "with the skill bar, a Training Dummy and the player colors")
+        self.ruffle_button.clicked.connect(self.open_in_ruffle)
+        self.ruffle_button.setHidden(True)
         self.export_button = QPushButton("Export SWF…")
         self.export_button.clicked.connect(lambda: self.export_dialog().exec())
         self.info = QLabel()
@@ -258,6 +265,7 @@ class SwfEditor(QWidget):
         bar.addWidget(self.kind_label)
         bar.addWidget(self.kind_box)
         bar.addWidget(self.preview_button)
+        bar.addWidget(self.ruffle_button)
         bar.addWidget(self.export_button)
         center = QWidget()
         column = QVBoxLayout(center)
@@ -373,6 +381,7 @@ class SwfEditor(QWidget):
         self.animated = read_animated_armor(self.movie) if self.structure.kind == "armor" else None
         self.animations_view.clear()
         self.animations_view.setHidden(self.animated is None)
+        self.ruffle_button.setHidden(self.animated is None)
         if self.animated is None:
             return
         own = QTreeWidgetItem(self.animations_view, ["Armor's own animations", "", ""])
@@ -865,6 +874,63 @@ class SwfEditor(QWidget):
         self._preview.resize(1000, 700)
         self._preview.show()
         return self._preview
+
+    def open_in_ruffle(self) -> Path | None:
+        """Spec §5.7: the armor as edited now, on a stand-in of the AQW avatar next to AQW's Training Dummy, in the
+        user's Ruffle. Returns the test SWF written, or None after a message."""
+        import tempfile
+        from autoswf.aqw.assets import DUMMY_CLASS
+        from autoswf.ruffle import launch
+        from autoswf.ruffle.settings import stage_settings
+        from autoswf.ruffle.testswf import build_test_swf
+        client = self.cache.client_path()
+        if client is None:
+            self.message.setText("AQW reference files are missing: the AQW game client. Download them from "
+                                 "\"Preview on AQW body\".")
+            return None
+        ruffle = self._ruffle()
+        if ruffle is None:
+            return None
+        data = self.current_data()
+        scene = self._preview.scene if self._preview is not None else None
+        settings = stage_settings(MovieData(client), MovieData(data),
+                                  colors=scene.colors if scene is not None else PlayerColors())
+        dummy = self.cache.dummy_path().read_bytes() if self.cache.dummy_path().exists() else None
+        if dummy is not None:
+            settings["dummy"] = DUMMY_CLASS
+        folder = Path(tempfile.gettempdir()) / "AutoSWF-ruffle"
+        folder.mkdir(parents=True, exist_ok=True)
+        swf = folder / ("%s-test.swf" % (self.path.stem if self.path is not None else "armor"))
+        swf.write_bytes(build_test_swf(data, settings, dummy=dummy))
+        watcher = launch.RuffleWatcher(launch.launch_ruffle(ruffle, swf))
+        watcher.error.connect(self._ruffle_error)
+        watcher.start()
+        self._ruffle_watchers.append(watcher)
+        self.message.setText("Opened in Ruffle (%s)." % ruffle)
+        return swf
+
+    def _ruffle(self) -> Path | None:
+        """The user's Ruffle, asking where it is once when none is found."""
+        from autoswf.ruffle import launch
+        saved = self.settings_store.value(launch.SETTINGS_KEY) if self.settings_store is not None else None
+        found = launch.find_ruffle(saved or None)
+        if found is not None:
+            return found
+        QMessageBox.information(self, "Open in Ruffle",
+                                "AutoSWF plays the armor in Ruffle, the Flash player AQW's launcher uses. Choose the "
+                                "Artix Games Launcher's program or ruffle.exe (Ruffle can also be downloaded from "
+                                "https://ruffle.rs).")
+        path, _ = QFileDialog.getOpenFileName(self, "Where is Ruffle? Choose the Artix Games Launcher or ruffle.exe",
+                                              "", "Programs (*.exe)")
+        if not path:
+            self.message.setText("Open in Ruffle needs Ruffle; nothing was opened.")
+            return None
+        if self.settings_store is not None:
+            self.settings_store.setValue(launch.SETTINGS_KEY, path)
+        return Path(path)
+
+    def _ruffle_error(self, message: str) -> None:
+        self.message.setText("The armor's code stopped in Ruffle: %s" % message)
 
     @property
     def dirty(self) -> bool:

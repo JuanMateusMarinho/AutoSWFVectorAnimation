@@ -163,7 +163,7 @@ class MainWindow(QMainWindow):
         self.workspace.setStretchFactor(1, 1)
         self.workspace.setSizes([260, 840, 300])
         self.stack.addWidget(self.workspace)
-        self.swf_editor = SwfEditor(self.cache)
+        self.swf_editor = SwfEditor(self.cache, settings_store=self.settings_store)
         self.undo_group.addStack(self.swf_editor.undo_stack)
         self._make_edit_tools()
         self.stack.addWidget(self.swf_editor)

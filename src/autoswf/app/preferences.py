@@ -1,10 +1,11 @@
 """Edit › Preferences… (Plan 7, spec §8.9, §8.11): the AI page (the NVIDIA key in Windows' credential store, the model,
-Test connection) and the Tablet page (Windows Ink or Wintab). Network calls run on a thread; the window never waits."""
+Test connection), the Tablet page (Windows Ink or Wintab) and the Ruffle page (Plan 8: which Ruffle Open in Ruffle uses).
+Network calls run on a thread; the window never waits."""
 import threading
 
 from PySide6.QtCore import QObject, QSettings, Signal
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout, QLabel,
-                               QLineEdit, QPushButton, QTabWidget, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QHBoxLayout,
+                               QLabel, QLineEdit, QPushButton, QTabWidget, QVBoxLayout, QWidget)
 
 from autoswf.ai import nvidia
 
@@ -69,6 +70,27 @@ class PreferencesDialog(QDialog):
         column.addWidget(self.wintab)
         column.addStretch(1)
         tabs.addTab(tablet, "Tablet")
+        ruffle = QWidget()
+        column = QVBoxLayout(ruffle)
+        intro = QLabel("Open in Ruffle plays armors in this Ruffle. The Artix Games Launcher is one: choose its program "
+                       "to test with the same Ruffle as AQW.")
+        intro.setWordWrap(True)
+        column.addWidget(intro)
+        self.ruffle_label = QLabel()
+        self.ruffle_label.setWordWrap(True)
+        column.addWidget(self.ruffle_label)
+        row = QHBoxLayout()
+        choose = QPushButton("Choose…")
+        choose.clicked.connect(self.choose_ruffle)
+        default = QPushButton("Use the default")
+        default.clicked.connect(self.default_ruffle)
+        row.addWidget(choose)
+        row.addWidget(default)
+        row.addStretch(1)
+        column.addLayout(row)
+        column.addStretch(1)
+        tabs.addTab(ruffle, "Ruffle")
+        self._show_ruffle()
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.reject)
         layout = QVBoxLayout(self)
@@ -84,6 +106,27 @@ class PreferencesDialog(QDialog):
             return nvidia.load_key()
         except Exception:
             return None
+
+    # ------------------------------------------------------------ Ruffle
+
+    def _show_ruffle(self) -> None:
+        from autoswf.ruffle import launch
+        found = launch.find_ruffle(self.store.value(launch.SETTINGS_KEY) or None)
+        self.ruffle_label.setText("Using: %s" % found if found is not None
+                                  else "No Ruffle found. Choose the Artix Games Launcher's program or ruffle.exe.")
+
+    def choose_ruffle(self) -> None:
+        from autoswf.ruffle import launch
+        path, _ = QFileDialog.getOpenFileName(self, "Choose Ruffle (the Artix Games Launcher or ruffle.exe)", "",
+                                              "Programs (*.exe)")
+        if path:
+            self.store.setValue(launch.SETTINGS_KEY, path)
+            self._show_ruffle()
+
+    def default_ruffle(self) -> None:
+        from autoswf.ruffle import launch
+        self.store.remove(launch.SETTINGS_KEY)
+        self._show_ruffle()
 
     def _show_key_state(self) -> None:
         has_key = self._key() is not None

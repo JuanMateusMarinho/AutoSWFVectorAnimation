@@ -1,4 +1,6 @@
 # tests/app/test_swf_editor.py
+from pathlib import Path
+
 from PySide6.QtCore import Qt
 
 from app_helpers import window
@@ -9,13 +11,84 @@ from autoswf.items.structure import read_structure
 from autoswf.swf.decode import MovieData
 
 
-def editor(tmp_path, data=None, cache=None):
+def editor(tmp_path, data=None, cache=None, settings_store=None):
     tmp_path.mkdir(parents=True, exist_ok=True)
     path = tmp_path / "Armor.swf"
     path.write_bytes(data or mini_armor_with_pieces("M"))
-    e = SwfEditor(cache or AqwCache(tmp_path / "none"))
+    e = SwfEditor(cache or AqwCache(tmp_path / "none"), settings_store=settings_store)
     assert e.open(path) is None
     return e
+
+
+class FakeRuffle:
+    """What launch_ruffle returns: a process whose log the editor reads."""
+    def __init__(self, lines=()):
+        self.stdout = iter(lines)
+
+
+def ruffle_editor(tmp_path, monkeypatch, cache, data=None, found=True, log=()):
+    """An editor on release_armor_swf with Ruffle faked: `launched` lists the test SWFs it was started on."""
+    from PySide6.QtCore import QSettings
+    from aqw_fakes import release_armor_swf
+    from autoswf.ruffle import launch
+    store = QSettings(str(tmp_path / "ui.ini"), QSettings.Format.IniFormat)
+    exe = tmp_path / "ruffle.exe"
+    exe.write_bytes(b"")
+    launched = []
+    monkeypatch.setattr(launch, "find_ruffle", lambda saved, dirs=None: Path(saved) if saved else (exe if found else None))
+    monkeypatch.setattr(launch, "launch_ruffle",
+                        lambda ruffle, swf, **kw: launched.append(swf) or FakeRuffle(log))
+    return editor(tmp_path / "e", data or release_armor_swf(), cache, store), launched, exe
+
+
+def test_open_in_ruffle_uses_the_edited_armor(qapp, tmp_path, app_cache, monkeypatch):
+    from autoswf.ruffle.testswf import read_test_swf
+    e, launched, _ = ruffle_editor(tmp_path, monkeypatch, app_cache)
+    e.set_removed(e.structure.piece("MHead/1").ref, True)               # an edit not exported
+    swf = e.open_in_ruffle()
+    settings, armor = read_test_swf(swf.read_bytes())
+    assert armor == e.current_data() and armor != e.original and launched == [swf]
+    assert settings["link"] == "TestRelease" and settings["genders"] == ["M"]
+
+
+def test_the_ruffle_button_shows_only_for_animated_armors(qapp, tmp_path, app_cache):
+    from aqw_fakes import animated_armor_swf, release_armor_swf
+    assert not editor(tmp_path / "a", release_armor_swf(), app_cache).ruffle_button.isHidden()
+    assert not editor(tmp_path / "b", animated_armor_swf(), app_cache).ruffle_button.isHidden()
+    assert editor(tmp_path / "c", mini_armor_with_pieces("M"), app_cache).ruffle_button.isHidden()
+
+
+def test_without_ruffle_it_asks_once_and_remembers(qapp, tmp_path, app_cache, monkeypatch):
+    from PySide6.QtWidgets import QFileDialog, QMessageBox
+    e, launched, exe = ruffle_editor(tmp_path, monkeypatch, app_cache, found=False)
+    asked = []
+    monkeypatch.setattr(QMessageBox, "information", lambda *a, **k: None)
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *a, **k: asked.append(1) or (str(exe), ""))
+    e.open_in_ruffle()
+    e.open_in_ruffle()
+    assert asked == [1] and len(launched) == 2 and e.settings_store.value("ruffle/path") == str(exe)
+
+
+def test_missing_aqw_files_give_a_message(qapp, tmp_path, monkeypatch):
+    from autoswf.aqw.assets import AqwCache
+    e, launched, _ = ruffle_editor(tmp_path, monkeypatch, AqwCache(tmp_path / "empty"))
+    assert e.open_in_ruffle() is None and launched == []
+    assert e.message.text().startswith("AQW reference files are missing")
+
+
+def test_errors_ruffle_logs_for_the_armor_show_in_the_editor(qapp, tmp_path, app_cache, monkeypatch):
+    import time
+    from PySide6.QtWidgets import QApplication
+    line = ('ERROR ruffle_core::avm2::events: Error dispatching event EventObject { type: "addedToStage" } to handler '
+            'FunctionObject(FunctionObject { ptr: 0x2, name: "TestReleaseMHead/onAdded()" }) : ArgumentError: Oops\n')
+    e, _, _ = ruffle_editor(tmp_path, monkeypatch, app_cache, log=[line])
+    e.open_in_ruffle()
+    end = time.time() + 5
+    while time.time() < end and "Oops" not in e.message.text():
+        QApplication.processEvents()
+        time.sleep(0.02)
+    assert e.message.text() == ("The armor's code stopped in Ruffle: TestReleaseMHead/onAdded(): "
+                                "ArgumentError: Oops")
 
 
 def test_tree_shows_parts_and_pieces_with_thumbnails(qapp, tmp_path):

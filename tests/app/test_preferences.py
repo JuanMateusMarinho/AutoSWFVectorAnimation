@@ -1,4 +1,5 @@
 import time
+from pathlib import Path
 
 from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QApplication
@@ -15,6 +16,22 @@ def wait_until(condition, seconds=10.0):
         QApplication.processEvents()
         time.sleep(0.02)
     return condition()
+
+
+def test_the_ruffle_page_chooses_a_ruffle_and_goes_back_to_the_default(qapp, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QFileDialog
+    from autoswf.ruffle import launch
+    store = QSettings(str(tmp_path / "ui.ini"), QSettings.Format.IniFormat)
+    portable = tmp_path / "Artix Games Launcher.exe"
+    portable.write_bytes(b"")
+    monkeypatch.setattr(launch, "find_ruffle", lambda saved, dirs=None: Path(saved) if saved else None)
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *a, **k: (str(portable), ""))
+    d = PreferencesDialog(store)
+    assert "No Ruffle found" in d.ruffle_label.text()
+    d.choose_ruffle()
+    assert store.value("ruffle/path") == str(portable) and str(portable) in d.ruffle_label.text()
+    d.default_ruffle()
+    assert store.value("ruffle/path") is None and "No Ruffle found" in d.ruffle_label.text()
 
 
 def test_preferences_preselect_nemotron_vl_and_keep_a_missing_choice(qapp, tmp_path, fake_nvidia, memory_keyring):
