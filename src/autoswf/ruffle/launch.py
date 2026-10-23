@@ -14,9 +14,11 @@ from PySide6.QtCore import QObject, Signal
 ARTIX_LAUNCHER = Path("Artix Games Launcher", "Artix Games Launcher.exe")
 ARTIX_RUFFLE = Path("Artix Game Launcher", "resources", "ruffle", "ruffle.exe")
 SETTINGS_KEY = "ruffle/path"
-LOG_FILTER = "error,ruffle_core::avm2=error"
+LOG_FILTER = "error,avm_trace=info"           # Ruffle's errors, and the traces where the stage reports armor errors
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 _AVM2_ERROR = re.compile(r"\bERROR\s+ruffle_core::avm2\S*:\s*(.*)$")
+_FRAME_SCRIPT = re.compile(r"\bERROR\s+ruffle_core::\S*:\s*Error occurred when running AVM2 frame script:\s*(.*)$")
+_STAGE_REPORT = re.compile(r"AUTOSWF ARMOR ERROR (.*)$")
 _HANDLER = re.compile(r'name: "([^"]+)" \}\) : (.+)$')
 
 
@@ -52,14 +54,21 @@ def launch_ruffle(ruffle: Path, swf: Path, *, width: int = 1000, height: int = 6
 
 
 def armor_errors(lines: Iterable[str]) -> list[str]:
-    """The errors Ruffle logs from AVM2 code, as "<Class/handler()>: <error>" when a handler threw."""
+    """The errors in Ruffle's log: AVM2 errors ("<Class/handler()>: <error>" when an event handler threw), errors in
+    frame scripts ("frame script: <error>") and the ones the stage caught itself."""
     out = []
     for line in lines:
-        found = _AVM2_ERROR.search(_ANSI.sub("", line).strip())
-        if found is None:
-            continue
-        handler = _HANDLER.search(found.group(1))
-        out.append("%s: %s" % handler.groups() if handler else found.group(1))
+        text = _ANSI.sub("", line).strip()
+        frame = _FRAME_SCRIPT.search(text)
+        stage = _STAGE_REPORT.search(text)
+        found = _AVM2_ERROR.search(text)
+        if frame is not None:
+            out.append("frame script: %s" % frame.group(1))
+        elif stage is not None:
+            out.append(stage.group(1))
+        elif found is not None:
+            handler = _HANDLER.search(found.group(1))
+            out.append("%s: %s" % handler.groups() if handler else found.group(1))
     return out
 
 

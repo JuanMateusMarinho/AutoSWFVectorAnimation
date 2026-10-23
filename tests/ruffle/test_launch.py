@@ -33,7 +33,8 @@ def test_ruffle_starts_on_the_test_swf_with_a_window_size_and_its_log_piped(tmp_
     launch_ruffle(tmp_path / "ruffle.exe", tmp_path / "t.swf", width=1000, height=680)
     args, options = calls[0]
     assert args == [str(tmp_path / "ruffle.exe"), "--width", "1000", "--height", "680", str(tmp_path / "t.swf")]
-    assert options["stdout"] is subprocess.PIPE and "avm2" in options["env"]["RUST_LOG"]
+    # every Ruffle error (event handlers, frame scripts) and the stage's own traces
+    assert options["stdout"] is subprocess.PIPE and options["env"]["RUST_LOG"] == "error,avm_trace=info"
 
 
 def test_armor_errors_come_from_ruffles_log():
@@ -44,3 +45,12 @@ def test_armor_errors_come_from_ruffles_log():
              "2026-10-23T18:20:20.779955Z  INFO avm_trace: AUTOSWF CHECK ui | PASS\n",
              "2026-10-23T18:20:18.772461Z  WARN wgpu_hal::vulkan::conv: Unrecognized present mode 1000361000\n"]
     assert armor_errors(lines) == ["TestReleaseMHead/onAdded(): ArgumentError: Duplicate trigger"]
+
+
+def test_frame_script_errors_and_the_stages_own_armor_errors_are_read_too():
+    lines = ["2026-10-23T19:01:02.1Z ERROR ruffle_core::display_object::movie_clip: Error occurred when running AVM2 "
+             "frame script: ArgumentError: Frame script bug\n",                        # format seen in the Artix Ruffle
+             "2026-10-23T19:01:03.1Z  INFO avm_trace: AUTOSWF ARMOR ERROR Error #1009: Cannot access a property\n",
+             "2026-10-23T19:01:04.1Z  INFO avm_trace: AUTOSWF CHECK ui | PASS\n"]
+    assert armor_errors(lines) == ["frame script: ArgumentError: Frame script bug",
+                                   "Error #1009: Cannot access a property"]
