@@ -40,6 +40,28 @@ def test_a_mapping_that_cannot_be_read_still_gives_the_motions():
     assert any("cannot be read" in note for note in armor.notes)
 
 
+def test_an_armor_that_reads_its_skills_from_another_class_is_recognized():
+    from aqw_fakes import release_armor_swf
+    armor = read_animated_armor(MovieData(release_armor_swf()))
+    assert armor.class_name == "TestReleaseMHead" and armor.notes == []
+    assert armor.motions() == ["Portrait", "Idle", "Walk", "Skill1", "Skill2"]
+    assert armor.table() == [("Skill1", "Skill1", True), ("Attack1", "Skill1", True), ("Skill2", "Skill2", True),
+                             ("Cast1", "Skill2", True), ("Idle", "Idle", False), ("Walk", "Walk", True)]
+
+
+@pytest.mark.real
+def test_the_sword_hero_release(the_sword_hero_release):
+    armor = read_animated_armor(MovieData(the_sword_hero_release))
+    assert armor.class_name == "TheSwordHeroMHead" and armor.notes == []
+    table = armor.table()
+    for row in (("Idle", "Idle", False), ("Walk", "Walk", True), ("Dance", "Dance", True),
+                ("Attack1", "Skill1", True), ("Attack2", "Skill2", True), ("Cast1", "Skill3", True),
+                ("Cast2", "Skill4", True), ("Cast3", "Skill5", True), ("Stab", "Skill1", True)):
+        assert row in table
+    assert not any(game == "Portrait" or game.startswith("Skill") and armor_label != game
+                   for game, armor_label, _ in table)
+
+
 @pytest.mark.real
 def test_the_sword_hero(the_sword_hero):
     armor = read_animated_armor(MovieData(the_sword_hero))

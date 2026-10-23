@@ -121,6 +121,45 @@ def test_a_head_that_registers_from_its_methods_plays_its_motions_on_the_avatar(
     assert face.matrix == rig.head().matrix.inverse()
 
 
+def test_a_head_that_reads_its_skills_from_another_class_plays_them_on_the_avatar():
+    from aqw_fakes import release_armor_swf
+    rig = AvatarRig(MovieData(mini_client()), "M", armor=MovieData(release_armor_swf()), armor_link="TestRelease")
+    face = rig.head().child_by_name("face")
+    assert set(rig.anim_events) == {"Skill1", "Attack1", "Skill2", "Cast1", "Idle", "Walk"}
+    assert face.frame == 1 and not face.playing                                         # its own Idle, not Portrait
+    assert not rig.head().child_by_name("hair").visible and not rig._slot("cape").visible
+    assert face.script_transformed and face.matrix == rig.head().matrix.inverse()     # drawn in the skeleton's space
+    rig.play("Walk")
+    assert face.frame == 2 and rig.label == "Idle"                                      # blocked: the body stays
+    rig.play("Attack1")
+    assert face.frame == 3
+    rig.tick()
+    assert face.child_by_name("body").frame == 1
+    rig.play("Attack1")                                                                 # the same skill starts over
+    body = face.child_by_name("body")
+    assert face.frame == 3 and body.frame == 0 and body.child_by_name("spark").frame == 0
+    for _ in range(3):
+        rig.tick()
+    assert face.frame == 1                                                              # its body ended: back to Idle
+    rig.play("Cast1")
+    assert face.frame == 4
+    assert face.matrix == rig.head().matrix.inverse()
+
+
+@pytest.mark.real
+def test_the_sword_hero_release_plays_on_the_avatar(the_sword_hero_release):
+    rig = AvatarRig(MovieData(mini_client()), "M", armor=MovieData(the_sword_hero_release), armor_link="TheSwordHero")
+    face = rig.head().child_by_name("face")
+    labels = face.sprite.labels
+    assert face.frame == labels["Idle"] and face.matrix == rig.head().matrix.inverse()
+    rig.play("Walk")
+    assert face.frame == labels["Walk"]
+    rig.play("Attack1")
+    assert face.frame == labels["Skill1"]
+    rig.play("Cast3")
+    assert face.frame == labels["Skill5"]
+
+
 def test_an_armors_own_motion_plays_by_name():
     from aqw_fakes import animated_armor_swf, listener_armor_swf
     rig = AvatarRig(MovieData(mini_client()), "M", armor=MovieData(listener_armor_swf(readable=False)),

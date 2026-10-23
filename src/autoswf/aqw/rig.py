@@ -36,7 +36,7 @@ class AvatarRig:
             raise ValueError("The AQW client has no mcSkel class")
         self.client, self.gender, self.colors = client, gender, colors
         self.world = dict(world) if world is not None else {"bitWalk": True}     # as in normal play
-        self.anim_events: dict[str, list[tuple[str, bool]]] = {}
+        self.anim_events: dict[str, list[tuple[str | tuple, bool]]] = {}      # handler: see items.animated.Listen
         self._skeleton_request: str | None = None
         self.animated = None
         self._armor = armor
@@ -221,7 +221,7 @@ class AvatarRig:
 
     def _apply(self, effects: list, frame_script: bool = False) -> None:
         """What the head's code did. A frame script's own goto/stop/play are run by the display list already."""
-        from autoswf.items.animated import Anchor, Goto, Listen, PlayClip, SetVisible, SkeletonPlay, StopClip
+        from autoswf.items.animated import Anchor, ClipGoto, Goto, Listen, PlayClip, SetVisible, SkeletonPlay, StopClip
         head = self._armor_head()
         for e in effects:
             if isinstance(e, Listen):
@@ -234,6 +234,11 @@ class AvatarRig:
                 obj = self._resolve(e.place)
                 if obj is not None:
                     obj.visible = e.visible
+            elif isinstance(e, ClipGoto):
+                obj = self._resolve(e.place)
+                if isinstance(obj, ClipInstance) and (not isinstance(e.target, str) or e.target in obj.sprite.labels):
+                    obj.goto_label(e.target) if isinstance(e.target, str) else obj.goto(e.target)
+                    obj.playing = e.play
             elif isinstance(e, Anchor):
                 if head is not None and self.head() is not None:
                     head.matrix, head.script_transformed = self.head().matrix.inverse(), True
@@ -253,14 +258,20 @@ class AvatarRig:
 
     def _resolve(self, place: tuple) -> DisplayObject | None:
         """The clip at a place around the animated head (items.animated.locate): the head, its slot, the skeleton,
-        then children by name. The avatar above the skeleton is not a clip here."""
+        then children by name ("@3": the child at index 3). The avatar above the skeleton is not a clip here."""
         ups, downs = place
         chain = [self._armor_head(), self.head(), self.skel]
         if ups >= len(chain):
             return None
         obj = chain[ups]
         for name in downs:
-            obj = obj.child_by_name(name) if isinstance(obj, ClipInstance) else None
+            if not isinstance(obj, ClipInstance):
+                return None
+            if name.startswith("@"):
+                k = int(name[1:])
+                obj = obj.children[k] if 0 <= k < len(obj.children) else None
+            else:
+                obj = obj.child_by_name(name)
         return obj
 
     def play_motion(self, label: str) -> None:
@@ -313,13 +324,12 @@ class _RigHost:
 
     def value(self, path: tuple):
         from autoswf.items.animated import SCALARS, locate
-        known = self.static.value(path)
-        if known is not None or not path or path[-1] not in SCALARS:
-            return known
+        if not path or path[-1] not in SCALARS or path[-1] in self.static.world:
+            return self.static.value(path)
         place = locate(path[:-1])
         obj = self.rig._resolve(place) if place is not None and place[0] < 3 else None
         if obj is None:
-            return None
+            return self.static.value(path)
         name = path[-1]
         if name == "visible":
             return ("bool", obj.visible)
@@ -329,6 +339,13 @@ class _RigHost:
             return ("int", {"currentFrame": obj.frame + 1, "totalFrames": obj.sprite.frame_count,
                             "numChildren": len(obj.children)}[name])
         return None
+
+    def is_clip(self, path: tuple):
+        from autoswf.items.animated import locate
+        place = locate(path)
+        if place is None or place[0] >= 3:
+            return None
+        return isinstance(self.rig._resolve(place), ClipInstance)
 
     def exists(self, path: tuple):
         from autoswf.items.animated import locate

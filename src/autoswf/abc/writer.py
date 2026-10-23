@@ -12,6 +12,7 @@ PROTECTED = 0x18
 STATIC_PROTECTED = 0x1A
 QNAME = 0x07
 MULTINAME = 0x09
+MULTINAME_L = 0x1B
 CLASS_PROTECTED_NS = 0x08
 
 
@@ -64,6 +65,11 @@ class AbcBuilder:
         set_index = self._intern(self._ns_sets, ns_set)
         return self._intern(self._multinames, (MULTINAME, self.string(name), set_index))
 
+    def multiname_late(self, namespaces: list[tuple[int, str]]) -> int:
+        """A name taken from the stack (obj[key]) over a set of (kind, name) namespaces."""
+        ns_set = tuple(dict.fromkeys(self.namespace(k, n) for k, n in namespaces))
+        return self._intern(self._multinames, (MULTINAME_L, self._intern(self._ns_sets, ns_set), None))
+
     def method(self, max_stack: int, local_count: int, init_scope_depth: int, max_scope_depth: int,
                code: bytes, *, flags: int = 0, exceptions: tuple = (), traits: tuple = ()) -> int:
         """`exceptions`: (from, to, target, type multiname, variable multiname) code offsets; `traits`: SlotTraits
@@ -73,9 +79,22 @@ class AbcBuilder:
         return len(self._methods) - 1
 
     def add_class(self, name_mn: int, super_mn: int, protected_ns: int, iinit: int, cinit: int,
-                  instance_traits: list[MethodTrait | SlotTrait]) -> int:
-        self._classes.append((name_mn, super_mn, protected_ns, iinit, cinit, list(instance_traits)))
+                  instance_traits: list[MethodTrait | SlotTrait],
+                  static_traits: list[MethodTrait | SlotTrait] = ()) -> int:
+        self._classes.append((name_mn, super_mn, protected_ns, iinit, cinit, list(instance_traits),
+                              list(static_traits)))
         return len(self._classes) - 1
+
+    @staticmethod
+    def _traits(traits) -> bytes:
+        out = bytearray(u30(len(traits)))
+        for t in traits:
+            if isinstance(t, SlotTrait):
+                out += u30(t.name_mn) + bytes([0]) + u30(t.slot_id) + u30(t.type_mn) + u30(t.value)
+                out += bytes([0x01]) if t.value else b""             # Utf8 constant
+            else:
+                out += u30(t.name_mn) + bytes([1]) + u30(0) + u30(t.method)
+        return bytes(out)
 
     def add_script(self, init_method: int, class_name_mn: int, class_index: int) -> None:
         self._scripts.append((init_method, class_name_mn, class_index))
@@ -95,23 +114,18 @@ class AbcBuilder:
             out += u30(len(ns_set)) + b"".join(u30(n) for n in ns_set)
         out += u30(len(self._multinames) + 1)
         for kind, a, b in self._multinames:
-            out += bytes([kind]) + u30(a) + u30(b)      # QName: ns, name / Multiname: name, ns_set
+            # QName: ns, name / Multiname: name, ns_set / MultinameL: ns_set
+            out += bytes([kind]) + u30(a) + (u30(b) if b is not None else b"")
         out += u30(len(self._methods))
         for method in self._methods:
             out += u30(0) + u30(0) + u30(0) + bytes([method[5]])   # no params, return *, no name, flags
         out += u30(0)                                          # metadata
         out += u30(len(self._classes))
-        for name_mn, super_mn, protected_ns, iinit, _cinit, traits in self._classes:
+        for name_mn, super_mn, protected_ns, iinit, _cinit, traits, _static in self._classes:
             out += u30(name_mn) + u30(super_mn) + bytes([CLASS_PROTECTED_NS]) + u30(protected_ns)
-            out += u30(0) + u30(iinit) + u30(len(traits))
-            for t in traits:
-                if isinstance(t, SlotTrait):
-                    out += u30(t.name_mn) + bytes([0]) + u30(t.slot_id) + u30(t.type_mn) + u30(t.value)
-                    out += bytes([0x01]) if t.value else b""             # Utf8 constant
-                else:
-                    out += u30(t.name_mn) + bytes([1]) + u30(0) + u30(t.method)
-        for *_rest, cinit, _traits in self._classes:
-            out += u30(cinit) + u30(0)
+            out += u30(0) + u30(iinit) + self._traits(traits)
+        for *_rest, cinit, _traits, static in self._classes:
+            out += u30(cinit) + self._traits(static)
         out += u30(len(self._scripts))
         for init, class_mn, class_index in self._scripts:
             out += u30(init) + u30(1) + u30(class_mn) + bytes([4]) + u30(1) + u30(class_index)

@@ -161,6 +161,17 @@ def the_sword_hero():
 
 
 @pytest.fixture
+def the_sword_hero_release():
+    """The TheSwordHero release of 2026-10-23 (made by another tool, never committed), whose skill lists live in a
+    second class, TheSwordHeroSkills: AUTOSWF_RELEASE_ARMOR or cache/real/TheSwordHeroRelease.swf."""
+    path = Path(os.environ.get("AUTOSWF_RELEASE_ARMOR")
+                or Path(__file__).resolve().parents[1] / "cache" / "real" / "TheSwordHeroRelease.swf")
+    if not path.exists():
+        pytest.skip("the animated armor is not in %s" % path)
+    return path.read_bytes()
+
+
+@pytest.fixture
 def fake_nvidia():
     """A local fake of NVIDIA's API (no network)."""
     from editor_fixtures import start_fake_nvidia

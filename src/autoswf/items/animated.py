@@ -1,11 +1,13 @@
 """Animated armors (spec §15): every part class empty except <Link><G>Head, a whole animated character that registers
 `addAnimationListener(gameLabel, handler[, block])` on the avatar and plays its own labels from the handlers. The
 listeners may come from frame scripts (AzraelGuardianArmor.swf) or from methods that run once the head is on stage
-(TheSwordHero.swf: bind() walks up to the avatar and registers lists of game labels). A small interpreter runs the head
-class's code the way the client would: its fields and methods, arrays and for-each loops, if/else on strings, numbers
-and booleans, the avatar around the head (the head clip, the skeleton, the avatar and the world's flags), goto/stop/play,
-the skeleton's gotoAndPlay, hiding the avatar's clips and cancelling the parent's transform. It stops with a note on
-anything else."""
+(TheSwordHero.swf: bind() walks up to the avatar and registers lists of game labels; its 2026-10-23 release reads those
+lists from another class's static arrays and listens to its own frame labels through a function made per label). A
+small interpreter runs the head class's code the way the client would: its fields and methods, other classes' static
+fields and methods, arrays, objects used as maps, functions that keep their maker's locals, for-each loops, if/else on
+strings, numbers and booleans, indexOf, the clip's frame labels, the avatar around the head (the head clip, its child
+clips, the skeleton, the avatar and the world's flags), goto/stop/play on the head and its child clips, the skeleton's
+gotoAndPlay, hiding the avatar's clips and cancelling the parent's transform. It stops with a note on anything else."""
 import ast
 import copy
 import math
@@ -17,15 +19,16 @@ from autoswf.swf.decode import MovieData, SpriteDef
 
 THIS, OTHER, NULL = ("this",), ("other",), ("null",)
 PRIMITIVES = ("bool", "int", "str", "null")
-OBJECTS = ("this", "method", "array", "matrix")
+OBJECTS = ("this", "method", "array", "matrix", "object", "class", "closure", "activation")
 MAX_STEPS = 20000
 MAX_CALL_DEPTH = 16
 MAX_ITEMS = 10000                # longest string or array a script may build
 CALLS = ("callproperty", "callpropvoid", "callproplex")
 NEUTRAL = {"nop", "label", "coerce", "coerce_a", "coerce_s", "coerce_i", "coerce_d", "coerce_u", "coerce_o", "convert_s",
            "convert_i", "convert_d", "convert_u", "convert_o", "astype", "checkfilter", "debug", "debugline",
-           "debugfile", "bkpt", "bkptline", "timestamp", "popscope"}
+           "debugfile", "bkpt", "bkptline", "timestamp"}
 CASTS = {"MovieClip", "Sprite", "DisplayObject", "DisplayObjectContainer", "InteractiveObject", "Object"}
+CLIP_TYPES = {"MovieClip", "Sprite"}
 DISPLAY = {"parent", "stage", "root", "transform", "currentFrame", "totalFrames", "currentLabel", "numChildren", "x", "y",
            "scaleX", "scaleY", "rotation", "alpha", "visible", "name"}
 SCALARS = DISPLAY - {"parent", "stage", "root", "transform"} | {"length"}
@@ -41,7 +44,7 @@ NOT_READ = ("Which game animation plays which of its animations cannot be read f
 @dataclass(frozen=True)
 class Listen:
     game_label: str
-    handler: str
+    handler: str | tuple         # a method's name, or a function made by the code ("closure", method, its locals)
     block: bool
 
 
@@ -64,6 +67,14 @@ class PlayClip:
 @dataclass(frozen=True)
 class SkeletonPlay:
     label: str
+
+
+@dataclass(frozen=True)
+class ClipGoto:
+    """goto on one of the head's child clips."""
+    place: tuple                 # see locate()
+    target: str | int            # label, or 0-based frame
+    play: bool
 
 
 @dataclass(frozen=True)
@@ -145,8 +156,8 @@ def locate(path: tuple) -> tuple[int, tuple[str, ...]] | None:
 
 class Host:
     """What the head's scripts see around it. This one knows the avatar's shape (the head clip, the skeleton, the
-    avatar with addAnimationListener and mcChar above them) and the world's flags; the rig's host also knows its
-    clips. Each answer is None when it is unknown."""
+    avatar with addAnimationListener and mcChar above them) and the world's flags, and takes the clips it does not know
+    as having no children; the rig's host also knows its clips. Each answer is None when it is unknown."""
 
     def __init__(self, world: dict | None = None):
         self.world = dict(world or {})
@@ -154,6 +165,12 @@ class Host:
     def value(self, path: tuple) -> tuple | None:
         if path and path[-1] in self.world:
             return _value(self.world[path[-1]])
+        if path and path[-1] == "numChildren" and locate(path[:-1]) is not None:
+            return ("int", 0.0)
+        return None
+
+    def is_clip(self, path: tuple) -> bool | None:
+        """Whether the object there is a MovieClip (`as MovieClip` gives null otherwise)."""
         return None
 
     def exists(self, path: tuple) -> bool | None:
@@ -177,15 +194,18 @@ class Host:
 
 @dataclass(eq=False)
 class HeadClass:
-    """The head's class: its constructor, methods (by short name), fields with their first values and frame
-    scripts (0-based frame -> method)."""
+    """The head's class: its constructor, methods (by short name), fields with their first values, frame
+    scripts (0-based frame -> method) and the clip's frame labels (0-based). Another class of the same code is read as
+    a HeadClass too: its static side, whose constructor is its static initializer."""
     abc: ABC
     name: str
     iinit: int
     methods: dict[str, int]
     fields: dict[str, tuple]
     frame_methods: dict[int, int]
+    labels: dict[str, int] = field(default_factory=dict)
     _code: dict = field(default_factory=dict, repr=False)
+    _statics: dict = field(default_factory=dict, repr=False)
 
     def code(self, method: int):
         """The method's instructions and their index by offset, or (None, None) when its bytecode cannot be read."""
@@ -202,6 +222,33 @@ class HeadClass:
         return any(i.op in CALLS and _short(i.args[0]) == name
                    for method in (self.iinit, *self.methods.values()) for i in (self.code(method)[0] or ()))
 
+    def statics(self, name: str) -> tuple["HeadClass", dict] | None:
+        """Another class of the same code: its static side and its static fields, set by its static initializer the
+        first time it is used (as the player does; they are shared from then on). None when there is no such class."""
+        if name not in self._statics:
+            index = next((k for k, inst in enumerate(self.abc.instances)
+                          if _short(self.abc.mname(inst["name"])) == name), None)
+            if index is None or index >= len(self.abc.classes):
+                self._statics[name] = None
+                return None
+            traits = self.abc.classes[index]["traits"]
+            side = HeadClass(self.abc, name, self.abc.classes[index]["cinit"],
+                             {_short(self.abc.mname(t["name"])): t["method"] for t in traits if "method" in t},
+                             _fields(self.abc, traits), {})
+            side._statics = self._statics
+            state = copy.deepcopy(side.fields)
+            self._statics[name] = (side, state)
+            run_method(side, side.iinit, state, Host())
+        return self._statics[name]
+
+    def slot_names(self, method: int) -> dict[int, str]:
+        """The names of a method's activation slots (its locals that functions made in it keep)."""
+        out = {}
+        for k, t in enumerate(self.abc.body_traits.get(method, ())):
+            if "slot" in t:
+                out[t["slot"] or k + 1] = _short(self.abc.mname(t["name"]))
+        return out
+
 
 class _Stop(Exception):
     pass
@@ -212,6 +259,7 @@ class _Machine:
         self.head, self.state, self.host = head, state, host
         self.effects: list = []
         self.steps = 0
+        self.scope: dict = {}                    # the locals the running function kept from the method that made it
 
     # ------------------------------------------------------------ values
 
@@ -258,8 +306,10 @@ class _Machine:
                 place = locate(other[1])
                 return None if place is None else place == (0, ())
             return False if other[0] in OBJECTS or other[0] in PRIMITIVES else None
-        if a[0] == b[0] == "method":
-            return a[1] == b[1]
+        if a[0] == b[0] and a[0] in ("method", "class", "closure"):
+            return a[1:] == b[1:]
+        if a[0] == b[0] == "object":
+            return a[1] is b[1]
         return None
 
     def order(self, op: str, a, b) -> bool | None:
@@ -278,13 +328,21 @@ class _Machine:
             return ("method", name)
         if name in self.state:
             return self.state[name]
+        if name == "currentLabels":
+            labels = sorted(self.head.labels.items(), key=lambda item: item[1])
+            return ("array", [("object", {"name": ("str", label), "frame": ("int", float(frame + 1))})
+                              for label, frame in labels])
         if name in DISPLAY:
             return self.resolve(("path", (name,)))
         return NULL
 
     def lex(self, name: str, full: str):
-        if name in self.head.methods or name in self.state or name in DISPLAY:
+        if name in self.scope:
+            return self.scope[name]
+        if name in self.head.methods or name in self.state or name in DISPLAY or name == "currentLabels":
             return self.own(name)
+        if self.head.statics(name) is not None:
+            return ("class", name)
         if name[:1].isupper() or "." in full:
             return ("path", (name,))
         return NULL
@@ -296,11 +354,19 @@ class _Machine:
             return self.resolve(("path", obj[1] + (name,)))
         if obj[0] == "array" and name == "length":
             return ("int", float(len(obj[1])))
+        if obj[0] == "object":
+            return obj[1].get(name, NULL)
+        if obj[0] == "class":
+            return self.head.statics(obj[1])[1].get(name, NULL)
         return OTHER
 
     def set(self, obj, name: str, value) -> None:
         if obj == THIS or obj[0] == "find":
             self.state[name] = value
+        elif obj[0] == "object":
+            obj[1][name] = value
+        elif obj[0] == "class":
+            self.head.statics(obj[1])[1][name] = value
         elif obj[0] == "path":
             place = locate(obj[1])
             if name == "visible" and value[0] == "bool" and place is not None:
@@ -316,6 +382,8 @@ class _Machine:
             return name[1] in self.head.methods or name[1] in self.state or name[1] in DISPLAY
         if obj[0] == "path":
             return self.host.has(obj[1], name[1])
+        if obj[0] == "object":
+            return name[1] in obj[1]
         return None
 
     # ------------------------------------------------------------ calls
@@ -324,21 +392,46 @@ class _Machine:
         mine = receiver == THIS or (receiver[0] == "find" and receiver[1] == name)
         if mine and name in self.head.methods:
             return self.call(self.head.methods[name], tuple(args), depth + 1)
+        if receiver[0] == "class" and name in self.head.statics(receiver[1])[0].methods:
+            side, statics = self.head.statics(receiver[1])
+            machine = _Machine(side, statics, self.host)
+            machine.steps = self.steps
+            try:
+                return machine.call(side.methods[name], tuple(args), depth + 1)
+            finally:
+                self.steps = machine.steps
+                self.effects += machine.effects
         if name == "addAnimationListener":
-            if len(args) >= 2 and args[0][0] == "str" and args[1][0] == "method":
+            if len(args) >= 2 and args[0][0] == "str" and args[1][0] in ("method", "closure"):
                 block = len(args) > 2 and self.truth(args[2]) is True
-                self.effects.append(Listen(args[0][1], args[1][1], block))
+                self.effects.append(Listen(args[0][1], args[1][1] if args[1][0] == "method" else args[1], block))
             else:
                 self.effects.append(Unread())
             return NULL
         if name in ("gotoAndPlay", "gotoAndStop") and len(args) == 1 and (
                 args[0][0] == "str" or _index(args[0]) is not None):
             target = args[0][1] if args[0][0] == "str" else _index(args[0]) - 1
+            place = locate(receiver[1]) if receiver[0] == "path" else None
             if mine:
                 self.effects.append(Goto(target, name == "gotoAndPlay"))
-            elif receiver[0] == "path" and locate(receiver[1]) == SKELETON and args[0][0] == "str":
+            elif place == SKELETON and args[0][0] == "str":
                 self.effects.append(SkeletonPlay(args[0][1]))
+            elif place is not None and place[0] == 0 and place[1]:
+                self.effects.append(ClipGoto(place, target, name == "gotoAndPlay"))
             return NULL
+        if name == "indexOf" and len(args) == 1:
+            subject, item = self.resolve(receiver), self.resolve(args[0])
+            if subject[0] == "str" and item[0] == "str":
+                return ("int", float(subject[1].find(item[1])))
+            if subject[0] != "array":
+                return OTHER
+            for k, value in enumerate(subject[1]):
+                same = self.equal(value, item)
+                if same is None:
+                    return OTHER
+                if same:
+                    return ("int", float(k))
+            return ("int", -1.0)
         if name in ("stop", "play") and mine and not args:
             self.effects.append(StopClip() if name == "stop" else PlayClip())
             return NULL
@@ -356,7 +449,8 @@ class _Machine:
             if receiver[0] == "path":
                 return ("path", receiver[1] + (args[0][1],))
         if name == "getChildAt" and receiver[0] == "path":
-            return ("path", receiver[1] + ("getChildAt",))
+            at = _index(self.resolve(args[0])) if len(args) == 1 else None
+            return ("path", receiver[1] + ("getChildAt" if at is None else "@%d" % at,))
         if name == "contains" and receiver[0] == "path" and len(args) == 1:
             found = self.host.contains(receiver[1], args[0])
             return OTHER if found is None else ("bool", found)
@@ -372,7 +466,15 @@ class _Machine:
             return ("int", float(len(receiver[1])))
         return OTHER
 
-    def call(self, method: int, args: tuple = (), depth: int = 0):
+    def call(self, method: int, args: tuple = (), depth: int = 0, scope: dict | None = None):
+        """Run a method; `scope` holds the locals a function made by the code kept from the method that made it."""
+        outer, self.scope = self.scope, dict(scope or {})
+        try:
+            return self._call(method, args, depth)
+        finally:
+            self.scope = outer
+
+    def _call(self, method: int, args: tuple, depth: int):
         if depth > MAX_CALL_DEPTH:
             raise _Stop("stopped on calls nested too deep")
         instrs, index = self.head.code(method)
@@ -386,6 +488,7 @@ class _Machine:
             regs[k] = args[k - 1] if k <= len(args) else (
                 _value(self.head.abc.constant(*optional[j])) if 0 <= j < len(optional) else NULL)
         stack, pc = [], 0
+        scopes = []                              # the scope stack; an activation is ["activation", {slot: value}, method]
 
         def pop():
             return stack.pop() if stack else OTHER
@@ -419,12 +522,26 @@ class _Machine:
             elif op in ("inclocal", "inclocal_i", "declocal", "declocal_i"):
                 v = regs.get(int(a[0]), NULL)
                 regs[int(a[0])] = ("int", v[1] + (1.0 if op.startswith("inc") else -1.0)) if v[0] == "int" else OTHER
-            elif op in ("pushscope", "pushwith", "pop"):
+            elif op in ("pushscope", "pushwith"):
+                scopes.append(pop())
+            elif op == "popscope":
+                if scopes:
+                    scopes.pop()
+            elif op == "pop":
                 pop()
             elif op == "getscopeobject":
-                stack.append(THIS if int(a[0]) == 0 else OTHER)
-            elif op in ("getglobalscope", "getouterscope", "newactivation", "newcatch", "newfunction",
-                        "getglobalslot", "pushnamespace"):
+                k = int(a[0])
+                stack.append(scopes[k] if k < len(scopes) else THIS if k == 0 else OTHER)
+            elif op == "newactivation":
+                stack.append(["activation", {}, method])
+            elif op == "newfunction":
+                kept = dict(self.scope)
+                for s in scopes:
+                    if isinstance(s, list) and s[0] == "activation":
+                        names = self.head.slot_names(s[2])
+                        kept.update((names[k], v) for k, v in s[1].items() if k in names)
+                stack.append(("closure", int(a[0]), tuple(kept.items())))
+            elif op in ("getglobalscope", "getouterscope", "newcatch", "getglobalslot", "pushnamespace"):
                 stack.append(OTHER)
             elif op in ("findpropstrict", "findproperty", "findpropglobal", "findpropglobalstrict", "finddef"):
                 stack.append(("find", _short(a[0])))
@@ -432,19 +549,25 @@ class _Machine:
                 stack.append(self.lex(_short(a[0]), a[0]))
             elif op == "getproperty":
                 if a[0].startswith("["):
-                    key, obj = pop(), pop()
+                    key, obj = self.resolve(pop()), pop()
                     at = _index(key)
                     items = obj[1] if obj[0] == "array" else None
-                    stack.append(items[at] if items is not None and at is not None and 0 <= at < len(items) else OTHER)
+                    if obj[0] == "object" and key[0] in PRIMITIVES:
+                        stack.append(obj[1].get(_text(key), NULL))
+                    else:
+                        stack.append(items[at] if items is not None and at is not None and 0 <= at < len(items)
+                                     else OTHER)
                 else:
                     stack.append(self.get(pop(), _short(a[0])))
             elif op in ("setproperty", "initproperty"):
                 value = pop()
                 if a[0].startswith("["):
-                    key, obj = pop(), pop()
+                    key, obj = self.resolve(pop()), pop()
                     at = _index(key)
                     if obj[0] == "array" and at is not None and 0 <= at < len(obj[1]):
                         obj[1][at] = value
+                    elif obj[0] == "object" and key[0] in PRIMITIVES:
+                        obj[1][_text(key)] = value
                 else:
                     self.set(pop(), _short(a[0]), value)
             elif op == "deleteproperty":
@@ -470,8 +593,8 @@ class _Machine:
             elif op == "newarray":
                 stack.append(("array", pops(int(a[0]))))
             elif op == "newobject":
-                pops(2 * int(a[0]))
-                stack.append(OTHER)
+                pairs = pops(2 * int(a[0]))
+                stack.append(("object", {_text(k): v for k, v in zip(pairs[::2], pairs[1::2]) if k[0] in PRIMITIVES}))
             elif op == "newclass":
                 pop()
                 stack.append(OTHER)
@@ -537,7 +660,11 @@ class _Machine:
                 else:
                     stack.append(OTHER)
             elif op == "astypelate":
-                pop()
+                kind, v = pop(), pop()
+                if kind[0] == "path" and kind[1][-1] in CLIP_TYPES and v[0] == "path" and \
+                        self.host.is_clip(v[1]) is False:
+                    v = NULL
+                stack.append(v)
             elif op in ("typeof", "istype"):
                 pop()
                 stack.append(OTHER)
@@ -595,10 +722,14 @@ class _Machine:
             elif op == "returnvalue":
                 return pop()
             elif op == "getslot":
-                pop()
-                stack.append(OTHER)
-            elif op in ("setslot",):
-                pop(), pop()
+                obj = pop()
+                stack.append(obj[1].get(int(a[0]), NULL) if isinstance(obj, list) and obj[0] == "activation" else OTHER)
+            elif op == "setslot":
+                value, obj = pop(), pop()
+                if isinstance(obj, list) and obj[0] == "activation":
+                    obj[1][int(a[0])] = value
+            elif op == "throw":
+                raise _Stop("stopped on an error it throws (offset %d)" % i.offset)
             elif op in ("setglobalslot", "dxnslate"):
                 pop()
             elif op == "dxns":
@@ -608,12 +739,14 @@ class _Machine:
         return NULL
 
 
-def run_method(head: HeadClass, method: int, state: dict, host: Host, args: tuple = ()) -> tuple[list, str | None]:
-    """Run one method of the head's class: the effects it has, in order, and a note when it stopped on code this
-    interpreter does not follow. `state` (the clip's fields) is changed in place."""
+def run_method(head: HeadClass, method: int, state: dict, host: Host, args: tuple = (),
+               scope: dict | None = None) -> tuple[list, str | None]:
+    """Run one method of the head's class (or a function its code made, with the locals it kept in `scope`): the
+    effects it has, in order, and a note when it stopped on code this interpreter does not follow. `state` (the clip's
+    fields) is changed in place."""
     machine = _Machine(head, state, host)
     try:
-        machine.call(method, args)
+        machine.call(method, args, scope=scope)
     except _Stop as e:
         return machine.effects, str(e)
     except Exception as e:                           # damaged code from any file: a note, never an error
@@ -624,7 +757,7 @@ def run_method(head: HeadClass, method: int, state: dict, host: Host, args: tupl
 @dataclass(frozen=True)
 class ArmorListener:
     game_label: str
-    handler: str
+    handler: str | tuple         # as in Listen
     block: bool
 
 
@@ -640,8 +773,8 @@ class HeadScripts:
         self.notes: list[str] = []
         self.unread = 0
 
-    def run(self, method: int, args: tuple, where: str) -> list:
-        effects, note = run_method(self.head, method, self.state, self.host, args)
+    def run(self, method: int, args: tuple, where: str, scope: dict | None = None) -> list:
+        effects, note = run_method(self.head, method, self.state, self.host, args, scope)
         if note and "%s %s" % (where, note) not in self.notes:
             self.notes.append("%s %s" % (where, note))
         for e in effects:
@@ -670,7 +803,10 @@ class HeadScripts:
         method = self.head.frame_methods.get(frame)
         return [] if method is None else self.run(method, (), "Frame %d script" % (frame + 1))
 
-    def call(self, handler: str) -> list:
+    def call(self, handler: str | tuple) -> list:
+        if isinstance(handler, tuple):
+            _, method, kept = handler
+            return self.run(method, (), "A function it registered", dict(kept))
         method = self.head.methods.get(handler)
         return [] if method is None else self.run(method, (), "The handler %s" % handler)
 
@@ -697,7 +833,7 @@ class AnimatedArmor:
         """The armor's own animations, in timeline order."""
         return sorted(self.labels, key=self.labels.get)
 
-    def handler_label(self, handler: str) -> str | None:
+    def handler_label(self, handler: str | tuple) -> str | None:
         """The armor label a handler plays from the clip's first state."""
         scripts = HeadScripts(self.head, Host({"bitWalk": True}), self.start)
         return next((e.target for e in scripts.call(handler) if isinstance(e, Goto) and isinstance(e.target, str)),
@@ -727,16 +863,22 @@ def _frame_methods(abc: ABC, inst: dict, methods: dict[str, int]) -> dict[int, i
     return out
 
 
-def head_class(abc: ABC, inst: dict, name: str) -> HeadClass:
-    methods = {_short(abc.mname(t["name"])): t["method"] for t in inst["traits"] if "method" in t}
+def _fields(abc: ABC, traits: list) -> dict[str, tuple]:
+    """The slot traits' first values: their constant, else their type's default."""
     fields = {}
-    for t in inst["traits"]:
+    for t in traits:
         if "slot" not in t:
             continue
         default = t.get("default")
         fields[_short(abc.mname(t["name"]))] = (_value(abc.constant(*default)) if default
                                                else FIELD_DEFAULTS.get(_short(abc.mname(t["type"])), NULL))
-    return HeadClass(abc, name, inst["iinit"], methods, fields, _frame_methods(abc, inst, methods))
+    return fields
+
+
+def head_class(abc: ABC, inst: dict, name: str, labels: dict[str, int] | None = None) -> HeadClass:
+    methods = {_short(abc.mname(t["name"])): t["method"] for t in inst["traits"] if "method" in t}
+    return HeadClass(abc, name, inst["iinit"], methods, _fields(abc, inst["traits"]),
+                     _frame_methods(abc, inst, methods), dict(labels or {}))
 
 
 def read_animated_armor(movie: MovieData, gender: str | None = None) -> AnimatedArmor | None:
@@ -757,7 +899,7 @@ def read_animated_armor(movie: MovieData, gender: str | None = None) -> Animated
         for abc in movie.abcs:
             try:
                 inst = next((x for x in abc.instances if abc.mname(x["name"]) == name), None)
-                head = head_class(abc, inst, name) if inst is not None else None
+                head = head_class(abc, inst, name, sprite.labels) if inst is not None else None
             except Exception:                        # a class this reader cannot make sense of is not animated
                 head = None
             if head is None or not head.calls("addAnimationListener"):
