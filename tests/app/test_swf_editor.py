@@ -55,6 +55,21 @@ def test_open_in_ruffle_uses_the_edited_armor(qapp, tmp_path, app_cache, monkeyp
     assert settings["link"] == "TestRelease" and settings["genders"] == ["M"]
 
 
+def test_open_in_ruffle_keeps_the_skeletons_head_tracks_and_leaves_the_window_ready(qapp, tmp_path, app_cache,
+                                                                                  monkeypatch):
+    from PySide6.QtWidgets import QApplication
+    from autoswf.ruffle import settings
+    measured = []
+    real = settings._track
+    monkeypatch.setattr(settings, "_track", lambda rig, label: measured.append(label) or real(rig, label))
+    e, launched, _ = ruffle_editor(tmp_path, monkeypatch, app_cache)
+    e.open_in_ruffle()
+    count = len(measured)
+    e.open_in_ruffle()
+    assert count > 0 and len(measured) == count and len(launched) == 2         # the second click measures nothing
+    assert e.ruffle_button.isEnabled() and QApplication.overrideCursor() is None
+
+
 def test_the_ruffle_button_shows_only_for_animated_armors(qapp, tmp_path, app_cache):
     from aqw_fakes import animated_armor_swf, release_armor_swf
     assert not editor(tmp_path / "a", release_armor_swf(), app_cache).ruffle_button.isHidden()

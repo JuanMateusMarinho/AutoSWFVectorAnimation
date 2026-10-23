@@ -72,8 +72,12 @@ def head_track(client: MovieData, gender: str, label: str) -> dict:
     return _track(AvatarRig(client, gender), label)
 
 
-def stage_settings(client: MovieData, armor: MovieData, *, colors: PlayerColors | None = None) -> dict:
+def stage_settings(client: MovieData, armor: MovieData, *, colors: PlayerColors | None = None,
+                   tracks: dict | None = None) -> dict:
+    """`tracks` ({gender: {label: head_track}}) keeps the skeleton's head tracks between calls on the same client:
+    they do not depend on the armor and take most of the time."""
     colors = colors or PlayerColors()
+    tracks = {} if tracks is None else tracks
     link, _ = find_armor_link(armor)
     animated = {g: a for g in "MF" if (a := read_animated_armor(armor, g)) is not None}
     sprite = client.character(client.classes["mcSkel"])
@@ -87,12 +91,16 @@ def stage_settings(client: MovieData, armor: MovieData, *, colors: PlayerColors 
         rows.append({"name": name, "group": group_of(name, set(skeleton)),
                      "armor": {g: next((a for game, a, _ in t if game == name), None) for g, t in tables.items()},
                      "block": {g: next((b for game, _, b in t if game == name), False) for g, t in tables.items()}})
-    rigs = {g: AvatarRig(client, g) for g in animated}
-    first = next(iter(rigs.values()), None) or AvatarRig(client, "M")
+    first = AvatarRig(client, next(iter(animated), "M"))
+    slots = [c.name for c in first.skel.children if c.name]          # read before the tracks move the skeleton
+    for g in animated:
+        if g not in tracks:
+            rig = first if first.gender == g else AvatarRig(client, g)
+            tracks[g] = {label: _track(rig, label) for label in skeleton}
     return {"link": link, "genders": list(animated), "labels": rows,
             "motions": {g: a.motions() for g, a in animated.items()},
             "skills": {g: skill_slots(t) for g, t in tables.items()},
             "auto": ["Attack1", "Attack2"],
             "colors": {location: colors.get(location) for location in LOCATIONS},
-            "slots": [c.name for c in first.skel.children if c.name],
-            "head": {g: {label: _track(rig, label) for label in skeleton} for g, rig in rigs.items()}}
+            "slots": slots,
+            "head": {g: tracks[g] for g in animated}}

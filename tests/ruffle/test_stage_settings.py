@@ -39,6 +39,20 @@ def test_settings_for_a_release_style_armor():
     json.dumps(s)                                                      # JSON-able
 
 
+def test_head_tracks_are_measured_once_per_cache(monkeypatch):
+    # they depend on the client only, not on the armor: Open in Ruffle keeps them between clicks
+    from aqw_fakes import mini_client, release_armor_swf
+    from autoswf.ruffle import settings
+    measured = []
+    real = settings._track
+    monkeypatch.setattr(settings, "_track", lambda rig, label: measured.append(label) or real(rig, label))
+    client, armor, cache = MovieData(mini_client()), MovieData(release_armor_swf()), {}
+    first = settings.stage_settings(client, armor, tracks=cache)
+    count = len(measured)
+    second = settings.stage_settings(client, armor, tracks=cache)
+    assert count == 3 and len(measured) == count and second["head"] == first["head"]
+
+
 def test_a_head_track_follows_the_skeleton_and_knows_held_labels():
     from aqw_fakes import mini_client
     from autoswf.ruffle.settings import head_track

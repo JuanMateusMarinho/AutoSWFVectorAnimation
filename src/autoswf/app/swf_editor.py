@@ -3,12 +3,13 @@ under each part its sub-pieces with thumbnails; unchecking a sub-piece removes i
 stays byte for byte); the result previews on the AQW body (armors, helms) and exports as a validated SWF."""
 import math
 import os
+import threading
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QPointF, QRectF, Qt
+from PySide6.QtCore import QEvent, QEventLoop, QObject, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QIcon, QImage, QPainter, QPen, QPixmap, QUndoCommand, QUndoStack
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout, QHBoxLayout, QHeaderView, QLabel,
-                               QMessageBox,
+from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout, QHBoxLayout,
+                               QHeaderView, QLabel, QMessageBox,
                                QLineEdit, QPushButton, QSplitter, QTextEdit, QTreeWidget, QTreeWidgetItem,
                                QVBoxLayout, QWidget)
 
@@ -182,6 +183,11 @@ class _ItemCanvas(EditableCanvas, QWidget):
             p.drawRect(QRectF(QPointF(box[0] - 2, box[2] - 2), QPointF(box[1] + 2, box[3] + 2)))
 
 
+class _Done(QObject):
+    """Tells the GUI thread a worker thread finished."""
+    done = Signal()
+
+
 class SwfEditor(QWidget):
     def __init__(self, cache: AqwCache, parent=None, *, settings_store=None):
         super().__init__(parent)
@@ -189,6 +195,7 @@ class SwfEditor(QWidget):
         self.settings_store = settings_store            # QSettings: the Ruffle the user chose (None: not remembered)
         self._ruffle_watchers = []
         self._dummy_declined = False                    # the user said no to downloading the Training Dummy
+        self._head_tracks: dict = {}                    # (client path, mtime) -> the skeleton's head tracks
         self.path: Path | None = None
         self.original = b""
         self.edited = b""
@@ -892,18 +899,25 @@ class SwfEditor(QWidget):
         ruffle = self._ruffle()
         if ruffle is None:
             return None
-        data = self.current_data()
-        scene = self._preview.scene if self._preview is not None else None
-        settings = stage_settings(MovieData(client), MovieData(data),
-                                  colors=scene.colors if scene is not None else PlayerColors())
         dummy = self._training_dummy()
-        if dummy is not None:
-            settings["dummy"] = DUMMY_CLASS
-        folder = Path(tempfile.gettempdir()) / "AutoSWF-ruffle"
-        folder.mkdir(parents=True, exist_ok=True)
-        swf = folder / ("%s-test.swf" % (self.path.stem if self.path is not None else "armor"))
-        swf.write_bytes(build_test_swf(data, settings, dummy=dummy))
-        watcher = launch.RuffleWatcher(launch.launch_ruffle(ruffle, swf))
+        self.ruffle_button.setEnabled(False)            # one build at a time; the window shows it is busy
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            data = self.current_data()
+            scene = self._preview.scene if self._preview is not None else None
+            tracks = self._head_tracks.setdefault((str(client), client.stat().st_mtime_ns), {})
+            settings = stage_settings(MovieData(client), MovieData(data), tracks=tracks,
+                                      colors=scene.colors if scene is not None else PlayerColors())
+            if dummy is not None:
+                settings["dummy"] = DUMMY_CLASS
+            folder = Path(tempfile.gettempdir()) / "AutoSWF-ruffle"
+            folder.mkdir(parents=True, exist_ok=True)
+            swf = folder / ("%s-test.swf" % (self.path.stem if self.path is not None else "armor"))
+            swf.write_bytes(build_test_swf(data, settings, dummy=dummy))
+            watcher = launch.RuffleWatcher(launch.launch_ruffle(ruffle, swf))
+        finally:
+            QApplication.restoreOverrideCursor()
+            self.ruffle_button.setEnabled(True)
         watcher.error.connect(self._ruffle_error)
         watcher.start()
         self._ruffle_watchers.append(watcher)
@@ -920,13 +934,30 @@ class SwfEditor(QWidget):
                                           "to use it as the target? It is saved only on this computer, in %s."
                                           % path.parent)
             if answer == QMessageBox.StandardButton.Yes:
-                try:
-                    download_dummy(self.cache, progress=lambda text: None)
-                except DownloadError as e:
-                    self.message.setText(str(e))
+                self._download_dummy()
             else:
                 self._dummy_declined = True
         return path.read_bytes() if path.exists() else None
+
+    def _download_dummy(self) -> None:
+        """Download on a thread; the window keeps running (a local event loop) until it is done."""
+        loop, outcome, relay = QEventLoop(), {}, _Done()
+        relay.done.connect(loop.quit)
+
+        def work() -> None:
+            try:
+                download_dummy(self.cache, progress=lambda text: None)
+            except DownloadError as e:
+                outcome["error"] = str(e)
+            except Exception as e:                      # always reports back, whatever happens
+                outcome["error"] = "Unexpected error while downloading: %s" % e
+            relay.done.emit()
+        self.ruffle_button.setEnabled(False)
+        threading.Thread(target=work, name="dummy-download", daemon=True).start()
+        loop.exec()
+        self.ruffle_button.setEnabled(True)
+        if "error" in outcome:
+            self.message.setText(outcome["error"])
 
     def _ruffle(self) -> Path | None:
         """The user's Ruffle, asking where it is once when none is found."""
