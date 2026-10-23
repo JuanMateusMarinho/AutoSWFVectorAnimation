@@ -34,11 +34,8 @@ def _characters(symbols: list[Symbol]) -> list[Shape | MorphShape | Symbol]:
     return order
 
 
-def build_swf(symbols: list[Symbol], class_names: dict[int, str], abc: bytes, *,
-              width: float = 550, height: float = 400, fps: float = 24.0) -> bytes:
-    chars = _characters(symbols)
-    char_ids = {id(item): n for n, item in enumerate(chars, start=1)}
-
+def swf_file(tags: bytes, *, width: float, height: float, fps: float) -> bytes:
+    """A one-frame AS3 SWF (CWS): header, FileAttributes and background, then `tags` (which end with ShowFrame, End)."""
     w = BitWriter()
     write_rect(w, 0, twips(width), 0, twips(height))
     w.u16(round(fps * 256))
@@ -46,6 +43,16 @@ def build_swf(symbols: list[Symbol], class_names: dict[int, str], abc: bytes, *,
     body = bytearray(w.getvalue())
     body += tag(TAG_FILE_ATTRIBUTES, struct.pack("<I", FILE_ATTRIBUTES_AS3))
     body += tag(TAG_SET_BACKGROUND, bytes(BACKGROUND))
+    body += tags
+    return b"CWS" + bytes([SWF_VERSION]) + struct.pack("<I", 8 + len(body)) + zlib.compress(bytes(body), 9)
+
+
+def build_swf(symbols: list[Symbol], class_names: dict[int, str], abc: bytes, *,
+              width: float = 550, height: float = 400, fps: float = 24.0) -> bytes:
+    chars = _characters(symbols)
+    char_ids = {id(item): n for n, item in enumerate(chars, start=1)}
+
+    body = bytearray()
     scenes = BitWriter()
     write_eu32(scenes, 1); write_eu32(scenes, 0); write_string(scenes, "Scene 1"); write_eu32(scenes, 0)
     body += tag(TAG_SCENES, scenes.getvalue())
@@ -65,4 +72,4 @@ def build_swf(symbols: list[Symbol], class_names: dict[int, str], abc: bytes, *,
         write_string(sc, name)
     body += tag(TAG_SYMBOL_CLASS, sc.getvalue())
     body += tag(TAG_SHOW_FRAME) + tag(TAG_END)
-    return b"CWS" + bytes([SWF_VERSION]) + struct.pack("<I", 8 + len(body)) + zlib.compress(bytes(body), 9)
+    return swf_file(bytes(body), width=width, height=height, fps=fps)
