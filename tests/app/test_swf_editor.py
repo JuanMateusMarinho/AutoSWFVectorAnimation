@@ -31,13 +31,17 @@ def ruffle_editor(tmp_path, monkeypatch, cache, data=None, found=True, log=()):
     from PySide6.QtCore import QSettings
     from aqw_fakes import release_armor_swf
     from autoswf.ruffle import launch
+    tmp_path.mkdir(parents=True, exist_ok=True)
     store = QSettings(str(tmp_path / "ui.ini"), QSettings.Format.IniFormat)
     exe = tmp_path / "ruffle.exe"
     exe.write_bytes(b"")
+    from PySide6.QtWidgets import QMessageBox
     launched = []
     monkeypatch.setattr(launch, "find_ruffle", lambda saved, dirs=None: Path(saved) if saved else (exe if found else None))
     monkeypatch.setattr(launch, "launch_ruffle",
                         lambda ruffle, swf, **kw: launched.append(swf) or FakeRuffle(log))
+    # the mini cache has no Training Dummy: the offer to download it is declined unless a test says otherwise
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.No)
     return editor(tmp_path / "e", data or release_armor_swf(), cache, store), launched, exe
 
 
@@ -67,6 +71,28 @@ def test_without_ruffle_it_asks_once_and_remembers(qapp, tmp_path, app_cache, mo
     e.open_in_ruffle()
     e.open_in_ruffle()
     assert asked == [1] and len(launched) == 2 and e.settings_store.value("ruffle/path") == str(exe)
+
+
+def test_a_missing_training_dummy_is_downloaded_when_the_user_agrees(qapp, tmp_path, app_cache, monkeypatch):
+    # caches downloaded before Plan 8 have no Training Dummy: Open in Ruffle offers it (5 KB from game.aq.com)
+    from PySide6.QtWidgets import QMessageBox
+    from autoswf.app import swf_editor
+    from autoswf.ruffle.testswf import embedded_dummy
+    e, launched, _ = ruffle_editor(tmp_path, monkeypatch, app_cache)
+    asked, fetched = [], []
+
+    def download(cache, **kw):
+        fetched.append(1)
+        cache.dummy_path().parent.mkdir(parents=True, exist_ok=True)
+        cache.dummy_path().write_bytes(b"FWS dummy")
+    monkeypatch.setattr(swf_editor, "download_dummy", download)
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: asked.append(1) or QMessageBox.StandardButton.No)
+    assert embedded_dummy(e.open_in_ruffle().read_bytes()) is None and fetched == []      # declined: drawn dummy
+    e.open_in_ruffle()
+    assert asked == [1]                                                                     # asked once a session
+    e2, _, _ = ruffle_editor(tmp_path / "2", monkeypatch, app_cache)
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Yes)
+    assert embedded_dummy(e2.open_in_ruffle().read_bytes()) == b"FWS dummy" and fetched == [1]
 
 
 def test_missing_aqw_files_give_a_message(qapp, tmp_path, monkeypatch):

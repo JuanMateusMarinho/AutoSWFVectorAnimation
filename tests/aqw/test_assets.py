@@ -68,6 +68,14 @@ def test_bad_responses_raise_and_leave_nothing_behind(tmp_path, server):
     with pytest.raises(DownloadError, match="Nope.swf"):
         download_reference_files(AqwCache(tmp_path), armor="Nope", base_url=url, **QUIET)
 
+def test_the_training_dummy_alone_can_be_downloaded(tmp_path, server):
+    from autoswf.aqw.assets import download_dummy
+    files, hits, url = server; publish(files)
+    cache = AqwCache(tmp_path)
+    download_dummy(cache, base_url=url, **QUIET)
+    assert cache.dummy_path().read_bytes() == SWF_BYTES and hits == ["/game/gamefiles/mon/TrainingDummy.swf"]
+
+
 def test_missing_lists_what_the_preview_needs(tmp_path):
     assert AqwCache(tmp_path).missing("TestArmor") == ["AQW game client", "armor classes/M/TestArmor.swf", "armor classes/F/TestArmor.swf"]
 

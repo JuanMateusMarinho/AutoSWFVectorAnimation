@@ -145,12 +145,23 @@ def download_reference_files(cache: AqwCache, *, armor: str = DEFAULT_ARMOR, sam
     for rel in wanted:
         target = cache.file_path(rel)
         if refresh or not target.exists():
-            url = "%s/gamefiles/%s" % (base, rel)
-            body = _get(url, timeout)
-            _check_swf(url, body)
-            _save(target, body)
+            _fetch(cache, rel, base, timeout, progress)
             written.append(target)
-            progress("Downloaded %s (%d KB)" % (rel, max(1, len(body) // 1024)))
         if rel == client:
             _save(cache.version_file(), answer)     # only now: a failed update keeps the previous client usable
     return written
+
+
+def _fetch(cache: AqwCache, rel: str, base: str, timeout: float, progress: Callable[[str], None]) -> None:
+    url = "%s/gamefiles/%s" % (base, rel)
+    body = _get(url, timeout)
+    _check_swf(url, body)
+    _save(cache.file_path(rel), body)
+    progress("Downloaded %s (%d KB)" % (rel, max(1, len(body) // 1024)))
+
+
+def download_dummy(cache: AqwCache, *, base_url: str = GAME_BASE_URL, progress: Callable[[str], None] = print,
+                   timeout: float = 15.0) -> Path:
+    """Fetch only AQW's Training Dummy (caches made before Open in Ruffle lack it)."""
+    _fetch(cache, DUMMY_FILE, base_url.rstrip("/"), timeout, progress)
+    return cache.dummy_path()

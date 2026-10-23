@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFileDialog, QForm
 from autoswf.app.edit_layers import EditLayersPanel, swf_layer_rows
 from autoswf.app.edit_tools import EditableCanvas, EditTools
 from autoswf.app.frame_strip import FrameStrip
-from autoswf.aqw.assets import AqwCache
+from autoswf.aqw.assets import AqwCache, DownloadError, download_dummy
 from autoswf.aqw.contract import check_link, client_class_names
 from autoswf.aqw.validate import validate_item_swf
 from autoswf.edit.swf_source import NOT_SHOWN, UneditableDrawing, drawing_uses, drive, shape_def_of, swf_layer
@@ -188,6 +188,7 @@ class SwfEditor(QWidget):
         self.cache = cache
         self.settings_store = settings_store            # QSettings: the Ruffle the user chose (None: not remembered)
         self._ruffle_watchers = []
+        self._dummy_declined = False                    # the user said no to downloading the Training Dummy
         self.path: Path | None = None
         self.original = b""
         self.edited = b""
@@ -895,7 +896,7 @@ class SwfEditor(QWidget):
         scene = self._preview.scene if self._preview is not None else None
         settings = stage_settings(MovieData(client), MovieData(data),
                                   colors=scene.colors if scene is not None else PlayerColors())
-        dummy = self.cache.dummy_path().read_bytes() if self.cache.dummy_path().exists() else None
+        dummy = self._training_dummy()
         if dummy is not None:
             settings["dummy"] = DUMMY_CLASS
         folder = Path(tempfile.gettempdir()) / "AutoSWF-ruffle"
@@ -908,6 +909,24 @@ class SwfEditor(QWidget):
         self._ruffle_watchers.append(watcher)
         self.message.setText("Opened in Ruffle (%s)." % ruffle)
         return swf
+
+    def _training_dummy(self) -> bytes | None:
+        """AQW's Training Dummy from the cache; when it is missing (caches made before Open in Ruffle), offer to
+        download it, once a session. None: the stage draws its own dummy."""
+        path = self.cache.dummy_path()
+        if not path.exists() and not self._dummy_declined:
+            answer = QMessageBox.question(self, "Open in Ruffle",
+                                          "Download AQW's Training Dummy (5 KB) from AQW's public server (game.aq.com) "
+                                          "to use it as the target? It is saved only on this computer, in %s."
+                                          % path.parent)
+            if answer == QMessageBox.StandardButton.Yes:
+                try:
+                    download_dummy(self.cache, progress=lambda text: None)
+                except DownloadError as e:
+                    self.message.setText(str(e))
+            else:
+                self._dummy_declined = True
+        return path.read_bytes() if path.exists() else None
 
     def _ruffle(self) -> Path | None:
         """The user's Ruffle, asking where it is once when none is found."""
