@@ -394,7 +394,14 @@ def listener_armor_swf(link: str = "TestBind", readable: bool = True) -> bytes:
     return build_swf(list(parts.values()), names, b.serialize())
 
 
-def release_armor_swf(link: str = "TestRelease") -> bytes:
+def throwing_armor_swf() -> bytes:
+    """release_armor_swf whose skill lists name Attack1 twice, so its bind() throws ArgumentError("Duplicate trigger")
+    after registering Skill1, Attack1, Skill2 and Cast1."""
+    return release_armor_swf(aqw_labels=(("Skill1", "Attack1"), ("Skill2", "Cast1", "Attack1")))
+
+
+def release_armor_swf(link: str = "TestRelease",
+                      aqw_labels: tuple[tuple[str, ...], ...] = (("Skill1", "Attack1"), ("Skill2", "Cast1"))) -> bytes:
     """A male animated armor like the TheSwordHero release of 2026-10-23. Its head's bind() finds the avatar as
     listener_armor_swf's does, then reads which game labels play which skill from another class, <Link>Skills (static
     ANIMATIONS, AQW_LABELS and NATIVE_HOLDS arrays and a static labelFor(slot)): AQW_LABELS[1] = Skill1, Attack1 and
@@ -443,8 +450,9 @@ def release_armor_swf(link: str = "TestRelease") -> bytes:
         return [("findpropstrict", n(method)), *pushes,
                 ("callpropvoid" if void else "callproperty", n(method), len(pushes) if argc is None else argc)]
 
-    def method(steps, **options):
-        return b.method(8, 10, 10, 11, _asm(steps).bytes(), **options)
+    def method(steps, scopes: int = 1, **options):
+        """`scopes`: how many scopes the code pushes (a real AVM2 verifies it)."""
+        return b.method(8, 10, 10, 10 + scopes, _asm(steps).bytes(), **options)
 
     start = [("getlocal0",), ("pushscope",)]
     body = call("getChildByName", s("body"), void=False) + [("getlex", movieclip), ("astypelate",)]
@@ -556,8 +564,14 @@ def release_armor_swf(link: str = "TestRelease") -> bytes:
     native_callback = start + [("newactivation",), ("dup",), ("setlocal2",), ("pushscope",), ("getscopeobject", 1),
                                ("getlocal1",), ("coerce_s",), ("setslot", 1), ("newfunction", closure),
                                ("returnvalue",)]
-    methods = {name: method(steps) for name, steps in code.items()}
-    methods["nativeCallback"] = method(native_callback, flags=NEED_ACTIVATION,
+    # the arguments each method takes, as a real AVM2 checks them (restart:Boolean = false is optional)
+    params = {"onAdded": 1, "onTick": 1, "listen": 2, "playSkill": 1, "playStandard": 2, "hasLabel": 1, "setMotion": 2,
+              "restartChildren": 1, "hide": 1}
+    false_default = ((0x0A, 0),)
+    methods = {name: method(steps, params=params.get(name, 0),
+                            optional=false_default if name in ("playStandard", "setMotion") else ())
+               for name, steps in code.items()}
+    methods["nativeCallback"] = method(native_callback, scopes=2, flags=NEED_ACTIVATION, params=1,
                                        traits=(SlotTrait(n("label"), 1, n("String")),))
     traits = [SlotTrait(n("avatar"), 0, 0), SlotTrait(n("registrations"), 0, 0),
               SlotTrait(n("motion"), 0, n("String"), b.string("Portrait")), SlotTrait(n("transient"), 0, n("Boolean"))]
@@ -576,13 +590,14 @@ def release_armor_swf(link: str = "TestRelease") -> bytes:
 
     skills_init = method(start + [("findproperty", n("ANIMATIONS")), ("pushnull",), s("Skill1"), s("Skill2"),
                                   ("newarray", 3), ("initproperty", n("ANIMATIONS")),
-                                  ("findproperty", n("AQW_LABELS")), ("pushnull",), s("Skill1"), s("Attack1"),
-                                  ("newarray", 2), s("Skill2"), s("Cast1"), ("newarray", 2), ("newarray", 3),
-                                  ("initproperty", n("AQW_LABELS")),
+                                  ("findproperty", n("AQW_LABELS")), ("pushnull",)] +
+                         [step for labels in aqw_labels for step in [s(label) for label in labels] +
+                          [("newarray", len(labels))]] +
+                         [("newarray", 1 + len(aqw_labels)), ("initproperty", n("AQW_LABELS")),
                                   ("findproperty", n("NATIVE_HOLDS")), s("Idle"), s("Walk"), ("newarray", 2),
                                   ("initproperty", n("NATIVE_HOLDS")), ("returnvoid",)])
     label_for = method(start + [("getlex", n("ANIMATIONS")), ("getlocal1",), ("getproperty", late), ("convert_s",),
-                                ("returnvalue",)])
+                                ("returnvalue",)], params=1)
     statics = [SlotTrait(n("ANIMATIONS"), 1, n("Array")), SlotTrait(n("AQW_LABELS"), 2, n("Array")),
                SlotTrait(n("NATIVE_HOLDS"), 3, n("Array")), MethodTrait(n("labelFor"), label_for)]
     skills_mn, base = n(skills_name), n("Object")

@@ -25,4 +25,5 @@ testpaths = ["tests"]
 pythonpath = ["tests"]
 markers = ["aqw: needs AQW reference files downloaded with `python -m autoswf download-aqw` (skipped otherwise)",
            "real: needs the user's own drawing in cache/real (skipped otherwise)",
-           "exe: runs the packaged app in dist/ (skipped when it is not built)"]
+           "exe: runs the packaged app in dist/ (skipped when it is not built)",
+           "ruffle: runs the Ruffle test stage in the user's Ruffle (skipped when it is not installed)"]

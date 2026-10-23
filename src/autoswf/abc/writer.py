@@ -31,6 +31,7 @@ class SlotTrait:
 
 
 NEED_ACTIVATION = 0x02
+HAS_OPTIONAL = 0x08
 
 
 class AbcBuilder:
@@ -71,11 +72,13 @@ class AbcBuilder:
         return self._intern(self._multinames, (MULTINAME_L, self._intern(self._ns_sets, ns_set), None))
 
     def method(self, max_stack: int, local_count: int, init_scope_depth: int, max_scope_depth: int,
-               code: bytes, *, flags: int = 0, exceptions: tuple = (), traits: tuple = ()) -> int:
+               code: bytes, *, flags: int = 0, exceptions: tuple = (), traits: tuple = (), params: int = 0,
+               optional: tuple = ()) -> int:
         """`exceptions`: (from, to, target, type multiname, variable multiname) code offsets; `traits`: SlotTraits
-        of the method body (its activation object)."""
+        of the method body (its activation object); `params`: how many (untyped) arguments it takes, the last ones
+        `optional` with these (constant kind, index) defaults."""
         self._methods.append((max_stack, local_count, init_scope_depth, max_scope_depth, code, flags,
-                              tuple(exceptions), tuple(traits)))
+                              tuple(exceptions), tuple(traits), params, tuple(optional)))
         return len(self._methods) - 1
 
     def add_class(self, name_mn: int, super_mn: int, protected_ns: int, iinit: int, cinit: int,
@@ -118,7 +121,11 @@ class AbcBuilder:
             out += bytes([kind]) + u30(a) + (u30(b) if b is not None else b"")
         out += u30(len(self._methods))
         for method in self._methods:
-            out += u30(0) + u30(0) + u30(0) + bytes([method[5]])   # no params, return *, no name, flags
+            flags, params, optional = method[5], method[8], method[9]
+            # params of type *, return *, no name, flags (+ HAS_OPTIONAL and the defaults)
+            out += u30(params) + u30(0) + u30(0) * params + u30(0) + bytes([flags | (HAS_OPTIONAL if optional else 0)])
+            if optional:
+                out += u30(len(optional)) + b"".join(u30(index) + bytes([kind]) for kind, index in optional)
         out += u30(0)                                          # metadata
         out += u30(len(self._classes))
         for name_mn, super_mn, protected_ns, iinit, _cinit, traits, _static in self._classes:
@@ -130,7 +137,8 @@ class AbcBuilder:
         for init, class_mn, class_index in self._scripts:
             out += u30(init) + u30(1) + u30(class_mn) + bytes([4]) + u30(1) + u30(class_index)
         out += u30(len(self._methods))
-        for index, (max_stack, locals_, init_scope, max_scope, code, _, exceptions, traits) in enumerate(self._methods):
+        for index, (max_stack, locals_, init_scope, max_scope, code, _, exceptions, traits, *_) in enumerate(
+                self._methods):
             out += u30(index) + u30(max_stack) + u30(locals_) + u30(init_scope) + u30(max_scope)
             out += u30(len(code)) + code + u30(len(exceptions))
             for entry in exceptions:
