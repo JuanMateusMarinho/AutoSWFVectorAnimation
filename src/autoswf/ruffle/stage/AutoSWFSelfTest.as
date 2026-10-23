@@ -1,7 +1,10 @@
 package {
+    import flash.display.DisplayObject;
     import flash.display.MovieClip;
     import flash.events.Event;
     import flash.geom.Matrix;
+    import flash.geom.Rectangle;
+    import flash.utils.getQualifiedClassName;
 
     /** The stage's self-test (flashvar selftest=1). Each check is traced as
      *  "AUTOSWF CHECK <name> | <PASS | FAIL detail | SKIP why>", then "AUTOSWF DONE"; tests/ruffle_selftest.py reads
@@ -10,13 +13,18 @@ package {
         private var stage:AutoSWFStage;
         private var steps:Array = [];
         private var waited:int = 0;
+        private var skill:Object;
+        private var frame0:int;
+        private var label0:String;
+        private var x0:Number;
 
         public function AutoSWFSelfTest(stage:AutoSWFStage) {
             this.stage = stage;
         }
 
         public function start():void {
-            steps.push(wait(2), checkSetup, playSkill, waitSkill, waitIdle, done);
+            steps.push(wait(2), checkSetup, playSkill, waitSkill, waitIdle, checkWindow, startPause, checkPause,
+                waitIdle2, startWalk, wait(3), checkWalk, waitArrive, startDummy, waitInRange, waitHit, done);
             stage.addEventListener(Event.ENTER_FRAME, onFrame);
         }
 
@@ -42,23 +50,28 @@ package {
             return function ():Boolean { return ++waited >= frames; };
         }
 
-        private function row(name:String):Object {
-            for each (var r:Object in stage.settings.labels) {
-                if (r.name == name) return r;
-            }
-            return null;
-        }
-
-        private function idleAnimation():String {
-            var r:Object = row("Idle");
+        private function animationOf(game:String):String {
+            var r:Object = stage.rowOf(game);
             return r == null ? null : r.armor[stage.gender];
         }
+
+        private function frameOf():int {
+            var body:MovieClip = stage.face.getChildByName("body") as MovieClip;
+            return body != null ? body.currentFrame : stage.face.currentFrame;
+        }
+
+        private function totalOf():int {
+            var body:MovieClip = stage.face.getChildByName("body") as MovieClip;
+            return body != null ? body.totalFrames : stage.face.totalFrames;
+        }
+
+        // ------------------------------------------------------------ the avatar (Task 3)
 
         private function checkSetup():Boolean {
             var count:int = 0;
             for (var label:String in stage.avatar.animEvents) count++;
             check("listeners", count > 0, "the armor registered no game label");
-            var idle:String = idleAnimation();
+            var idle:String = animationOf("Idle");
             var face:MovieClip = stage.face;
             if (idle == null) skip("idle", "the armor does not take Idle");
             else check("idle", face != null && face.currentLabel == idle, face == null ? "no head" : face.currentLabel);
@@ -81,13 +94,11 @@ package {
             check("color Hair", probe.transform.colorTransform.color == 0x123456,
                 probe.transform.colorTransform.color.toString(16));
             stage.setPlayerColor("Hair", before);
-            check("ui", stage.status != null && stage.status.parent == stage, "no status line");
+            check("ui", stage.status.parent == stage && stage.list != null && stage.bar != null, "no status, list or bar");
             if (stage.armorError == null) skip("armor error shown", "the armor's code did not stop");
             else check("armor error shown", stage.status.text.indexOf(stage.armorError) >= 0, stage.status.text);
             return true;
         }
-
-        private var skill:Object;
 
         private function playSkill():Boolean {
             var slots:Array = stage.settings.skills[stage.gender] as Array;
@@ -115,12 +126,151 @@ package {
 
         private function waitIdle():Boolean {
             if (skill == null) return true;
-            if (stage.face.currentLabel == idleAnimation()) {
+            if (stage.face.currentLabel == animationOf("Idle")) {
                 check("back to Idle", true);
                 return true;
             }
             if (++waited < 300) return false;
             check("back to Idle", false, "still on " + stage.face.currentLabel + " after 300 frames");
+            return true;
+        }
+
+        // ------------------------------------------------------------ the window (Task 4)
+
+        private function inside(o:DisplayObject):Boolean {
+            var r:Rectangle = o.getBounds(stage);
+            return r.left >= -1 && r.top >= -1 && r.right <= AutoSWFStage.W + 1 && r.bottom <= AutoSWFStage.H + 1;
+        }
+
+        private function checkWindow():Boolean {
+            var motions:Array = stage.settings.motions[stage.gender] as Array;
+            var expected:int = stage.settings.labels.length + (motions == null ? 0 : motions.length);
+            check("list rows", stage.list.rows.length == expected, stage.list.rows.length + " rows, " + expected +
+                " expected");
+            stage.list.scrollTo(stage.list.rows.length - 1);
+            check("list scrolls to end", stage.list.rowVisible(stage.list.rows.length - 1), "last row hidden");
+            stage.list.scroll(100000);
+            var out:Array = [];
+            for each (var o:DisplayObject in [stage.status, stage.controls, stage.bar, stage.list.area, stage.palette]) {
+                if (!inside(o)) out.push(o.name + " " + o.getBounds(stage));
+            }
+            check("nothing off window", out.length == 0, out.join("; "));
+            var scale:Number = stage.actors.scaleX;
+            stage.zoomBy(1);
+            var zoomed:Boolean = stage.actors.scaleX > scale;
+            stage.zoomBy(-1);
+            check("zoom", zoomed && stage.actors.scaleX == scale, "scale " + stage.actors.scaleX);
+            var b:int = stage.background;
+            stage.cycleBackground();
+            var changed:Boolean = stage.background != b;
+            for (var i:int = 1; i < AutoSWFStage.BACKGROUNDS.length; i++) stage.cycleBackground();
+            check("background", changed && stage.background == b, "background " + stage.background);
+            var genders:Array = stage.settings.genders;
+            if (genders.length < 2) {
+                check("gender switch", stage.genderButtons.length == 0, "a switch shows for one gender");
+            } else {
+                var first:String = stage.gender;
+                stage.setGender(genders[1]);
+                var swapped:Boolean = getQualifiedClassName(stage.face).indexOf(genders[1] + "Head") >= 0;
+                stage.setGender(first);
+                check("gender switch", stage.genderButtons.length == 2 && swapped &&
+                    getQualifiedClassName(stage.face).indexOf(first + "Head") >= 0, getQualifiedClassName(stage.face));
+            }
+            return true;
+        }
+
+        /** Start the skill and let one frame play, then checkPause pauses it in the middle. */
+        private function startPause():Boolean {
+            if (skill == null) return true;
+            if (waited == 0) stage.playGameLabel(skill.game);
+            return ++waited >= 2;
+        }
+
+        private function checkPause():Boolean {
+            if (skill == null) {
+                skip("pause holds", "the armor takes no skill label");
+                return true;
+            }
+            if (waited == 0) {
+                stage.togglePause();
+                frame0 = frameOf();
+                label0 = stage.face.currentLabel;
+                waited++;
+                return false;
+            }
+            if (++waited < 6) return false;
+            check("pause holds", frameOf() == frame0 && stage.face.currentLabel == label0,
+                stage.face.currentLabel + " frame " + frameOf() + ", paused on " + label0 + " frame " + frame0);
+            var total:int = totalOf();
+            stage.playback.step(1);
+            var expected:int = frame0 >= total ? 1 : frame0 + 1;
+            check("step +1", frameOf() == expected, "frame " + frameOf() + ", expected " + expected);
+            stage.playback.step(-1);
+            check("step -1", frameOf() == frame0, "frame " + frameOf() + ", expected " + frame0);
+            stage.togglePause();
+            return true;
+        }
+
+        private function waitIdle2():Boolean {
+            if (skill == null || stage.face.currentLabel == animationOf("Idle")) return true;
+            return ++waited >= 300;
+        }
+
+        private function startWalk():Boolean {
+            stage.dummy.selected = false;
+            x0 = stage.avatar.x;
+            stage.avatar.walkTo(x0 + 60, stage.avatar.y);
+            return true;
+        }
+
+        private function checkWalk():Boolean {
+            var walk:String = animationOf("Walk");
+            check("walk", stage.avatar.x > x0 && stage.avatar.walking && (walk == null || stage.face.currentLabel == walk),
+                "x " + stage.avatar.x + " from " + x0 + ", head on " + stage.face.currentLabel);
+            return true;
+        }
+
+        private function waitArrive():Boolean {
+            if (stage.avatar.walking && ++waited < 120) return false;
+            var idle:String = animationOf("Idle");
+            check("arrive Idle", !stage.avatar.walking && (idle == null || stage.face.currentLabel == idle),
+                "walking " + stage.avatar.walking + ", head on " + stage.face.currentLabel);
+            return true;
+        }
+
+        private function startDummy():Boolean {
+            if (skill == null) return true;
+            stage.dummy.selected = true;
+            stage.avatar.x = stage.dummy.x - 400;
+            stage.avatar.face(-1);
+            stage.useSkill(skill.game);
+            return true;
+        }
+
+        private var hits0:int;
+
+        private function waitInRange():Boolean {
+            if (skill == null) {
+                skip("walks into range", "the armor takes no skill label");
+                return true;
+            }
+            if (stage.face.currentLabel != skill.armor && ++waited < 200) return false;
+            var dx:Number = stage.dummy.x - stage.avatar.x;
+            check("walks into range", stage.face.currentLabel == skill.armor && Math.abs(dx) <= AutoSWFStage.RANGE,
+                "head on " + stage.face.currentLabel + ", " + Math.round(Math.abs(dx)) + " px from the dummy");
+            check("faces target", (stage.avatar.mcChar.scaleX > 0) == (dx > 0), "scaleX " + stage.avatar.mcChar.scaleX);
+            hits0 = stage.dummy.hits;
+            return true;
+        }
+
+        private function waitHit():Boolean {
+            if (skill == null) return true;
+            if (stage.dummy.hits <= hits0 && ++waited < AutoSWFStage.HIT_DELAY + 6) return false;
+            check("dummy hit", stage.dummy.hits > hits0, "no hit after " + waited + " frames");
+            if (stage.settings.dummy == null) skip("dummy original", "AQW's Training Dummy is not in the cache");
+            else check("dummy original", stage.dummy.monster != null && stage.dummy.monster.currentLabel == "Hit",
+                stage.dummy.monster == null ? "not loaded" : "on " + stage.dummy.monster.currentLabel);
+            stage.dummy.selected = false;
             return true;
         }
 

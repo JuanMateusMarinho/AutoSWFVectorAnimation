@@ -19,6 +19,7 @@ from autoswf.swf.reader import decompress
 
 GAME_BASE_URL = "https://game.aq.com/game"
 DEFAULT_ARMOR = "PalidanRevamp"
+DUMMY_FILE, DUMMY_CLASS = "mon/TrainingDummy.swf", "TrainingDummy"      # AQW's Training Dummy monster
 SAMPLE_FILES = ("items/helms/ArtixHead.swf", "items/helms/GoldLeppy2018HatM.swf", "hair/M/Normal.swf",
                 "classes/M/VoidKnightStar.swf", "items/capes/redcape.swf")
 USER_AGENT = "AutoSWF/0.1"
@@ -69,6 +70,10 @@ class AqwCache:
 
     def armor_path(self, gender: str, armor: str) -> Path:
         return self.file_path("classes/%s/%s.swf" % (gender, armor))
+
+    def dummy_path(self) -> Path:
+        """AQW's Training Dummy monster, the target of Open in Ruffle's test stage."""
+        return self.file_path(DUMMY_FILE)
 
     def missing(self, armor: str) -> list[str]:
         """What the preview still needs, in plain words."""
@@ -121,7 +126,7 @@ def _save(path: Path, data: bytes) -> None:
 def download_reference_files(cache: AqwCache, *, armor: str = DEFAULT_ARMOR, samples: bool = False,
                              refresh: bool = False, base_url: str = GAME_BASE_URL,
                              progress: Callable[[str], None] = print, timeout: float = 30.0) -> list[Path]:
-    """Fetch the current client, the armor for both genders and optionally the fidelity samples.
+    """Fetch the current client, the armor for both genders, the Training Dummy and optionally the fidelity samples.
     Files already in the cache are kept unless `refresh`; returns the paths written."""
     base = base_url.rstrip("/")
     answer = _get(base + "/api/data/gameversion", timeout)
@@ -134,7 +139,8 @@ def download_reference_files(cache: AqwCache, *, armor: str = DEFAULT_ARMOR, sam
     if not ARMOR_NAME.match(armor):
         raise DownloadError("'%s' is not a valid armor file name" % armor)
 
-    wanted = [client] + ["classes/%s/%s.swf" % (g, armor) for g in "MF"] + (list(SAMPLE_FILES) if samples else [])
+    wanted = ([client] + ["classes/%s/%s.swf" % (g, armor) for g in "MF"] + [DUMMY_FILE] +
+              (list(SAMPLE_FILES) if samples else []))
     written = []
     for rel in wanted:
         target = cache.file_path(rel)

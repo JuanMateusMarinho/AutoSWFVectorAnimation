@@ -24,18 +24,24 @@ def installed_ruffle() -> Path | None:
 
 
 def make_test_swf(folder: Path, armor: bytes, client: str = "mini") -> Path:
-    """A test SWF for `armor` on the mini client's skeleton, or on the cached AQW client (client="aqw")."""
+    """A test SWF for `armor` on the mini client's skeleton, or on the cached AQW client (client="aqw") with AQW's
+    Training Dummy when the cache has it."""
     from aqw_fakes import mini_client
-    from autoswf.aqw.assets import AqwCache, default_cache_dir
+    from autoswf.aqw.assets import DUMMY_CLASS, AqwCache, default_cache_dir
     from autoswf.ruffle.settings import stage_settings
     from autoswf.ruffle.testswf import build_test_swf
+    dummy = None
     if client == "aqw":
         cache = AqwCache(os.environ.get("AUTOSWF_CACHE") or default_cache_dir())
         client_movie = MovieData(cache.client_path())
+        dummy = cache.dummy_path().read_bytes() if cache.dummy_path().exists() else None
     else:
         client_movie = MovieData(mini_client())
+    settings = stage_settings(client_movie, MovieData(armor))
+    if dummy is not None:
+        settings["dummy"] = DUMMY_CLASS
     path = Path(folder) / "test.swf"
-    path.write_bytes(build_test_swf(armor, stage_settings(client_movie, MovieData(armor))))
+    path.write_bytes(build_test_swf(armor, settings, dummy=dummy))
     return path
 
 

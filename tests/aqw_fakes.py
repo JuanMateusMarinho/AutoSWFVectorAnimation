@@ -401,8 +401,10 @@ def throwing_armor_swf() -> bytes:
 
 
 def release_armor_swf(link: str = "TestRelease",
-                      aqw_labels: tuple[tuple[str, ...], ...] = (("Skill1", "Attack1"), ("Skill2", "Cast1"))) -> bytes:
-    """A male animated armor like the TheSwordHero release of 2026-10-23. Its head's bind() finds the avatar as
+                      aqw_labels: tuple[tuple[str, ...], ...] = (("Skill1", "Attack1"), ("Skill2", "Cast1")),
+                      genders: tuple[str, ...] = ("M",)) -> bytes:
+    """An animated armor like the TheSwordHero release of 2026-10-23 (male, or each of `genders`, with the same head
+    code). Its head's bind() finds the avatar as
     listener_armor_swf's does, then reads which game labels play which skill from another class, <Link>Skills (static
     ANIMATIONS, AQW_LABELS and NATIVE_HOLDS arrays and a static labelFor(slot)): AQW_LABELS[1] = Skill1, Attack1 and
     AQW_LABELS[2] = Skill2, Cast1 go to callbacks [null, onSkill1, onSkill2], an object remembering the labels taken
@@ -423,19 +425,22 @@ def release_armor_swf(link: str = "TestRelease",
                                    ([Placement(spark, 2, name="spark")] if label == "Skill1" else []))
                              for k in range(count)])
               for label, count in (("Idle", 1), ("Walk", 2), ("Skill1", 3), ("Skill2", 2))}
-    head = Symbol("Head", [Frame([Placement(_shape(colors["head"], 12, 12), 1, name="headOnly")], "Portrait")] +
-                  [Frame([Placement(bodies[label], 1, name="body")], label)
-                   for label in ("Idle", "Walk", "Skill1", "Skill2")])
-    parts = {part: Symbol(part, [Frame()]) for part in ("Chest", "Hip", "Shoulder", "Hand", "Thigh", "Shin", "Foot",
-                                                       "FootIdle", "Robe", "RobeBack")}
-    parts["Head"] = head
-    names = {id(sym): "%sM%s" % (link, part) for part, sym in parts.items()}
+    head_frames = ([Frame([Placement(_shape(colors["head"], 12, 12), 1, name="headOnly")], "Portrait")] +
+                   [Frame([Placement(bodies[label], 1, name="body")], label)
+                    for label in ("Idle", "Walk", "Skill1", "Skill2")])
+    symbols, names = [], {}
+    for g in genders:
+        parts = {part: Symbol(part + g, [Frame()]) for part in ("Chest", "Hip", "Shoulder", "Hand", "Thigh", "Shin",
+                                                               "Foot", "FootIdle", "Robe", "RobeBack")}
+        parts["Head"] = Symbol("Head" + g, head_frames)
+        symbols += list(parts.values())
+        names.update({id(sym): "%s%s%s" % (link, g, part) for part, sym in parts.items()})
 
     b = AbcBuilder()
     for name in names.values():
         if not name.endswith("Head"):
             _add_class(b, ClassSpec(name))
-    head_name, skills_name = link + "MHead", link + "Skills"
+    skills_name = link + "Skills"
     movieclip = b.qname(PACKAGE, "flash.display", "MovieClip")
     event = b.qname(PACKAGE, "flash.events", "Event")
     late = b.multiname_late([(PACKAGE, "")])
@@ -456,137 +461,140 @@ def release_armor_swf(link: str = "TestRelease",
 
     start = [("getlocal0",), ("pushscope",)]
     body = call("getChildByName", s("body"), void=False) + [("getlex", movieclip), ("astypelate",)]
-    closure = method(call("playStandard", ("getlex", n("label"))) + [("returnvoid",)])
-    code = {
-        "iinit": start + [("getlocal0",), ("newarray", 0), ("setproperty", n("registrations")),
-                          ("getlocal0",), ("constructsuper", 0)] + call("stop") +
-                 [("findpropstrict", n("addEventListener")), ("getlex", event), ("getproperty", n("ADDED_TO_STAGE")),
-                  ("getlex", n("onAdded")), ("callpropvoid", n("addEventListener"), 2),
-                  ("findpropstrict", n("addEventListener")), ("getlex", event), ("getproperty", n("ENTER_FRAME")),
-                  ("getlex", n("onTick")), ("callpropvoid", n("addEventListener"), 2), ("returnvoid",)],
-        "onAdded": start + call("bind") + [("returnvoid",)],
-        "bind": start + [("getlex", n("avatar")), ("pushnull",), ("ifeq", "@search"), ("returnvoid",),
-                         "@search", ("getlex", n("parent")), ("setlocal1",), ("jump", "@check"),
-                         "@loop", ("label",), s("addAnimationListener"), ("getlocal1",), ("in_",), ("iffalse", "@up"),
-                         ("findproperty", n("avatar")), ("getlocal1",), ("setproperty", n("avatar")), ("jump", "@found"),
-                         "@up", ("getlocal1",), ("getproperty", n("parent")), ("setlocal1",),
-                         "@check", ("getlocal1",), ("pushnull",), ("ifne", "@loop"),
-                         "@found", ("getlex", n("avatar")), ("pushnull",), ("ifne", "@bound"), ("returnvoid",),
-                         # var taken = {}, callbacks = [null, onSkill1, onSkill2]
-                         "@bound", ("newobject", 0), ("setlocal2",),
-                         ("pushnull",), ("getlex", n("onSkill1")), ("getlex", n("onSkill2")), ("newarray", 3),
-                         ("setlocal3",),
-                         # for (slot = 1; slot < 3; slot++) for each (label in Skills.AQW_LABELS[slot])
-                         ("pushbyte", 1), ("setlocal", 5), ("jump", "@slots"),
-                         "@slot", ("label",), ("pushbyte", 0), ("setlocal", 7),
-                         ("getlex", n(skills_name)), ("getproperty", n("AQW_LABELS")), ("getlocal", 5),
-                         ("getproperty", late), ("coerce_a",), ("setlocal", 8), ("jump", "@labels"),
-                         "@label", ("label",), ("getlocal", 8), ("getlocal", 7), ("nextvalue",), ("coerce_s",),
-                         ("setlocal", 4),
-                         ("getlocal2",), ("getlocal", 4), ("getproperty", late), ("iffalse", "@fresh"),
-                         ("findpropstrict", n("ArgumentError")), s("Duplicate trigger"),
-                         ("constructprop", n("ArgumentError"), 1), ("throw",),
-                         "@fresh", ("findpropstrict", n("listen")), ("getlocal", 4), ("getlocal3",), ("getlocal", 5),
-                         ("getproperty", late), ("callpropvoid", n("listen"), 2),
-                         ("getlocal2",), ("getlocal", 4), ("pushtrue",), ("setproperty", late),
-                         "@labels", ("hasnext2", 8, 7), ("iftrue", "@label"),
-                         ("kill", 8), ("kill", 7), ("inclocal_i", 5),
-                         "@slots", ("getlocal", 5), ("pushbyte", 3), ("lessthan",), ("iftrue", "@slot"),
-                         # for each (item in currentLabels): skip Portrait, Skill* and taken labels
-                         ("pushbyte", 0), ("setlocal", 7), ("getlex", n("currentLabels")), ("coerce_a",),
-                         ("setlocal", 8), ("jump", "@natives"),
-                         "@native", ("label",), ("getlocal", 8), ("getlocal", 7), ("nextvalue",), ("setlocal", 6),
-                         ("getlocal", 6), ("getproperty", n("name")), ("convert_s",), ("setlocal", 4),
-                         ("getlocal", 4), s("Portrait"), ("ifeq", "@natives"),
-                         ("getlocal", 4), s("Skill"), ("callproperty", n("indexOf"), 1), ("pushbyte", 0),
-                         ("ifeq", "@natives"),
-                         ("getlocal2",), ("getlocal", 4), ("getproperty", late), ("iftrue", "@natives"),
-                         ("findpropstrict", n("listen")), ("getlocal", 4), ("findpropstrict", n("nativeCallback")),
-                         ("getlocal", 4), ("callproperty", n("nativeCallback"), 1), ("callpropvoid", n("listen"), 2),
-                         "@natives", ("hasnext2", 8, 7), ("iftrue", "@native")] +
-                call("playStandard", s("Idle"), ("pushtrue",)) +
-                call("hide", ("getlex", n("avatar")), ("getproperty", n("mcChar")), s("cape"),
-                     ("callproperty", n("getChildByName"), 1), argc=1) +
-                call("hide", ("getlex", n("parent")), s("hair"), ("callproperty", n("getChildByName"), 1), argc=1) +
-                call("anchor") + [("returnvoid",)],
-        "listen": start + [("getlex", n("avatar")), ("getlocal1",), ("getlocal2",), ("pushtrue",),
-                           ("callpropvoid", n("addAnimationListener"), 3),
-                           ("getlex", n("registrations")), ("getlocal1",), ("getlocal2",), ("newarray", 2),
-                           ("callpropvoid", n("push"), 1), ("returnvoid",)],
-        "onSkill1": start + call("playSkill", ("pushbyte", 1)) + [("returnvoid",)],
-        "onSkill2": start + call("playSkill", ("pushbyte", 2)) + [("returnvoid",)],
-        "playSkill": start + [("getlex", n(skills_name)), ("getlocal1",), ("callproperty", n("labelFor"), 1),
-                              ("coerce_s",), ("setlocal2",)] + call("setMotion", ("getlocal2",), ("pushtrue",)) +
-                     [("findproperty", n("transient")), ("pushtrue",), ("setproperty", n("transient")),
-                      ("returnvoid",)],
-        "playStandard": start + call("hasLabel", ("getlocal1",), void=False) + [("iftrue", "@has"), ("returnvoid",),
-                        "@has", ("findproperty", n("transient")), ("getlex", n(skills_name)),
-                        ("getproperty", n("NATIVE_HOLDS")), ("getlocal1",), ("callproperty", n("indexOf"), 1),
-                        ("pushbyte", 0), ("lessthan",), ("setproperty", n("transient"))] +
-                        call("setMotion", ("getlocal1",), ("getlocal2",)) + [("returnvoid",)],
-        "hasLabel": start + [("pushbyte", 0), ("setlocal3",), ("getlex", n("currentLabels")), ("coerce_a",),
-                             ("setlocal", 4), ("jump", "@next"),
-                             "@each", ("label",), ("getlocal", 4), ("getlocal3",), ("nextvalue",), ("setlocal2",),
-                             ("getlocal2",), ("getproperty", n("name")), ("getlocal1",), ("ifne", "@next"),
-                             ("pushtrue",), ("returnvalue",),
-                             "@next", ("hasnext2", 4, 3), ("iftrue", "@each"), ("pushfalse",), ("returnvalue",)],
-        "setMotion": start + [("getlex", n("motion")), ("getlocal1",), ("ifne", "@set"), ("getlocal2",),
-                              ("iftrue", "@set"), ("returnvoid",),
-                              "@set", ("findproperty", n("motion")), ("getlocal1",), ("setproperty", n("motion"))] +
-                     call("gotoAndStop", ("getlocal1",)) + body +
-                     [("setlocal3",), ("getlocal3",), ("pushnull",), ("ifeq", "@end"),
-                      ("getlocal3",), ("pushbyte", 1), ("callpropvoid", n("gotoAndPlay"), 1)] +
-                     call("restartChildren", ("getlocal3",)) + ["@end", ("returnvoid",)],
-        "restartChildren": start + [("pushbyte", 0), ("setlocal2",), ("jump", "@check"),
-                                    "@loop", ("label",), ("getlocal1",), ("getlocal2",),
-                                    ("callproperty", n("getChildAt"), 1), ("getlex", movieclip), ("astypelate",),
-                                    ("setlocal3",), ("getlocal3",), ("pushnull",), ("ifeq", "@skip"),
-                                    ("getlocal3",), ("pushbyte", 1), ("callpropvoid", n("gotoAndPlay"), 1)] +
-                           call("restartChildren", ("getlocal3",)) +
-                           ["@skip", ("inclocal_i", 2),
-                            "@check", ("getlocal2",), ("getlocal1",), ("getproperty", n("numChildren")), ("lessthan",),
-                            ("iftrue", "@loop"), ("returnvoid",)],
-        "hide": start + [("getlocal1",), ("pushnull",), ("ifne", "@go"), ("returnvoid",),
-                         "@go", ("getlocal1",), ("pushfalse",), ("setproperty", n("visible")), ("returnvoid",)],
-        "anchor": start + [("getlex", n("parent")), ("getproperty", n("transform")), ("getproperty", n("matrix")),
-                           ("callproperty", n("clone"), 0), ("setlocal1",), ("getlocal1",),
-                           ("callpropvoid", n("invert"), 0), ("getlex", n("transform")), ("getlocal1",),
-                           ("setproperty", n("matrix")), ("returnvoid",)],
-        "onTick": start + [("getlex", n("avatar")), ("pushnull",), ("ifne", "@run")] + call("bind") +
-                  [("returnvoid",), "@run"] + call("anchor") + body +
-                  [("setlocal2",), ("getlex", n("transient")), ("iffalse", "@end"),
-                   ("getlocal2",), ("pushnull",), ("ifeq", "@end"),
-                   ("getlocal2",), ("getproperty", n("currentFrame")), ("getlocal2",),
-                   ("getproperty", n("totalFrames")), ("ifne", "@end"),
-                   ("findproperty", n("transient")), ("pushfalse",), ("setproperty", n("transient"))] +
-                  call("setMotion", s("Idle"), ("pushtrue",)) + ["@end", ("returnvoid",)],
-    }
-    native_callback = start + [("newactivation",), ("dup",), ("setlocal2",), ("pushscope",), ("getscopeobject", 1),
-                               ("getlocal1",), ("coerce_s",), ("setslot", 1), ("newfunction", closure),
-                               ("returnvalue",)]
-    # the arguments each method takes, as a real AVM2 checks them (restart:Boolean = false is optional)
-    params = {"onAdded": 1, "onTick": 1, "listen": 2, "playSkill": 1, "playStandard": 2, "hasLabel": 1, "setMotion": 2,
-              "restartChildren": 1, "hide": 1}
-    false_default = ((0x0A, 0),)
-    methods = {name: method(steps, params=params.get(name, 0),
-                            optional=false_default if name in ("playStandard", "setMotion") else ())
-               for name, steps in code.items()}
-    methods["nativeCallback"] = method(native_callback, scopes=2, flags=NEED_ACTIVATION, params=1,
-                                       traits=(SlotTrait(n("label"), 1, n("String")),))
-    traits = [SlotTrait(n("avatar"), 0, 0), SlotTrait(n("registrations"), 0, 0),
-              SlotTrait(n("motion"), 0, n("String"), b.string("Portrait")), SlotTrait(n("transient"), 0, n("Boolean"))]
-    traits += [MethodTrait(n(name), index) for name, index in methods.items() if name != "iinit"]
-    cinit = method(start + [("returnvoid",)])
-    class_mn = n(head_name)
-    class_index = b.add_class(class_mn, movieclip, b.namespace(PROTECTED, head_name), methods["iinit"], cinit, traits)
-    init = _asm(start + [("getscopeobject", 0)])
-    for ns, ancestor in ANCESTORS:
-        init.getlex(b.qname(PACKAGE, ns, ancestor)).pushscope()
-    init.getlex(movieclip).newclass(class_index)
-    for _ in ANCESTORS:
-        init.popscope()
-    init.initproperty(class_mn).returnvoid()
-    b.add_script(b.method(2, 1, 1, 9, init.bytes()), class_mn, class_index)
+    for head_name in ["%s%sHead" % (link, g) for g in genders]:
+        closure = method(call("playStandard", ("getlex", n("label"))) + [("returnvoid",)])
+        code = {
+            "iinit": start + [("getlocal0",), ("newarray", 0), ("setproperty", n("registrations")),
+                              ("getlocal0",), ("constructsuper", 0)] + call("stop") +
+                     [("findpropstrict", n("addEventListener")), ("getlex", event), ("getproperty", n("ADDED_TO_STAGE")),
+                      ("getlex", n("onAdded")), ("callpropvoid", n("addEventListener"), 2),
+                      ("findpropstrict", n("addEventListener")), ("getlex", event), ("getproperty", n("ENTER_FRAME")),
+                      ("getlex", n("onTick")), ("callpropvoid", n("addEventListener"), 2), ("returnvoid",)],
+            "onAdded": start + call("bind") + [("returnvoid",)],
+            "bind": start + [("getlex", n("avatar")), ("pushnull",), ("ifeq", "@search"), ("returnvoid",),
+                             "@search", ("getlex", n("parent")), ("setlocal1",), ("jump", "@check"),
+                             "@loop", ("label",), s("addAnimationListener"), ("getlocal1",), ("in_",), ("iffalse", "@up"),
+                             ("findproperty", n("avatar")), ("getlocal1",), ("setproperty", n("avatar")), ("jump", "@found"),
+                             "@up", ("getlocal1",), ("getproperty", n("parent")), ("setlocal1",),
+                             "@check", ("getlocal1",), ("pushnull",), ("ifne", "@loop"),
+                             "@found", ("getlex", n("avatar")), ("pushnull",), ("ifne", "@bound"), ("returnvoid",),
+                             # var taken = {}, callbacks = [null, onSkill1, onSkill2]
+                             "@bound", ("newobject", 0), ("setlocal2",),
+                             ("pushnull",), ("getlex", n("onSkill1")), ("getlex", n("onSkill2")), ("newarray", 3),
+                             ("setlocal3",),
+                             # for (slot = 1; slot < 3; slot++) for each (label in Skills.AQW_LABELS[slot])
+                             ("pushbyte", 1), ("setlocal", 5), ("jump", "@slots"),
+                             "@slot", ("label",), ("pushbyte", 0), ("setlocal", 7),
+                             ("getlex", n(skills_name)), ("getproperty", n("AQW_LABELS")), ("getlocal", 5),
+                             ("getproperty", late), ("coerce_a",), ("setlocal", 8), ("jump", "@labels"),
+                             "@label", ("label",), ("getlocal", 8), ("getlocal", 7), ("nextvalue",), ("coerce_s",),
+                             ("setlocal", 4),
+                             ("getlocal2",), ("getlocal", 4), ("getproperty", late), ("iffalse", "@fresh"),
+                             ("findpropstrict", n("ArgumentError")), s("Duplicate trigger"),
+                             ("constructprop", n("ArgumentError"), 1), ("throw",),
+                             "@fresh", ("findpropstrict", n("listen")), ("getlocal", 4), ("getlocal3",), ("getlocal", 5),
+                             ("getproperty", late), ("callpropvoid", n("listen"), 2),
+                             ("getlocal2",), ("getlocal", 4), ("pushtrue",), ("setproperty", late),
+                             "@labels", ("hasnext2", 8, 7), ("iftrue", "@label"),
+                             ("kill", 8), ("kill", 7), ("inclocal_i", 5),
+                             "@slots", ("getlocal", 5), ("pushbyte", 3), ("lessthan",), ("iftrue", "@slot"),
+                             # for each (item in currentLabels): skip Portrait, Skill* and taken labels
+                             ("pushbyte", 0), ("setlocal", 7), ("getlex", n("currentLabels")), ("coerce_a",),
+                             ("setlocal", 8), ("jump", "@natives"),
+                             "@native", ("label",), ("getlocal", 8), ("getlocal", 7), ("nextvalue",), ("setlocal", 6),
+                             ("getlocal", 6), ("getproperty", n("name")), ("convert_s",), ("setlocal", 4),
+                             ("getlocal", 4), s("Portrait"), ("ifeq", "@natives"),
+                             ("getlocal", 4), s("Skill"), ("callproperty", n("indexOf"), 1), ("pushbyte", 0),
+                             ("ifeq", "@natives"),
+                             ("getlocal2",), ("getlocal", 4), ("getproperty", late), ("iftrue", "@natives"),
+                             ("findpropstrict", n("listen")), ("getlocal", 4), ("findpropstrict", n("nativeCallback")),
+                             ("getlocal", 4), ("callproperty", n("nativeCallback"), 1), ("callpropvoid", n("listen"), 2),
+                             "@natives", ("hasnext2", 8, 7), ("iftrue", "@native")] +
+                    call("playStandard", s("Idle"), ("pushtrue",)) +
+                    call("hide", ("getlex", n("avatar")), ("getproperty", n("mcChar")), s("cape"),
+                         ("callproperty", n("getChildByName"), 1), argc=1) +
+                    call("hide", ("getlex", n("parent")), s("hair"), ("callproperty", n("getChildByName"), 1), argc=1) +
+                    call("anchor") + [("returnvoid",)],
+            "listen": start + [("getlex", n("avatar")), ("getlocal1",), ("getlocal2",), ("pushtrue",),
+                               ("callpropvoid", n("addAnimationListener"), 3),
+                               ("getlex", n("registrations")), ("getlocal1",), ("getlocal2",), ("newarray", 2),
+                               ("callpropvoid", n("push"), 1), ("returnvoid",)],
+            "onSkill1": start + call("playSkill", ("pushbyte", 1)) + [("returnvoid",)],
+            "onSkill2": start + call("playSkill", ("pushbyte", 2)) + [("returnvoid",)],
+            "playSkill": start + [("getlex", n(skills_name)), ("getlocal1",), ("callproperty", n("labelFor"), 1),
+                                  ("coerce_s",), ("setlocal2",)] + call("setMotion", ("getlocal2",), ("pushtrue",)) +
+                         [("findproperty", n("transient")), ("pushtrue",), ("setproperty", n("transient")),
+                          ("returnvoid",)],
+            "playStandard": start + call("hasLabel", ("getlocal1",), void=False) + [("iftrue", "@has"), ("returnvoid",),
+                            "@has", ("findproperty", n("transient")), ("getlex", n(skills_name)),
+                            ("getproperty", n("NATIVE_HOLDS")), ("getlocal1",), ("callproperty", n("indexOf"), 1),
+                            ("pushbyte", 0), ("lessthan",), ("setproperty", n("transient"))] +
+                            call("setMotion", ("getlocal1",), ("getlocal2",)) + [("returnvoid",)],
+            "hasLabel": start + [("pushbyte", 0), ("setlocal3",), ("getlex", n("currentLabels")), ("coerce_a",),
+                                 ("setlocal", 4), ("jump", "@next"),
+                                 "@each", ("label",), ("getlocal", 4), ("getlocal3",), ("nextvalue",), ("setlocal2",),
+                                 ("getlocal2",), ("getproperty", n("name")), ("getlocal1",), ("ifne", "@next"),
+                                 ("pushtrue",), ("returnvalue",),
+                                 "@next", ("hasnext2", 4, 3), ("iftrue", "@each"), ("pushfalse",), ("returnvalue",)],
+            "setMotion": start + [("getlex", n("motion")), ("getlocal1",), ("ifne", "@set"), ("getlocal2",),
+                                  ("iftrue", "@set"), ("returnvoid",),
+                                  "@set", ("findproperty", n("motion")), ("getlocal1",), ("setproperty", n("motion"))] +
+                         call("gotoAndStop", ("getlocal1",)) + body +
+                         [("setlocal3",), ("getlocal3",), ("pushnull",), ("ifeq", "@end"),
+                          ("getlocal3",), ("pushbyte", 1), ("callpropvoid", n("gotoAndPlay"), 1)] +
+                         call("restartChildren", ("getlocal3",)) + ["@end", ("returnvoid",)],
+            "restartChildren": start + [("pushbyte", 0), ("setlocal2",), ("jump", "@check"),
+                                        "@loop", ("label",), ("getlocal1",), ("getlocal2",),
+                                        ("callproperty", n("getChildAt"), 1), ("getlex", movieclip), ("astypelate",),
+                                        ("setlocal3",), ("getlocal3",), ("pushnull",), ("ifeq", "@skip"),
+                                        ("getlocal3",), ("pushbyte", 1), ("callpropvoid", n("gotoAndPlay"), 1)] +
+                               call("restartChildren", ("getlocal3",)) +
+                               ["@skip", ("inclocal_i", 2),
+                                "@check", ("getlocal2",), ("getlocal1",), ("getproperty", n("numChildren")), ("lessthan",),
+                                ("iftrue", "@loop"), ("returnvoid",)],
+            "hide": start + [("getlocal1",), ("pushnull",), ("ifne", "@go"), ("returnvoid",),
+                             "@go", ("getlocal1",), ("pushfalse",), ("setproperty", n("visible")), ("returnvoid",)],
+            "anchor": start + [("getlex", n("parent")), ("getproperty", n("transform")), ("getproperty", n("matrix")),
+                               ("callproperty", n("clone"), 0), ("setlocal1",), ("getlocal1",),
+                               ("callpropvoid", n("invert"), 0), ("getlex", n("transform")), ("getlocal1",),
+                               ("setproperty", n("matrix")), ("returnvoid",)],
+            "onTick": start + [("getlex", n("avatar")), ("pushnull",), ("ifne", "@run")] + call("bind") +
+                      [("returnvoid",), "@run"] + call("anchor") + body +
+                      [("setlocal2",), ("getlex", n("transient")), ("iffalse", "@end"),
+                       ("getlocal2",), ("pushnull",), ("ifeq", "@end"),
+                       ("getlocal2",), ("getproperty", n("currentFrame")), ("getlocal2",),
+                       ("getproperty", n("totalFrames")), ("ifne", "@end"),
+                       ("findproperty", n("transient")), ("pushfalse",), ("setproperty", n("transient"))] +
+                      call("setMotion", s("Idle"), ("pushtrue",)) + ["@end", ("returnvoid",)],
+        }
+        native_callback = start + [("newactivation",), ("dup",), ("setlocal2",), ("pushscope",), ("getscopeobject", 1),
+                                   ("getlocal1",), ("coerce_s",), ("setslot", 1), ("newfunction", closure),
+                                   ("returnvalue",)]
+        # the arguments each method takes, as a real AVM2 checks them (restart:Boolean = false is optional)
+        params = {"onAdded": 1, "onTick": 1, "listen": 2, "playSkill": 1, "playStandard": 2, "hasLabel": 1, "setMotion": 2,
+                  "restartChildren": 1, "hide": 1}
+        false_default = ((0x0A, 0),)
+        methods = {name: method(steps, params=params.get(name, 0),
+                                optional=false_default if name in ("playStandard", "setMotion") else ())
+                   for name, steps in code.items()}
+        methods["nativeCallback"] = method(native_callback, scopes=2, flags=NEED_ACTIVATION, params=1,
+                                           traits=(SlotTrait(n("label"), 1, n("String")),))
+        traits = [SlotTrait(n("avatar"), 0, 0), SlotTrait(n("registrations"), 0, 0),
+                  SlotTrait(n("motion"), 0, n("String"), b.string("Portrait")),
+                  SlotTrait(n("transient"), 0, n("Boolean"))]
+        traits += [MethodTrait(n(name), index) for name, index in methods.items() if name != "iinit"]
+        cinit = method(start + [("returnvoid",)])
+        class_mn = n(head_name)
+        class_index = b.add_class(class_mn, movieclip, b.namespace(PROTECTED, head_name), methods["iinit"], cinit,
+                                  traits)
+        init = _asm(start + [("getscopeobject", 0)])
+        for ns, ancestor in ANCESTORS:
+            init.getlex(b.qname(PACKAGE, ns, ancestor)).pushscope()
+        init.getlex(movieclip).newclass(class_index)
+        for _ in ANCESTORS:
+            init.popscope()
+        init.initproperty(class_mn).returnvoid()
+        b.add_script(b.method(2, 1, 1, 9, init.bytes()), class_mn, class_index)
 
     skills_init = method(start + [("findproperty", n("ANIMATIONS")), ("pushnull",), s("Skill1"), s("Skill2"),
                                   ("newarray", 3), ("initproperty", n("ANIMATIONS")),
@@ -607,4 +615,4 @@ def release_armor_swf(link: str = "TestRelease",
     init = _asm(start + [("getscopeobject", 0), ("getlex", base), ("pushscope",), ("getlex", base),
                          ("newclass", skills_index), ("popscope",), ("initproperty", skills_mn), ("returnvoid",)])
     b.add_script(b.method(2, 1, 1, 9, init.bytes()), skills_mn, skills_index)
-    return build_swf(list(parts.values()), names, b.serialize())
+    return build_swf(symbols, names, b.serialize())

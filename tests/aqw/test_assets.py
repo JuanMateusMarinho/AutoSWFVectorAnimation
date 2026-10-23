@@ -37,13 +37,16 @@ def publish(files, client="Game123.swf"):
     files["/game/gamefiles/" + client] = SWF_BYTES
     for g in "MF":
         files["/game/gamefiles/classes/%s/TestArmor.swf" % g] = SWF_BYTES
+    files["/game/gamefiles/mon/TrainingDummy.swf"] = SWF_BYTES
 
 def test_downloads_client_and_both_armors(tmp_path, server):
     files, hits, url = server; publish(files)
     cache = AqwCache(tmp_path)
     got = download_reference_files(cache, armor="TestArmor", base_url=url, **QUIET)
     assert cache.client_path() == tmp_path / "aqw" / "gamefiles" / "Game123.swf"
-    assert cache.armor_path("F", "TestArmor").read_bytes() == SWF_BYTES and len(got) == 3
+    assert cache.armor_path("F", "TestArmor").read_bytes() == SWF_BYTES and len(got) == 4
+    assert cache.dummy_path() == tmp_path / "aqw" / "gamefiles" / "mon" / "TrainingDummy.swf"   # Open in Ruffle's target
+    assert cache.dummy_path().read_bytes() == SWF_BYTES
     assert cache.missing("TestArmor") == []
 
 def test_existing_files_are_not_downloaded_again(tmp_path, server):
