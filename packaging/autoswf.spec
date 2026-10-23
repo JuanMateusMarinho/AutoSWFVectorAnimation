@@ -16,7 +16,8 @@ DROP = ("Qt6WebEngine", "Qt6Quick", "Qt6Qml", "Qt6Pdf", "Qt63D", "Qt6Multimedia"
 
 a = Analysis([str(ROOT / "src" / "autoswf" / "app" / "main.py")],
              pathex=[str(ROOT / "src")],
-             datas=collect_data_files("clipparse") + collect_data_files("psd_tools"),
+             datas=collect_data_files("clipparse") + collect_data_files("psd_tools") +
+                   [(str(ROOT / "src" / "autoswf" / "ruffle" / "stage.abc"), "autoswf/ruffle")],
              hiddenimports=["keyring.backends.Windows", "pyclipper"],
              excludes=EXCLUDES,
              noarchive=False)

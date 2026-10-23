@@ -56,7 +56,7 @@ def run_smoke_test(out: Path) -> int:
     from autoswf.aqw.assets import AqwCache
     from autoswf.aqw.validate import validate_helm_swf
     app = QApplication.instance() or QApplication(["AutoSWF"])
-    result = {"ok": False, "version": __version__, "link": None, "size": 0, "problems": []}
+    result = {"ok": False, "version": __version__, "link": None, "size": 0, "ruffle": False, "problems": []}
     try:
         folder = Path(tempfile.mkdtemp(prefix="autoswf-smoke-"))
         drawing = folder / "Smoke Helm.psd"
@@ -71,6 +71,12 @@ def run_smoke_test(out: Path) -> int:
             (folder / ("%s.swf" % build.link)).write_bytes(build.swf)
             result["problems"] += validate_helm_swf(build.swf, build.link)
             result.update(link=build.link, size=len(build.swf))
+            # Open in Ruffle's test stage ships as data: a test SWF must carry it and give its parts back
+            from autoswf.ruffle.testswf import build_test_swf, read_test_swf
+            settings, armor = read_test_swf(build_test_swf(build.swf, {"link": build.link}))
+            result["ruffle"] = armor == build.swf and settings == {"link": build.link}
+            if not result["ruffle"]:
+                result["problems"].append("the Ruffle test SWF did not round-trip")
         apply_dark_theme(app)
         window = MainWindow(controller, cache, settings_store=QSettings(str(folder / "ui.ini"), QSettings.Format.IniFormat))
         window.show()

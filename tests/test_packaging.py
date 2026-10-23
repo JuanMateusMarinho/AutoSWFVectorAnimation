@@ -31,6 +31,18 @@ def test_spec_leaves_out_what_the_app_does_not_use():
         assert name in text
 
 
+def test_the_spec_ships_the_ruffle_test_stage():
+    text = (ROOT / "packaging" / "autoswf.spec").read_text(encoding="utf-8")
+    assert '"stage.abc"' in text and '"autoswf/ruffle"' in text
+
+
+def test_the_smoke_test_builds_a_ruffle_test_swf(qapp, tmp_path):
+    from autoswf.app.main import run_smoke_test
+    out = tmp_path / "smoke.json"
+    run_smoke_test(out)
+    assert json.loads(out.read_text(encoding="utf-8"))["ruffle"] is True
+
+
 @pytest.mark.exe
 def test_the_built_exe_passes_its_smoke_test(tmp_path):
     exe = ROOT / "dist" / "AutoSWF" / "AutoSWF.exe"
@@ -38,7 +50,8 @@ def test_the_built_exe_passes_its_smoke_test(tmp_path):
         pytest.skip("build the exe first: python packaging/build.py --skip-installer")
     out = tmp_path / "smoke.json"
     subprocess.run([str(exe), "--smoke-test", str(out)], timeout=300, check=True)
-    assert json.loads(out.read_text(encoding="utf-8"))["ok"]
+    report = json.loads(out.read_text(encoding="utf-8"))
+    assert report["ok"] and report["ruffle"] is True
 
 
 def test_without_inno_setup_the_build_writes_a_zip(tmp_path, monkeypatch):
