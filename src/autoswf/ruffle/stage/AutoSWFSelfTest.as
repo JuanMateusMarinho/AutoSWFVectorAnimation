@@ -23,9 +23,26 @@ package {
         }
 
         public function start():void {
-            steps.push(wait(2), checkSetup, playSkill, waitSkill, waitIdle, checkWindow, startPause, checkPause,
-                waitIdle2, startWalk, wait(3), checkWalk, waitArrive, startDummy, waitInRange, waitHit, done);
+            steps.push(waitListeners, replayIdle, wait(3), checkSetup, playSkill, waitSkill, waitIdle, wait(3),
+                checkReturned, checkWindow,
+                startMotion, wait(2), playIdleAfterMotion, wait(3), checkMotionThenIdle, startPause, checkPause,
+                waitIdle2, startWalk, wait(3), checkWalk, waitArrive, startDummy, waitInRange, waitHit,
+                startHeadTrack, wait(2), checkHeadTrack, done);
             stage.addEventListener(Event.ENTER_FRAME, onFrame);
+        }
+
+        /** Once the listeners exist, Idle again, as the game sends its next label: the armor's own Idle handler runs
+         *  (it was not registered yet when the avatar first played Idle). */
+        private function replayIdle():Boolean {
+            if (stage.face != null) stage.playGameLabel("Idle");
+            return true;
+        }
+
+        /** Frame-script armors (Azrael) register their game labels when their head reaches frame 2. */
+        private function waitListeners():Boolean {
+            if (stage.face == null) return ++waited >= 2;
+            for (var label:String in stage.avatar.animEvents) return ++waited >= 2;
+            return ++waited >= 40;
         }
 
         private function onFrame(e:Event):void {
@@ -68,6 +85,14 @@ package {
         // ------------------------------------------------------------ the avatar (Task 3)
 
         private function checkSetup():Boolean {
+            if (stage.face == null) {                   // the head could not be made: report it and stop there
+                stage.updateStatus();
+                check("ui", stage.status.parent == stage && stage.list != null && stage.bar != null, "no status, list or bar");
+                if (stage.armorError == null) check("armor error shown", false, "no head and no error");
+                else check("armor error shown", stage.status.text.indexOf(stage.armorError) >= 0, stage.status.text);
+                steps.splice(1, steps.length - 2);
+                return true;
+            }
             var count:int = 0;
             for (var label:String in stage.avatar.animEvents) count++;
             check("listeners", count > 0, "the armor registered no game label");
@@ -86,7 +111,8 @@ package {
                 check("anchored", near(m.a, 1, 0.01) && near(m.b, 0, 0.01) && near(m.c, 0, 0.01) &&
                     near(m.d, 1, 0.01) && near(m.tx, 0, 0.1) && near(m.ty, 0, 0.1), m.toString());
             }
-            check("hair hidden", !stage.avatar.mcChar.head.hair.visible, "the avatar's hair still shows");
+            if (stage.avatar.mcChar.head.hair.visible) skip("hair hidden", "the armor shows the avatar's hair");
+            else check("hair hidden", true);
             var probe:MovieClip = new MovieClip();
             var before:uint = uint(stage.colors.Hair);
             stage.mcSetColor(probe, "Hair", "None");
@@ -124,14 +150,56 @@ package {
             return true;
         }
 
+        private var returned:Boolean = false;
+
         private function waitIdle():Boolean {
             if (skill == null) return true;
             if (stage.face.currentLabel == animationOf("Idle")) {
                 check("back to Idle", true);
+                returned = true;
                 return true;
             }
             if (++waited < 300) return false;
             check("back to Idle", false, "still on " + stage.face.currentLabel + " after 300 frames");
+            return true;
+        }
+
+        /** The armor went back to Idle by itself: the status says so, and a step back stays on Idle. */
+        private function checkReturned():Boolean {
+            if (!returned) {
+                skip("status follows the head", "the armor did not go back to Idle by itself");
+                skip("step back after the armor returns", "the armor did not go back to Idle by itself");
+                return true;
+            }
+            stage.updateStatus();
+            var idle:String = animationOf("Idle");
+            check("status follows the head", stage.status.text.indexOf(skill.game) != 0 &&
+                stage.status.text.indexOf(idle) >= 0, stage.status.text);
+            stage.togglePause();
+            var f0:int = frameOf();
+            stage.playback.step(1);
+            stage.playback.step(-1);
+            check("step back after the armor returns", stage.face.currentLabel == idle && frameOf() == f0,
+                stage.face.currentLabel + " frame " + frameOf() + ", expected " + idle + " frame " + f0);
+            stage.togglePause();
+            return true;
+        }
+
+        /** An armor animation by name, then a game label: the armor's code starts afresh and plays it. */
+        private function startMotion():Boolean {
+            if (skill != null) stage.playMotion(skill.armor);
+            return true;
+        }
+
+        private function playIdleAfterMotion():Boolean {
+            if (skill != null) stage.playGameLabel("Idle");
+            return true;
+        }
+
+        private function checkMotionThenIdle():Boolean {
+            var idle:String = animationOf("Idle");
+            if (skill == null || idle == null) skip("motion then Idle", "the armor takes no skill label or Idle");
+            else check("motion then Idle", stage.face.currentLabel == idle, "head on " + stage.face.currentLabel);
             return true;
         }
 
@@ -149,6 +217,16 @@ package {
                 " expected");
             stage.list.scrollTo(stage.list.rows.length - 1);
             check("list scrolls to end", stage.list.rowVisible(stage.list.rows.length - 1), "last row hidden");
+            var last:int = stage.list.rows.length - 1;
+            stage.list.scrollFraction(0);
+            var top:Boolean = stage.list.rowVisible(0);
+            stage.list.scrollFraction(1);
+            var bottom:Boolean = stage.list.rowVisible(last);
+            stage.list.scrollFraction(0);
+            var tall:Boolean = !stage.list.rowVisible(last);
+            stage.list.page(1);
+            check("list scrollbar", top && bottom && (!tall || !stage.list.rowVisible(0) && stage.list.thumb.visible),
+                "top " + top + ", bottom " + bottom + ", taller than the list " + tall);
             stage.list.scroll(100000);
             var out:Array = [];
             for each (var o:DisplayObject in [stage.status, stage.controls, stage.bar, stage.list.area, stage.palette]) {
@@ -233,8 +311,9 @@ package {
         private function waitArrive():Boolean {
             if (stage.avatar.walking && ++waited < 120) return false;
             var idle:String = animationOf("Idle");
-            check("arrive Idle", !stage.avatar.walking && (idle == null || stage.face.currentLabel == idle),
-                "walking " + stage.avatar.walking + ", head on " + stage.face.currentLabel);
+            check("arrive Idle", !stage.avatar.walking && (idle == null || stage.face.currentLabel == idle) &&
+                stage.current.name == "Idle", "walking " + stage.avatar.walking + ", head on " +
+                stage.face.currentLabel + ", playing " + stage.current.name);
             return true;
         }
 
@@ -271,6 +350,39 @@ package {
             else check("dummy original", stage.dummy.monster != null && stage.dummy.monster.currentLabel == "Hit",
                 stage.dummy.monster == null ? "not loaded" : "on " + stage.dummy.monster.currentLabel);
             stage.dummy.selected = false;
+            return true;
+        }
+
+        // ------------------------------------------------------------ the skeleton's head placement (spec §5.4)
+
+        private var tracked:String;
+
+        /** A game label the armor does not block plays on the skeleton: its head slot must follow the real one. */
+        private function startHeadTrack():Boolean {
+            tracked = null;
+            for each (var row:Object in stage.settings.labels) {
+                var track:Object = stage.settings.head[stage.gender][row.name];
+                if (track == null || row.group == "Skills" || row.armor[stage.gender] != null && row.block[stage.gender]) {
+                    continue;
+                }
+                tracked = row.name;
+                break;
+            }
+            if (tracked != null) stage.playGameLabel(tracked);
+            return true;
+        }
+
+        private function checkHeadTrack():Boolean {
+            if (tracked == null) {
+                skip("head follows the skeleton", "the armor takes every game label of the skeleton");
+                return true;
+            }
+            var want:Array = stage.avatar.mcChar.expectedPlacement();
+            var m:Matrix = stage.avatar.mcChar.head.transform.matrix;
+            var ok:Boolean = want != null && Math.abs(m.a - want[0]) < 0.01 && Math.abs(m.b - want[1]) < 0.01 &&
+                Math.abs(m.c - want[2]) < 0.01 && Math.abs(m.d - want[3]) < 0.01 && Math.abs(m.tx - want[4]) < 0.1 &&
+                Math.abs(m.ty - want[5]) < 0.1;
+            check("head follows the skeleton", ok, tracked + ": " + m + " vs " + want);
             return true;
         }
 

@@ -56,10 +56,29 @@ package {
             }
             var want:int = shownFrame() - 1;
             stageRef.replay();
+            // the armor's code may leave a hold or a loop where it is (TheSwordHero does not restart Idle when it is
+            // already on Idle): then the clip that shows it starts over by itself
+            if (shownFrame() > Math.max(1, want)) restartShown();
             paused = false;
             pause();
             frame = 0;
             for (var i:int = 0; i < 1000 && shownFrame() < want; i++) forward();
+        }
+
+        /** The clip showing the animation goes back to its first frame, playing (so pause holds it). */
+        private function restartShown():void {
+            var face:MovieClip = stageRef.face;
+            var body:MovieClip = face.getChildByName("body") as MovieClip;
+            if (body != null) {
+                body.gotoAndPlay(1);
+                return;
+            }
+            var labels:Array = face.currentLabels.sortOn("frame", Array.NUMERIC);
+            var start:int = 1;
+            for each (var label:Object in labels) {
+                if (label.frame <= face.currentFrame) start = label.frame;
+            }
+            face.gotoAndPlay(start);
         }
 
         /** The frame of the clip that shows the animation: the head's body clip (release-style armors), else the head. */

@@ -163,7 +163,7 @@ def root_weapon_swf() -> bytes:
     return swf([blade, grip, place2(1, 1), place2(2, 2)])
 
 
-def animated_armor_swf(link: str = "TestAnim") -> bytes:
+def animated_armor_swf(link: str = "TestAnim", throw_in_frame2: bool = False) -> bytes:
     """A male "animated armor" like AzraelGuardianArmor.swf: every part an empty clip except <Link>MHead, a 30-frame
     character (labels Idleing 3, Walking 10, Attack1 20, 1-based) whose frame 2 registers animation listeners on the
     avatar (Idle -> onIdle, Walk -> onWalk with block, Attack1 -> onAttack, Fight -> onAttack); frame 11 sends the
@@ -205,6 +205,9 @@ def animated_armor_swf(link: str = "TestAnim") -> bytes:
         if flag is not None:
             (frame2.pushtrue() if flag else frame2.pushfalse())
         frame2.callpropvoid(pub("addAnimationListener"), 2 if flag is None else 3)
+    if throw_in_frame2:                             # an armor bug in a frame script, after its listeners
+        error = pub("ArgumentError")
+        frame2.findpropstrict(error).pushstring(b.string("Frame script bug")).constructprop(error, 1).throw()
     frame9 = Code().getlocal0().pushscope().findpropstrict(pub("stop")).callpropvoid(pub("stop"), 0)
     frame11 = Code().getlocal0().pushscope().findpropstrict(movieclip).getlex(pub("stage")).pushbyte(0)
     frame11.callproperty(pub("getChildAt"), 1).callproperty(movieclip, 1).getproperty(pub("world"))
@@ -402,7 +405,7 @@ def throwing_armor_swf() -> bytes:
 
 def release_armor_swf(link: str = "TestRelease",
                       aqw_labels: tuple[tuple[str, ...], ...] = (("Skill1", "Attack1"), ("Skill2", "Cast1")),
-                      genders: tuple[str, ...] = ("M",)) -> bytes:
+                      genders: tuple[str, ...] = ("M",), throw_in_constructor: bool = False) -> bytes:
     """An animated armor like the TheSwordHero release of 2026-10-23 (male, or each of `genders`, with the same head
     code). Its head's bind() finds the avatar as
     listener_armor_swf's does, then reads which game labels play which skill from another class, <Link>Skills (static
@@ -461,10 +464,13 @@ def release_armor_swf(link: str = "TestRelease",
 
     start = [("getlocal0",), ("pushscope",)]
     body = call("getChildByName", s("body"), void=False) + [("getlex", movieclip), ("astypelate",)]
+    # an armor bug in the head's constructor: making the head throws
+    crash = ([("findpropstrict", n("ArgumentError")), s("Constructor bug"), ("constructprop", n("ArgumentError"), 1),
+              ("throw",)] if throw_in_constructor else [])
     for head_name in ["%s%sHead" % (link, g) for g in genders]:
         closure = method(call("playStandard", ("getlex", n("label"))) + [("returnvoid",)])
         code = {
-            "iinit": start + [("getlocal0",), ("newarray", 0), ("setproperty", n("registrations")),
+            "iinit": start + crash + [("getlocal0",), ("newarray", 0), ("setproperty", n("registrations")),
                               ("getlocal0",), ("constructsuper", 0)] + call("stop") +
                      [("findpropstrict", n("addEventListener")), ("getlex", event), ("getproperty", n("ADDED_TO_STAGE")),
                       ("getlex", n("onAdded")), ("callpropvoid", n("addEventListener"), 2),

@@ -3,21 +3,29 @@ package {
     import flash.display.Shape;
     import flash.display.Sprite;
     import flash.events.MouseEvent;
+    import flash.geom.Point;
     import flash.text.TextField;
 
     /** Every animation, grouped (Skills, Movement, Emotes, Weapons, Other), each game label showing the armor animation
-     *  it plays, then the armor's own animations by name. Clicking a row plays it; the wheel scrolls. */
+     *  it plays, then the armor's own animations by name. Clicking a row plays it. It scrolls with the wheel anywhere
+     *  over it, with a scrollbar (drag its thumb, or click above/below it — usable with a pen) and with PageUp/PageDown
+     *  (AutoSWFStage passes them on). */
     public class AutoSWFList extends Sprite {
         public static const GROUPS:Array = ["Skills", "Movement", "Emotes", "Weapons", "Other"];
         public static const ROW:int = 18;
+        public static const BAR:int = 10;
 
         /** Row clips in order, each with .kind ("label" | "motion") and .animation. */
         public var rows:Array = [];
-        private var content:Sprite = new Sprite();
         /** The visible part (the rows scroll under it; bounds of the list itself include the hidden rows). */
         public var area:Shape = new Shape();
+        public var thumb:Sprite = new Sprite();
+        private var content:Sprite = new Sprite();
+        private var track:Sprite = new Sprite();
+        private var full:Number = 0;
         private var h:Number;
         private var w:Number;
+        private var grab:Number = -1;
         private var stageRef:AutoSWFStage;
 
         public function AutoSWFList(stageRef:AutoSWFStage, w:Number, h:Number) {
@@ -26,11 +34,21 @@ package {
             this.w = w;
             this.h = h;
             area.graphics.beginFill(0);
-            area.graphics.drawRect(0, 0, w, h);
+            area.graphics.drawRect(0, 0, w - BAR - 2, h);
             area.graphics.endFill();
             addChild(area);
             addChild(content);
             content.mask = area;
+            track.x = w - BAR;
+            track.graphics.beginFill(0x000000, 0.35);
+            track.graphics.drawRoundRect(0, 0, BAR, h, BAR, BAR);
+            track.graphics.endFill();
+            track.addEventListener(MouseEvent.MOUSE_DOWN, onTrack);
+            addChild(track);
+            thumb.x = w - BAR;
+            thumb.buttonMode = true;
+            thumb.addEventListener(MouseEvent.MOUSE_DOWN, onThumb);
+            addChild(thumb);
             addEventListener(MouseEvent.MOUSE_WHEEL, function (e:MouseEvent):void { scroll(-e.delta * ROW); });
         }
 
@@ -56,6 +74,13 @@ package {
                 y = header("Armor animations", y);
                 for each (var motion:String in motions) y = add("motion", motion, motion, y);
             }
+            full = y + 8;
+            // a hit area under the headers too, so the wheel works anywhere over the list
+            content.graphics.clear();
+            content.graphics.beginFill(0, 0);
+            content.graphics.drawRect(0, 0, w - BAR - 2, full);
+            content.graphics.endFill();
+            placeThumb();
         }
 
         private function header(text:String, y:Number):Number {
@@ -70,7 +95,7 @@ package {
             var row:MovieClip = new MovieClip();
             row.y = y;
             row.graphics.beginFill(0, 0);
-            row.graphics.drawRect(0, 0, w, ROW);
+            row.graphics.drawRect(0, 0, w - BAR - 2, ROW);
             row.graphics.endFill();
             var t:TextField = AutoSWFButton.text(text, 11, AutoSWFButton.CREAM);
             t.x = 12;
@@ -94,15 +119,26 @@ package {
                 var on:Boolean = row.kind == kind && row.animation == name;
                 row.graphics.clear();
                 row.graphics.beginFill(AutoSWFButton.GOLD, on ? 1 : 0);
-                row.graphics.drawRect(0, 0, w, ROW);
+                row.graphics.drawRect(0, 0, w - BAR - 2, ROW);
                 row.graphics.endFill();
                 TextField(row.getChildAt(0)).textColor = on ? AutoSWFButton.DARK : AutoSWFButton.CREAM;
             }
         }
 
         public function scroll(by:Number):void {
-            var lowest:Number = Math.min(0, h - content.height - 8);
-            content.y = Math.max(lowest, Math.min(0, content.y + by));
+            content.y = Math.max(lowest(), Math.min(0, content.y + by));
+            placeThumb();
+        }
+
+        /** One page down (1) or up (-1). */
+        public function page(direction:int):void {
+            scroll(-direction * (h - ROW));
+        }
+
+        /** Scroll to a fraction of the list: 0 is the top, 1 the end. */
+        public function scrollFraction(f:Number):void {
+            content.y = Math.max(0, Math.min(1, f)) * lowest();
+            placeThumb();
         }
 
         public function scrollTo(index:int):void {
@@ -114,6 +150,44 @@ package {
         public function rowVisible(index:int):Boolean {
             var top:Number = rows[index].y + content.y;
             return top >= 0 && top + ROW <= h;
+        }
+
+        private function lowest():Number {
+            return Math.min(0, h - full);
+        }
+
+        private function thumbHeight():Number {
+            return full <= h ? h : Math.max(28, h * h / full);
+        }
+
+        private function placeThumb():void {
+            var th:Number = thumbHeight();
+            thumb.graphics.clear();
+            thumb.graphics.beginFill(AutoSWFButton.GOLD);
+            thumb.graphics.drawRoundRect(0, 0, BAR, th, BAR, BAR);
+            thumb.graphics.endFill();
+            thumb.y = lowest() == 0 ? 0 : (content.y / lowest()) * (h - th);
+            thumb.visible = full > h;
+        }
+
+        private function onTrack(e:MouseEvent):void {
+            page(e.localY > thumb.y ? 1 : -1);
+        }
+
+        private function onThumb(e:MouseEvent):void {
+            grab = e.localY;
+            stage.addEventListener(MouseEvent.MOUSE_MOVE, onDrag);
+            stage.addEventListener(MouseEvent.MOUSE_UP, onDrop);
+        }
+
+        private function onDrag(e:MouseEvent):void {
+            var y:Number = globalToLocal(new Point(e.stageX, e.stageY)).y - grab;
+            scrollFraction(y / Math.max(1, h - thumbHeight()));
+        }
+
+        private function onDrop(e:MouseEvent):void {
+            stage.removeEventListener(MouseEvent.MOUSE_MOVE, onDrag);
+            stage.removeEventListener(MouseEvent.MOUSE_UP, onDrop);
         }
     }
 }

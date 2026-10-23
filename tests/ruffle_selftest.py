@@ -45,15 +45,17 @@ def make_test_swf(folder: Path, armor: bytes, client: str = "mini") -> Path:
     return path
 
 
-def run_selftest(ruffle: Path, swf: Path, timeout: float = 60) -> dict[str, str]:
-    """check name -> its result ("PASS", "FAIL detail" or "SKIP why")."""
-    env = dict(os.environ, RUST_LOG="avm_trace=info,warn")
+def run_selftest(ruffle: Path, swf: Path, timeout: float = 60, log: list | None = None) -> dict[str, str]:
+    """check name -> its result ("PASS", "FAIL detail" or "SKIP why"); `log` receives Ruffle's output lines."""
+    from autoswf.ruffle.launch import LOG_FILTER
+    env = dict(os.environ, RUST_LOG=LOG_FILTER + ",warn")
     process = subprocess.Popen([str(ruffle), "--width", "960", "--height", "600", "-Pselftest=1", str(swf)],
                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, text=True,
                                encoding="utf-8", errors="replace")
     lines: queue.Queue = queue.Queue()
     threading.Thread(target=lambda: [lines.put(line) for line in process.stdout], daemon=True).start()
-    checks, log = {}, []
+    checks = {}
+    log = [] if log is None else log
     try:
         while True:
             try:

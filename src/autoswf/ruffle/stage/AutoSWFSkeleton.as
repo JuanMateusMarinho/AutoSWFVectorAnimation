@@ -84,6 +84,11 @@ package {
             else super.gotoAndPlay(frame, scene);
         }
 
+        /** The head slot's transform the real skeleton has now ([a, b, c, d, tx, ty]), or null when none plays. */
+        public function expectedPlacement():Array {
+            return track == null ? null : track.frames[index];
+        }
+
         public function advance():void {
             if (track == null) return;
             if (index + 1 < track.frames.length) index++;

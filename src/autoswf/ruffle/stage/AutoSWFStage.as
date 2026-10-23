@@ -62,6 +62,8 @@ package {
         private var nextAuto:String = "Attack1";
         private var hitIn:int = -1;
         private var motionRange:Array;
+        /** An armor animation was played by name since the avatar was made (the armor's code is out of step). */
+        private var motionPlayed:Boolean = false;
 
         public function AutoSWFStage() {
             super();
@@ -234,17 +236,21 @@ package {
             if (loaderInfo.parameters.selftest == "1") new AutoSWFSelfTest(this).start();
         }
 
-        /** A fresh avatar wearing the armor of the current gender, playing Idle. */
-        public function showAvatar():void {
+        /** A fresh avatar wearing the armor of the current gender, playing Idle (the panel is rebuilt unless told
+         *  otherwise: a gender change needs it, a fresh start of the same armor does not). */
+        public function showAvatar(rebuildPanel:Boolean = true):void {
             var at:Point = avatar != null ? new Point(avatar.x, avatar.y) : new Point(-90, 0);
             if (avatar != null) actors.removeChild(avatar);
             playback.paused = false;
+            motionPlayed = false;
+            face = null;
             avatar = new AutoSWFAvatar(settings.slots, settings.head[gender] || {});
             avatar.onError = armorStopped;
+            avatar.onPlay = labelPlayed;
             avatar.x = at.x;
             avatar.y = at.y;
             actors.addChildAt(avatar, 0);
-            fillPanel();
+            if (rebuildPanel || list == null) fillPanel();
             try {
                 face = avatar.mcChar.wear(domain, settings.link, gender);
             } catch (err:Error) {
@@ -259,9 +265,12 @@ package {
             showAvatar();
         }
 
+        /** An error the stage caught from the armor's code: shown in the status line, and traced so AutoSWF (reading
+         *  Ruffle's log) shows it too. */
         public function armorStopped(message:String):void {
             armorError = message;
-            log("armor error: " + message);
+            log("ARMOR ERROR " + message);
+            updateStatus();
         }
 
         private function onUncaught(e:UncaughtErrorEvent):void {
@@ -271,8 +280,10 @@ package {
 
         // ------------------------------------------------------------ playing
 
-        /** A game label as AQW plays it (Skills go through useSkill so they aim at the selected dummy). */
+        /** A game label as AQW plays it (Skills go through useSkill so they aim at the selected dummy). After an
+         *  animation played by name the armor's own code is out of step with what shows, so it starts afresh. */
         public function playGameLabel(name:String):void {
+            if (motionPlayed) showAvatar(false);
             if (rowOf(name) != null && rowOf(name).group == "Skills" && name != "Idle") {
                 useSkill(name);
                 return;
@@ -282,10 +293,11 @@ package {
         }
 
         /** One of the armor's own animations by name: one-frame labels hold (their body clip restarts), longer ones
-         *  loop over their frames. */
+         *  loop over their frames. It bypasses the armor's code (see playGameLabel). */
         public function playMotion(name:String):void {
             started("motion", name);
             if (face == null) return;
+            motionPlayed = true;
             var labels:Array = face.currentLabels.sortOn("frame", Array.NUMERIC);
             motionRange = null;
             for (var i:int = 0; i < labels.length; i++) {
@@ -306,6 +318,7 @@ package {
 
         /** A skill: with the dummy selected, walk into range first and face it; the dummy is hit a few frames later. */
         public function useSkill(game:String):void {
+            if (motionPlayed) showAvatar(false);
             if (dummy.selected && Math.abs(dummy.x - avatar.x) > RANGE) {
                 var side:Number = dummy.x > avatar.x ? -1 : 1;
                 avatar.walkTo(dummy.x + side * RANGE * 0.8, dummy.y, function ():void { fire(game); });
@@ -328,13 +341,38 @@ package {
             useSkill(game);
         }
 
-        /** Play again what is playing, from its start (frame steps back use it). */
+        /** Play again, from its start, what shows now (frame steps back use it): the game label playing when the head
+         *  is on its animation, else a game label that plays the animation the head moved on to by itself (the armor
+         *  returning to Idle after a skill), else that animation by name. */
         public function replay():void {
-            if (current.kind == "motion") playMotion(current.name);
-            else {
-                started("label", current.name);
-                avatar.playLabel(current.name);
+            var shown:String = face != null ? face.currentLabel : null;
+            if (current.kind == "motion" || shown == null) {
+                playMotion(current.kind == "motion" ? current.name : shown);
+                return;
             }
+            var game:String = onAnimation() ? current.name : gameLabelFor(shown);
+            if (game == null) {
+                playMotion(shown);
+                return;
+            }
+            started("label", game);
+            avatar.playLabel(game);
+        }
+
+        /** Whether the head is on the animation of the game label playing (or that label has none of its own). */
+        private function onAnimation():Boolean {
+            var row:Object = rowOf(current.name);
+            return row == null || row.armor[gender] == null || face == null || row.armor[gender] == face.currentLabel;
+        }
+
+        /** A game label that plays this armor animation: the one of the same name first. */
+        private function gameLabelFor(animation:String):String {
+            var r:Object = rowOf(animation);
+            if (r != null && r.armor[gender] == animation) return animation;
+            for each (r in settings.labels) {
+                if (r.armor[gender] == animation) return r.name;
+            }
+            return null;
         }
 
         private function started(kind:String, name:String):void {
@@ -343,6 +381,14 @@ package {
             current = {kind: kind, name: name};
             playback.restarted();
             if (list != null) list.highlight(kind, name);
+        }
+
+        /** The avatar played a game label (also when it arrives from a walk). */
+        private function labelPlayed(label:String):void {
+            if (current.kind == "label" && current.name == label) return;
+            current = {kind: "label", name: label};
+            playback.restarted();
+            if (list != null) list.highlight("label", label);
         }
 
         public function rowOf(name:String):Object {
@@ -415,16 +461,27 @@ package {
             else if (e.keyCode == 187 || e.keyCode == 107) zoomBy(1);
             else if (e.keyCode == 189 || e.keyCode == 109) zoomBy(-1);
             else if (e.keyCode == 66) cycleBackground();
+            else if (e.keyCode == 33 && list != null) list.page(-1);
+            else if (e.keyCode == 34 && list != null) list.page(1);
         }
 
-        /** "<game label> → <armor animation> · frame n / total · paused" (frames of the head's body clip when it has
-         *  one, as release-style armors play their animation there; else of the head's own label). */
-        private function updateStatus():void {
-            if (face == null) return;
+        /** "<game label> → <armor animation> · frame n / total · paused", from what the head shows: when the armor
+         *  moved on by itself (back to Idle after a skill) it reads "Armor: <animation>" (frames of the head's body
+         *  clip when it has one, as release-style armors play their animation there; else of the head itself). */
+        public function updateStatus():void {
+            if (face == null) {
+                status.text = armorError != null ? "The armor's code stopped: " + armorError : "Loading the armor…";
+                return;
+            }
             var row:Object = current.kind == "label" ? rowOf(current.name) : null;
-            var text:String = current.kind == "motion" ? "Armor: " + current.name : current.name;
-            if (row != null && row.armor[gender] != null && row.armor[gender] != current.name) {
-                text += "  →  " + row.armor[gender];
+            var text:String;
+            if (current.kind == "label" && onAnimation()) {
+                text = current.name;
+                if (row != null && row.armor[gender] != null && row.armor[gender] != current.name) {
+                    text += "  →  " + row.armor[gender];
+                }
+            } else {
+                text = "Armor: " + (face.currentLabel != null ? face.currentLabel : current.name);
             }
             var body:MovieClip = face.getChildByName("body") as MovieClip;
             var clip:MovieClip = body != null ? body : face;

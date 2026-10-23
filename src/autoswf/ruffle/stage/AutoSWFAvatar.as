@@ -17,6 +17,8 @@ package {
         public var walking:Boolean = false;
         /** (message:String):void — told when the armor's code throws. */
         public var onError:Function;
+        /** (label:String):void — told each time a game label is played (walk arrival included). */
+        public var onPlay:Function;
         private var target:Point;
         private var arrived:Function;
 
@@ -89,6 +91,7 @@ package {
 
         public function playLabel(label:String):void {
             this.label = label;
+            if (onPlay != null) onPlay(label);
             var list:Array = animEvents[label] as Array;
             if (list != null && list.length > 0) {
                 try {
